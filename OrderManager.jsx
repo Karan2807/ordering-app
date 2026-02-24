@@ -420,6 +420,7 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
 function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
   var _v=useState(aot||"A"),vt=_v[0],sVt=_v[1];
   var _sent=useState({}),sent=_sent[0],sSent=_sent[1];
+  var _sending=useState({}),sending=_sending[0],sSending=_sending[1];
   var dk=dateKey(vt);
   // Compute totals per item across all stores
   var totals=useMemo(function(){var t={};items.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;});if(sum>0)t[it.code]=sum;});return t;},[items,stores,orders,dk]);
@@ -429,15 +430,24 @@ function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
   var assigned={};suppliers.forEach(function(s){s.items.forEach(function(c){assigned[c]=true;});});
   var unassigned=items.filter(function(it){return totals[it.code]>0&&!assigned[it.code];});
 
-  var sendEmail=function(sup,supItems){
+  var sendEmail=async function(sup,supItems){
+    var key=sup.id+"_"+vt;
+    sSending(function(p){var n=Object.assign({},p);n[key]=true;return n;});
     var subject="Purchase Order - Order "+vt+" - "+new Date().toLocaleDateString();
     var body="Dear "+sup.name+",\n\nPlease find our order details below:\n\n";
     supItems.forEach(function(it){body+=it.name+" ("+it.code+") - Qty: "+totals[it.code]+"\n";});
     body+="\nThank you.";
-    var mailto="mailto:"+encodeURIComponent(sup.email)+"?subject="+encodeURIComponent(subject)+"&body="+encodeURIComponent(body);
-    var a=document.createElement("a");a.href=mailto;a.click();
-    sSent(function(p){var n=Object.assign({},p);n[sup.id+"_"+vt]=true;return n;});
-    toast("Opening email for "+sup.name+" ("+sup.email+")");
+
+    // call backend to actually send the message via configured SMTP server
+    try {
+      await apiClient.orders.sendEmail(sup.email, subject, body);
+      sSent(function(p){var n=Object.assign({},p);n[key]=true;return n;});
+      toast("Email sent to "+sup.name+" ("+sup.email+")");
+    } catch (err) {
+      toast(err.message || "Failed to send email", true);
+    } finally {
+      sSending(function(p){var n=Object.assign({},p);delete n[key];return n;});
+    }
   };
   var processOrder=function(){
     setOrders(function(prev){
@@ -463,7 +473,7 @@ function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
           <div><div style={S.t}>{g.supplier.name}</div><div style={S.d}>{g.supplier.email} | {g.supplier.phone}</div></div>
           <div style={{display:"flex",gap:5,alignItems:"center"}}>
             {isSent?<span style={Object.assign({},S.bg,S.bgG)}>Email Sent</span>
-            :<button style={Object.assign({},S.b,S.bP)} onClick={function(){sendEmail(g.supplier,g.items);}}><Ic type="mail" size={13}/>Send Email</button>}
+            :<button style={Object.assign({},S.b,S.bP)} onClick={function(){sendEmail(g.supplier,g.items);}} disabled={sending[g.supplier.id+"_"+vt]}>{sending[g.supplier.id+"_"+vt]?"Sending...":<><Ic type="mail" size={13}/>Send Email</>}</button>}
           </div>
         </div>
         <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Total Qty</th>

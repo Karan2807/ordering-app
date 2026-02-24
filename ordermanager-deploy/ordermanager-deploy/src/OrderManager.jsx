@@ -1,47 +1,9 @@
-import { useState, useCallback, useMemo, useRef, Fragment } from "react";
+import { useState, useCallback, useMemo, useRef, Fragment, useContext, useEffect } from "react";
+import { AuthContext } from "./AuthContext";
+import { apiClient } from "./api";
 
-/* ═══ DATA ═══ */
-var INIT_STORES=[{id:"S1",name:"Downtown Central"},{id:"S2",name:"Westside Mall"},{id:"S3",name:"Eastgate Plaza"},{id:"S4",name:"North Market"},{id:"S5",name:"Southpoint Hub"}];
-var INIT_ITEMS=[
-  {code:"ITM001",name:"Basmati Rice 5kg",category:"Grains",unit:"Bags"},
-  {code:"ITM002",name:"Sunflower Oil 1L",category:"Oils",unit:"Bottles"},
-  {code:"ITM003",name:"Whole Wheat Flour 2kg",category:"Grains",unit:"Packs"},
-  {code:"ITM004",name:"Sugar 1kg",category:"Essentials",unit:"Packs"},
-  {code:"ITM005",name:"Toor Dal 1kg",category:"Pulses",unit:"Packs"},
-  {code:"ITM006",name:"Salt 1kg",category:"Essentials",unit:"Packs"},
-  {code:"ITM007",name:"Tea Powder 500g",category:"Beverages",unit:"Packs"},
-  {code:"ITM008",name:"Milk 1L",category:"Dairy",unit:"Packets"},
-  {code:"ITM009",name:"Bread Loaf",category:"Bakery",unit:"Pieces"},
-  {code:"ITM010",name:"Butter 500g",category:"Dairy",unit:"Packs"},
-  {code:"ITM011",name:"Eggs 12 pack",category:"Dairy",unit:"Trays"},
-  {code:"ITM012",name:"Tomato Ketchup 500g",category:"Condiments",unit:"Bottles"},
-  {code:"ITM013",name:"Mixed Spice Box",category:"Spices",unit:"Boxes"},
-  {code:"ITM014",name:"Dish Soap 750ml",category:"Cleaning",unit:"Bottles"},
-  {code:"ITM015",name:"Paper Towels 6 roll",category:"Cleaning",unit:"Packs"},
-];
-var INIT_USERS=[
-  {username:"admin",password:"admin123",role:"admin",storeId:null,name:"System Admin",phone:"555-0100",active:true},
-  {username:"store1",password:"pass123",role:"manager",storeId:"S1",name:"Ravi Kumar",phone:"555-0101",active:true},
-  {username:"store2",password:"pass123",role:"manager",storeId:"S2",name:"Priya Sharma",phone:"555-0102",active:true},
-  {username:"store3",password:"pass123",role:"manager",storeId:"S3",name:"Amit Patel",phone:"555-0103",active:true},
-  {username:"store4",password:"pass123",role:"manager",storeId:"S4",name:"Sara Nair",phone:"555-0104",active:true},
-  {username:"store5",password:"pass123",role:"manager",storeId:"S5",name:"Vikram Singh",phone:"555-0105",active:true},
-];
-var INIT_NOTIFS=[
-  {id:1,text:"Weekend Sale - extra beverages and snacks for Saturday rush!",type:"promo",date:"2026-02-06"},
-  {id:2,text:"Delivery schedule changed: Tuesday orders arrive Wednesday this week.",type:"info",date:"2026-02-05"},
-];
-var INIT_SUPPLIERS=[
-  {id:"SUP1",name:"Fresh Foods Co",email:"orders@freshfoods.com",phone:"555-9001",items:["ITM001","ITM003","ITM004","ITM005","ITM006"]},
-  {id:"SUP2",name:"Pacific Beverages",email:"supply@pacbev.com",phone:"555-9002",items:["ITM002","ITM007","ITM008","ITM012"]},
-  {id:"SUP3",name:"Metro Supplies",email:"orders@metrosup.com",phone:"555-9003",items:["ITM009","ITM010","ITM011","ITM013","ITM014","ITM015"]},
-];
-var DEFAULT_SCHED={A:5,B:0,C:4};
-var DEFAULT_MSGS={
-  A:"Order A has to send by Sunday, Monday pickup from Supplier in LA. Delivery to store will be on Wednesday.",
-  B:"Order B has to send by Monday, Tuesday pickup from Supplier. Delivery to store will be on Thursday.",
-  C:"Order C has to send by Friday, Saturday pickup from Supplier. Delivery to store will be on Monday.",
-};
+/* ═══ DATA HELPERS ═══ */
+// utility arrays & functions used across components
 var DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
 function activeType(sc){var t=new Date().getDay();for(var k in sc){if(sc[k]===t)return k;}return null;}
@@ -52,22 +14,7 @@ function sortItems(a){return a.slice().sort(function(x,y){var c=(x.category||"")
 function fmtDT(iso){if(!iso)return"-";var d=new Date(iso);return d.toLocaleDateString()+" "+d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
 function parseCSV(text){var lines=text.split(/\r?\n/).filter(function(l){return l.trim();});if(lines.length<2)return[];var hdr=lines[0].split(",").map(function(h){return h.trim().toLowerCase().replace(/[^a-z0-9]/g,"");});var ci=hdr.findIndex(function(h){return h.indexOf("code")>=0||h==="sku";});var ni=hdr.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";});var cti=hdr.findIndex(function(h){return h.indexOf("cat")>=0||h==="group";});var ui=hdr.findIndex(function(h){return h.indexOf("unit")>=0||h==="uom";});if(ni===-1)return[];var r=[];for(var i=1;i<lines.length;i++){var cols=lines[i].split(",").map(function(c){return c.trim().replace(/"/g,"");});if(!cols[ni])continue;r.push({code:ci>=0&&cols[ci]?cols[ci]:"CSV"+String(i).padStart(4,"0"),name:cols[ni],category:cti>=0?(cols[cti]||""):"",unit:ui>=0?(cols[ui]||""):"",});}return r;}
 
-/* ═══ SEED DATA: Last week Order A submissions for all 5 stores ═══ */
-var SEED_ORDERS=(function(){
-  function wn(d){var dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));dt.setUTCDate(dt.getUTCDate()+4-(dt.getUTCDay()||7));var ys=new Date(Date.UTC(dt.getUTCFullYear(),0,1));return Math.ceil(((dt-ys)/86400000+1)/7);}
-  var n=new Date();var lw=n.getFullYear()+"-W"+String(wn(n)-1).padStart(2,"0")+"-A";
-  var codes=["ITM001","ITM002","ITM003","ITM004","ITM005","ITM006","ITM007","ITM008","ITM009","ITM010","ITM011","ITM012","ITM013","ITM014","ITM015"];
-  var rand=function(seed){return function(){seed=(seed*16807+0)%2147483647;return seed;};};
-  var rng=rand(42);
-  var orders={};
-  ["S1","S2","S3","S4","S5"].forEach(function(sid){
-    var items={};
-    codes.forEach(function(c){var v=rng()%15;items[c]=v>3?v:0;});
-    var lastFri=new Date(n);lastFri.setDate(lastFri.getDate()-7);
-    orders[sid+"_"+lw]={items:items,status:"submitted",store:sid,type:"A",date:lastFri.toISOString()};
-  });
-  return orders;
-})();
+
 
 
 var S={
@@ -137,17 +84,47 @@ function Ic({type,size}){var z=size||16;var p={home:"M3 9l9-7 9 7v11a2 2 0 0 1-2
 function Toast({msg,isErr}){if(!msg)return null;return <div style={Object.assign({},S.to,isErr?S.toE:{})}>{msg}</div>;}
 
 /* ═══ LOGIN ═══ */
-function Login({users,onLogin,logo}){
-  var _a=useState(""),un=_a[0],sU=_a[1];var _b=useState(""),pw=_b[0],sP=_b[1];var _c=useState(""),err=_c[0],sE=_c[1];
-  var go=function(){var u=users.find(function(u){return u.username===un&&u.password===pw&&u.active;});if(u)onLogin(u);else sE("Invalid credentials or account disabled.");};
+function Login({logo}){
+  var _a=useState(""),un=_a[0],sU=_a[1];var _b=useState(""),pw=_b[0],sP=_b[1];var _c=useState(""),err=_c[0],sE=_c[1];var _d=useState(false),loading=_d[0],sL=_d[1];
+  // registration fields
+  var _reg=useState(false),isReg=_reg[0],sReg=_reg[1];
+  var _name=useState(""),name=_name[0],sName=_name[1];
+  var _phone=useState(""),phone=_phone[0],sPhone=_phone[1];
+  var _store=useState(""),storeId=_store[0],sStore=_store[1];
+  var _stores=useState([]),storesList=_stores[0],sStoresList=_stores[1];
+  var _rerr=useState(""),rErr=_rerr[0],sRErr=_rerr[1];
+  var auth=useContext(AuthContext);
+
+  // fetch store list for registration (public)
+  useEffect(function(){
+    apiClient.stores.getAll().then(s=>{sStoresList(s); if(s.length) sStore(s[0].id);}).catch(()=>{});
+  },[]);
+
+  var go=function(){sL(true);sE("");auth.login(un,pw).then(function(){sL(false);}).catch(function(e){sE(e.message);sL(false);});};
+
+  var register=async function(){
+    sL(true);sRErr("");
+    try{
+      await apiClient.auth.register({username:un,password:pw,name:name,phone:phone,storeId:storeId});
+      sReg(false);
+      sE("Registration successful, you may now sign in.");
+    }catch(e){sRErr(e.message);}finally{sL(false);}  };
   return(<div style={S.lP}><div style={S.lC}>
     <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"center",marginBottom:20}}>{logo?<img src={logo} alt="Logo" style={{width:34,height:34,borderRadius:8,objectFit:"cover"}}/>:<div style={S.logo}>OM</div>}<div><div style={{fontWeight:700,fontSize:16}}>OrderManager</div><div style={{fontSize:10,color:"#6B7186"}}>Multi-Store Platform v3</div></div></div>
     <div style={{textAlign:"center",fontSize:18,fontWeight:700,marginBottom:4}}>Welcome back</div>
-    <div style={{textAlign:"center",fontSize:12,color:"#9BA1B5",marginBottom:16}}>Sign in to manage orders</div>
+    <div style={{textAlign:"center",fontSize:12,color:"#9BA1B5",marginBottom:16}}>{isReg?"Register a new account":"Sign in to manage orders"}</div>
     {err&&<div style={S.lE}>{err}</div>}
-    <div style={S.fg}><div style={S.lb}>Username</div><input style={S.inp} value={un} onChange={function(e){sU(e.target.value);}} placeholder="Enter username" onKeyDown={function(e){if(e.key==="Enter")go();}}/></div>
-    <div style={S.fg}><div style={S.lb}>Password</div><input style={S.inp} type="password" value={pw} onChange={function(e){sP(e.target.value);}} placeholder="Enter password" onKeyDown={function(e){if(e.key==="Enter")go();}}/></div>
-    <button style={Object.assign({},S.b,S.bP,{width:"100%",justifyContent:"center",padding:9})} onClick={go}>Sign In</button>
+    {rErr&&<div style={S.lE}>{rErr}</div>}
+    {auth.error&&<div style={S.lE}>{auth.error}</div>}
+    <div style={S.fg}><div style={S.lb}>Username</div><input style={S.inp} value={un} onChange={e=>sU(e.target.value)} placeholder="Enter username" onKeyDown={e=>{if(e.key==="Enter"&&!loading){isReg?register():go();}}} disabled={loading}/></div>
+    <div style={S.fg}><div style={S.lb}>Password</div><input style={S.inp} type="password" value={pw} onChange={e=>sP(e.target.value)} placeholder="Enter password" onKeyDown={e=>{if(e.key==="Enter"&&!loading){isReg?register():go();}}} disabled={loading}/></div>
+    {isReg&&(<>
+      <div style={S.fg}><div style={S.lb}>Name</div><input style={S.inp} value={name} onChange={function(e){sName(e.target.value);}} placeholder="Full name" disabled={loading}/></div>
+      <div style={S.fg}><div style={S.lb}>Phone</div><input style={S.inp} value={phone} onChange={function(e){sPhone(e.target.value);}} placeholder="Phone" disabled={loading}/></div>
+      <div style={S.fg}><div style={S.lb}>Store</div><select style={S.inp} value={storeId} onChange={function(e){sStore(e.target.value);}} disabled={loading}>{storesList.map(function(s){return <option key={s.id} value={s.id}>{s.name}</option>;})}</select></div>
+    </>)}
+    <button style={Object.assign({},S.b,S.bP,{width:"100%",justifyContent:"center",padding:9,opacity:loading?0.6:1})} onClick={isReg?register:go} disabled={loading}>{loading?(isReg?"Registering...":"Signing in..."):(isReg?"Register":"Sign In")}</button>
+    <div style={{marginTop:14,color:"#9BA1B5",fontSize:11,cursor:"pointer",textAlign:"center"}} onClick={function(){sReg(!isReg);sE("");sRErr("");}}>{isReg?"Already have an account? Sign in":"Need an account? Register"}</div>
     <div style={{marginTop:14,padding:10,borderRadius:6,background:"#1F2330",border:"1px solid #2A2E3B"}}>
       <div style={{fontSize:9,color:"#6B7186",textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontWeight:600}}>Demo Accounts</div>
       <div style={{fontSize:11,color:"#9BA1B5",fontFamily:"monospace"}}>Admin: admin / admin123</div>
@@ -158,29 +135,69 @@ function Login({users,onLogin,logo}){
 
 /* ════════ MAIN APP ════════ */
 export default function App(){
-  var _u=useState(null),user=_u[0],setUser=_u[1];
+  var auth=useContext(AuthContext);
+  var user=auth.user;
   var _p=useState("dashboard"),page=_p[0],setPage=_p[1];
   var _t=useState(""),tM=_t[0],sTM=_t[1];var _te=useState(false),tE=_te[0],sTE=_te[1];
-  var _i=useState(function(){return sortItems(INIT_ITEMS);}),items=_i[0],setItemsR=_i[1];
-  var _us=useState(INIT_USERS),users=_us[0],setUsers=_us[1];
-  var _o=useState(SEED_ORDERS),orders=_o[0],setOrders=_o[1];
-  var _n=useState(INIT_NOTIFS),notifs=_n[0],setNotifs=_n[1];
-  var _s=useState(INIT_STORES),stores=_s[0],setStores=_s[1];
-  var _sc=useState(DEFAULT_SCHED),schedule=_sc[0],setSchedule=_sc[1];
-  var _om=useState(DEFAULT_MSGS),orderMsgs=_om[0],setOrderMsgs=_om[1];
-  var _su=useState(INIT_SUPPLIERS),suppliers=_su[0],setSuppliers=_su[1];
+  var _i=useState([]),items=_i[0],setItems=_i[1];
+  var _us=useState([]),users=_us[0],setUsers=_us[1];
+  var _o=useState({}),orders=_o[0],setOrders=_o[1];
+  var _n=useState([]),notifs=_n[0],setNotifs=_n[1];
+  var _s=useState([]),stores=_s[0],setStores=_s[1];
+  var _sc=useState({}),schedule=_sc[0],setSchedule=_sc[1];
+  var _om=useState({}),orderMsgs=_om[0],setOrderMsgs=_om[1];
+  var _su=useState([]),suppliers=_su[0],setSuppliers=_su[1];
   var _lg=useState(null),logo=_lg[0],setLogo=_lg[1];
+  var _ld=useState(true),isLoading=_ld[0],setIsLoading=_ld[1];
+  var _err=useState(null),loadError=_err[0],setLoadError=_err[1];
   var tR=useRef(null);var logoRef=useRef(null);
+  
   var toast=useCallback(function(m,e){sTM(m);sTE(!!e);if(tR.current)clearTimeout(tR.current);tR.current=setTimeout(function(){sTM("");},2500);},[]);
-  var setItems=useCallback(function(up){setItemsR(function(p){var n=typeof up==="function"?up(p):up;return sortItems(n);});},[]);
-  var handleLogo=function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");};r.readAsDataURL(f);e.target.value="";};
-  var aot=activeType(schedule);var isA=user&&user.role==="admin";
-  if(!user)return(<Fragment><input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleLogo}/><Login users={users} onLogin={function(u){setUser(u);setPage("dashboard");}} logo={logo}/></Fragment>);
+  
+  // Fetch data on user login
+  useEffect(function(){
+    if(!user){setIsLoading(false);return;}
+    var fetchData=async function(){
+      try{setIsLoading(true);setLoadError(null);
+        var isA=user.role==="admin";
+        var fetches={
+          items:apiClient.items.getAll(),
+          stores:apiClient.stores.getAll(),
+          notifs:apiClient.notifications.getAll(),
+          orders:apiClient.orders.getAll(isA?null:user.storeId),
+          settings:apiClient.settings.getAll(),
+        };
+        if(isA){fetches.users=apiClient.users.getAll();fetches.suppliers=apiClient.suppliers.getAll();}
+        var results=await Promise.all(Object.values(fetches));
+        var keys=Object.keys(fetches);
+        var data={};keys.forEach(function(k,i){data[k]=results[i];});
+        
+        setItems(sortItems(data.items||[]));setStores(data.stores||[]);setNotifs(data.notifs||[]);
+        setOrderMsgs({A:data.settings.A||"",B:data.settings.B||"",C:data.settings.C||""});
+        var schedMap={A:data.settings.A,B:data.settings.B,C:data.settings.C};setSchedule(schedMap);
+        if(data.orders&&Array.isArray(data.orders)){
+          // key orders by store_week-type so existing UI logic continues to work
+          var orderMap={};
+          data.orders.forEach(function(o){
+            var key = o.storeId + "_" + o.week + "-" + o.type;
+            orderMap[key] = {id:o.id, items:o.items, status:o.status, store:o.storeId, type:o.type, date:o.date};
+          });
+          setOrders(orderMap);
+        }
+        if(isA){setUsers(data.users||[]);setSuppliers(data.suppliers||[]);}
+        setIsLoading(false);
+      }catch(e){setLoadError(e.message);setIsLoading(false);toast(e.message,true);}
+    };
+    if(auth.loading)return;fetchData();
+  },[user,auth.loading]);
+  
+  if(auth.loading){return <div style={Object.assign({},S.lP,{justifyContent:"center"})}><div style={{color:"#9BA1B5"}}>Loading...</div></div>;}
+  if(!user){return(<Fragment><input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");};r.readAsDataURL(f);e.target.value="";}}/><Login logo={logo}/></Fragment>);}
+  
+  if(isLoading||loadError){return <div style={Object.assign({},S.lP,{justifyContent:"center"})}><div style={{color:loadError?"#F87171":"#9BA1B5"}}>{loadError?loadError:"Loading..."}</div></div>;}
+  
   var sN=user.storeId?(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId:"All Stores";
-  // Check if current user's active order is already submitted
-  var myOrderKey=user.storeId&&aot?user.storeId+"_"+dateKey(aot):null;
-  var myOrderStatus=myOrderKey&&orders[myOrderKey]?orders[myOrderKey].status:null;
-
+  var isA=user.role==="admin";
   var navs=isA?[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"orders",label:"Order Monitor",ico:"clip"},
     {id:"consolidated",label:"Consolidated",ico:"grid"},{id:"supplier-orders",label:"Supplier Orders",ico:"truck"},
@@ -192,7 +209,7 @@ export default function App(){
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"order-entry",label:"Place Order",ico:"clip"},
     {id:"history",label:"Order History",ico:"eye"},
   ];
-  var PP={orders:orders,setOrders:setOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,aot:aot,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef,handleLogo:handleLogo};
+  var PP={orders:orders,setOrders:setOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
   var rP=function(){
     if(page==="dashboard"&&isA)return <AdminDash {...PP}/>;if(page==="dashboard")return <MgrDash {...PP}/>;
     if(page==="order-entry")return <OrderEntry {...PP}/>;if(page==="history")return <OrderHistory {...PP}/>;
@@ -204,28 +221,18 @@ export default function App(){
     if(page==="reports")return <Reports {...PP}/>;if(page==="settings")return <Settings {...PP}/>;
     return null;
   };
-  // Topbar status: show submitted/processed if applicable
-  var topBadge=null;
-  if(aot){
-    if(!isA&&myOrderStatus==="submitted")topBadge=<span style={Object.assign({},S.bg,S.bgG)}>Order {aot} Submitted</span>;
-    else if(!isA&&myOrderStatus==="processed")topBadge=<span style={Object.assign({},S.bg,S.bgP)}>Order {aot} Processed</span>;
-    else topBadge=<span style={Object.assign({},S.bg,S.bgG)}>Order {aot} Open</span>;
-  }else{topBadge=<span style={Object.assign({},S.bg,S.bgY)}>No active order</span>;}
-
   return(<div style={S.page}><Toast msg={tM} isErr={tE}/>
-    <input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleLogo}/>
-    <aside style={S.sidebar}>
+    <input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");};r.readAsDataURL(f);e.target.value="";}}/><aside style={S.sidebar}>
       <div style={S.sideHdr}>{logo?<img src={logo} alt="Logo" style={{width:34,height:34,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<div style={S.logo}>OM</div>}<div><div style={{fontWeight:700,fontSize:13}}>OrderManager</div><div style={{fontSize:10,color:"#6B7186"}}>{sN}</div></div></div>
       <nav style={{flex:1,padding:"8px 6px",overflowY:"auto"}}>
         <div style={{fontSize:9,fontWeight:600,color:"#6B7186",textTransform:"uppercase",letterSpacing:1,padding:"8px 10px 3px"}}>Navigation</div>
         {navs.map(function(n){return(<div key={n.id} style={Object.assign({},S.navItem,page===n.id?S.navA:S.navI)} onClick={function(){setPage(n.id);}}><Ic type={n.ico} size={15}/><span>{n.label}</span></div>);})}
       </nav>
-      <div style={S.ft}><div style={S.uC}><div style={S.av}>{user.name.charAt(0)}</div><div><div style={{fontSize:11,fontWeight:600}}>{user.name}</div><div style={{fontSize:9,color:"#6B7186"}}>{isA?"Admin":"Manager"}</div></div></div>
-        <button style={S.loB} onClick={function(){setUser(null);}}><Ic type="out" size={13}/><span>Sign Out</span></button></div>
+      <div style={S.ft}><div style={S.uC}><div style={S.av}>{(user?.name || user?.username || "?").charAt(0)}</div><div><div style={{fontSize:11,fontWeight:600}}>{user.name}</div><div style={{fontSize:9,color:"#6B7186"}}>{isA?"Admin":"Manager"}</div></div></div>
+        <button style={S.loB} onClick={function(){auth.logout();}}><Ic type="out" size={13}/><span>Sign Out</span></button></div>
     </aside>
     <div style={S.main}>
-      <header style={S.topbar}><div style={{fontSize:15,fontWeight:700}}>{(navs.find(function(n){return n.id===page;})||{}).label||"Dashboard"}</div>
-        <div style={{display:"flex",gap:5}}>{topBadge}<span style={Object.assign({},S.bg,S.bgB)}>{DAYS[new Date().getDay()]}</span></div></header>
+      <header style={S.topbar}><div style={{fontSize:15,fontWeight:700}}>{(navs.find(function(n){return n.id===page;})||{}).label||"Dashboard"}</div></header>
       <div style={S.content}>{rP()}</div>
     </div></div>);
 }
@@ -302,8 +309,24 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   var done=ex&&(ex.status==="submitted"||ex.status==="processed");var ro=locked||done;
   var _q=useState(function(){return ex&&ex.items?Object.assign({},ex.items):items.reduce(function(a,it){a[it.code]=0;return a;},{});}),qty=_q[0],setQty=_q[1];
   var setQ=function(c,v){if(ro)return;setQty(function(p){var n=Object.assign({},p);n[c]=Math.max(0,parseInt(v)||0);return n;});};
-  var save=function(){setOrders(function(p){var n=Object.assign({},p);n[oKey]={items:qty,status:"draft",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});toast("Draft saved");};
-  var doSubmit=function(){setOrders(function(p){var n=Object.assign({},p);n[oKey]={items:qty,status:"submitted",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});setShowConfirm(false);toast("Order submitted!");};
+  var save=async function(){
+    try{
+      // send to backend, status draft
+      const resp = await apiClient.orders.create({type:sel,items:qty,status:"draft",storeId:user.storeId});
+      var id = resp.orderId;
+      setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:qty,status:"draft",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});
+      toast("Draft saved");
+    }catch(e){toast(e.message,true);}
+  };
+  var doSubmit=async function(){
+    try{
+      const resp = await apiClient.orders.create({type:sel,items:qty,status:"submitted",storeId:user.storeId});
+      var id = resp.orderId;
+      setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:qty,status:"submitted",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});
+      setShowConfirm(false);
+      toast("Order submitted!");
+    }catch(e){toast(e.message,true);setShowConfirm(false);}
+  };
   var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||"";
   var filled=Object.values(qty).filter(function(v){return v>0;}).length;
   var sorted=useMemo(function(){return items.slice().sort(function(a,b){if(sortBy==="name")return a.name.localeCompare(b.name);if(sortBy==="code")return a.code.localeCompare(b.code);var c=(a.category||"").localeCompare(b.category||"");return c!==0?c:a.name.localeCompare(b.name);});},[items,sortBy]);
@@ -359,14 +382,25 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast}){
   var all=Object.entries(orders).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var f=ft==="all"?all:all.filter(function(e){return e[1].type===ft;});
   var statusBg=function(st){return st==="processed"?S.bgP:st==="submitted"?S.bgG:S.bgY;};
-  var processAll=function(type){
+  var processAll=async function(type){
     var dk=dateKey(type);
-    setOrders(function(prev){
-      var n=Object.assign({},prev);
-      stores.forEach(function(st){var k=st.id+"_"+dk;if(n[k]&&n[k].status==="submitted"){n[k]=Object.assign({},n[k],{status:"processed"});}});
-      return n;
-    });
-    toast("Order "+type+" marked as processed for all stores");
+    try{
+      // process each submitted order via API
+      var tasks=[];
+      Object.entries(orders).forEach(function([k,o]){
+        if(o.type===type&&o.status==="submitted"&&o.id){
+          tasks.push(apiClient.orders.process(o.id));
+        }
+      });
+      await Promise.all(tasks);
+      // update local state
+      setOrders(function(prev){
+        var n=Object.assign({},prev);
+        Object.entries(n).forEach(function([k,o]){if(o.type===type&&o.status==="submitted"){n[k]=Object.assign({},o,{status:"processed"});}});
+        return n;
+      });
+      toast("Order "+type+" marked as processed for all stores");
+    }catch(e){toast(e.message,true);}
   };
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:14}}>
@@ -381,7 +415,11 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast}){
           <td style={S.tm}>{fmtDT(o.date)}</td>
           <td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td>
           <td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}/{items.length}</td>
-          <td style={S.td}>{o.status==="submitted"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10})} onClick={function(){setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},n[k],{status:"processed"});return n;});toast("Processed");}}>Process</button>}</td>
+          <td style={S.td}>{o.status==="submitted"&&o.id&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10})} onClick={async function(){
+              try{await apiClient.orders.process(o.id);
+                setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},n[k],{status:"processed"});return n;});
+                toast("Processed");
+              }catch(e){toast(e.message,true);} }}>Process</button>}</td>
         </tr>);})}</tbody></table></div>}</div>
   </div>);
 }
@@ -390,10 +428,29 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast}){
 function Consolidated({orders,setOrders,items,aot,toast,stores}){
   var _v=useState(aot||"A"),vt=_v[0],sVt=_v[1];
   var _e=useState(null),eSt=_e[0],sES=_e[1];var _eq=useState({}),eQ=_eq[0],sEQ=_eq[1];
+  var _em=useState(""),eEmail=_em[0],sEmail=_em[1];
+  var _emg=useState(false),eMailing=_emg[0],sEMailing=_emg[1];
   var dk=dateKey(vt);
   var startE=function(sid){var k=sid+"_"+dk;var ex=orders[k]&&orders[k].items?orders[k].items:{};var q={};items.forEach(function(it){q[it.code]=ex[it.code]||0;});sEQ(q);sES(sid);};
-  var saveE=function(){var k=eSt+"_"+dk;setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},p[k]||{},{items:Object.assign({},eQ),status:(p[k]||{}).status||"submitted",store:eSt,type:vt,date:(p[k]||{}).date||new Date().toISOString()});return n;});toast("Updated");sES(null);sEQ({});};
+  var saveE=async function(){
+      if(!eSt) return;
+      try{
+        const resp = await apiClient.orders.create({type:vt,items:eQ,status:"submitted",storeId:eSt});
+        const id = resp.orderId;
+        var k=eSt+"_"+dk;
+        setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},p[k]||{},{id:id,items:Object.assign({},eQ),status:(p[k]||{}).status||"submitted",store:eSt,type:vt,date:(p[k]||{}).date||new Date().toISOString()});return n;});
+        toast("Updated");
+        sES(null);sEQ({});
+      }catch(e){toast(e.message,true);}  };
   var cancelE=function(){sES(null);sEQ({});};
+  var sendEmail=async function(){
+    if(!eEmail) return;
+    sEMailing(true);
+    try{
+      await apiClient.orders.emailConsolidated(vt,eEmail);
+      toast("Email sent to " + eEmail);
+      sEmail("");
+    }catch(e){toast(e.message,true);}finally{sEMailing(false);}  };
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
       <div style={S.tabs}>{["A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);cancelE();}}>Order {t}</button>;})}</div>
@@ -401,7 +458,13 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
     </div>
     {eSt&&<div style={S.nI}>Editing: {(stores.find(function(s){return s.id===eSt;})||{}).name}</div>}
     <div style={Object.assign({},S.card,{padding:0})}>
-      <div style={{padding:"12px 14px",borderBottom:"1px solid #2A2E3B"}}><div style={S.t}>Consolidated Order {vt}</div><div style={S.d}>Click edit icon on store column to modify</div></div>
+      <div style={{padding:"12px 14px",borderBottom:"1px solid #2A2E3B",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div><div style={S.t}>Consolidated Order {vt}</div><div style={S.d}>Click edit icon on store column to modify</div></div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <input style={S.inp} type="email" placeholder="email address" value={eEmail||""} onChange={function(e){sEmail(e.target.value);}} />
+          <button style={Object.assign({},S.b,S.bP)} onClick={sendEmail} disabled={!eEmail||eMailing}>{eMailing?"Sending...":"Email"}</button>
+        </div>
+      </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th>
         {stores.map(function(st){return(<th key={st.id} style={Object.assign({},S.th,{textAlign:"center",minWidth:80})}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:2}}><span>{st.name.split(" ")[0]}</span><button style={Object.assign({},S.eB,eSt===st.id?{color:"#4F8CFF"}:{})} onClick={function(){eSt===st.id?cancelE():startE(st.id);}}><Ic type="edit" size={11}/></button></div></th>);})}<th style={Object.assign({},S.th,{textAlign:"center",background:"#272B38"})}>Total</th></tr></thead>
         <tbody>{items.map(function(it){
@@ -439,14 +502,18 @@ function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
     sSent(function(p){var n=Object.assign({},p);n[sup.id+"_"+vt]=true;return n;});
     toast("Opening email for "+sup.name+" ("+sup.email+")");
   };
-  var processOrder=function(){
-    setOrders(function(prev){
-      var n=Object.assign({},prev);
-      stores.forEach(function(st){var k=st.id+"_"+dk;if(n[k]&&(n[k].status==="submitted"||n[k].status==="draft")){n[k]=Object.assign({},n[k],{status:"processed"});}});
-      return n;
-    });
-    toast("Order "+vt+" marked processed for all stores");
-  };
+  var processOrder=async function(){
+    try{
+      var tasks=[];
+      stores.forEach(function(st){var k=st.id+"_"+dk;var o=orders[k];if(o&&o.id&&(o.status==="submitted"||o.status==="draft")){tasks.push(apiClient.orders.process(o.id));}});
+      await Promise.all(tasks);
+      setOrders(function(prev){
+        var n=Object.assign({},prev);
+        stores.forEach(function(st){var k=st.id+"_"+dk;if(n[k]&&(n[k].status==="submitted"||n[k].status==="draft")){n[k]=Object.assign({},n[k],{status:"processed"});}});
+        return n;
+      });
+      toast("Order "+vt+" marked processed for all stores");
+    }catch(e){toast(e.message,true);}  };
   var allSent=supplierGroups.every(function(g){return sent[g.supplier.id+"_"+vt];});
 
   return(<div>
@@ -488,10 +555,25 @@ function ItemMaster({items,setItems,toast}){
   var _sort=useState("category"),sortBy=_sort[0],setSortBy=_sort[1];
   var fl=items.filter(function(it){var q=sr.toLowerCase();return it.name.toLowerCase().indexOf(q)>=0||it.code.toLowerCase().indexOf(q)>=0||(it.category||"").toLowerCase().indexOf(q)>=0;});
   var sorted=useMemo(function(){return fl.slice().sort(function(a,b){if(sortBy==="name")return a.name.localeCompare(b.name);if(sortBy==="code")return a.code.localeCompare(b.code);var c=(a.category||"").localeCompare(b.category||"");return c!==0?c:a.name.localeCompare(b.name);});},[fl,sortBy]);
-  var add=function(){if(!nI.code||!nI.name){toast("Code and Name required",true);return;}if(items.find(function(i){return i.code===nI.code;})){toast("Code exists",true);return;}setItems(function(p){return p.concat([Object.assign({},nI)]);});sNI({code:"",name:"",category:"",unit:""});sA(false);toast("Item added");};
-  var rm=function(c){setItems(function(p){return p.filter(function(i){return i.code!==c;});});toast("Removed");};
+  var add=async function(){
+      if(!nI.code||!nI.name){toast("Code and Name required",true);return;}
+      if(items.find(function(i){return i.code===nI.code;})){toast("Code exists",true);return;}
+      try{
+        await apiClient.items.create(nI);
+        // reload
+        const all = await apiClient.items.getAll();
+        setItems(sortItems(all));
+        sNI({code:"",name:"",category:"",unit:""});sA(false);toast("Item added");
+      }catch(e){toast(e.message,true);}    };
+  var rm=async function(c){
+      try{
+        await apiClient.items.delete(c);
+        const all = await apiClient.items.getAll();
+        setItems(sortItems(all));
+        toast("Removed");
+      }catch(e){toast(e.message,true);}    };
   var hF=function(e){var f=e.target.files&&e.target.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){var p=parseCSV(ev.target.result);if(!p.length){toast("Could not parse CSV",true);return;}sC(p);sU(true);};r.readAsText(f);e.target.value="";};
-  var cfU=function(){if(!csv)return;if(md==="replace"){setItems(csv);toast("Replaced "+csv.length+" items");}else{setItems(function(p){var ex={};p.forEach(function(i){ex[i.code]=true;});return p.concat(csv.filter(function(i){return!ex[i.code];}));});toast("Merged "+csv.length+" items");}sC(null);sU(false);};
+  var cfU=async function(){if(!csv)return;try{await apiClient.items.bulkImport(csv,md);const all=await apiClient.items.getAll();setItems(sortItems(all));toast(md==="replace"?"Replaced "+csv.length+" items":"Merged "+csv.length+" items");}catch(e){toast(e.message,true);}sC(null);sU(false);};
   return(<div><div style={S.card}><div style={S.cH}>
     <div><div style={S.t}>Item Master</div><div style={S.d}>{items.length} items</div></div>
     <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
@@ -527,9 +609,33 @@ function UserMgmt({users,setUsers,toast,stores}){
   var _a=useState(false),shA=_a[0],sA=_a[1];
   var _n=useState({username:"",password:"",name:"",phone:"",role:"manager",storeId:stores[0]?stores[0].id:"S1",active:true}),nu=_n[0],sN=_n[1];
   var _r=useState(null),rP=_r[0],sRP=_r[1];var _pw=useState(""),nPw=_pw[0],sNP=_pw[1];
-  var add=function(){if(!nu.username||!nu.password||!nu.name||!nu.phone){toast("All fields including phone required",true);return;}if(users.find(function(u){return u.username===nu.username;})){toast("Username exists",true);return;}setUsers(function(p){return p.concat([Object.assign({},nu)]);});sN({username:"",password:"",name:"",phone:"",role:"manager",storeId:stores[0]?stores[0].id:"S1",active:true});sA(false);toast("User created");};
-  var toggle=function(un){setUsers(function(p){return p.map(function(u){return u.username===un?Object.assign({},u,{active:!u.active}):u;});});toast("Updated");};
-  var doReset=function(){if(nPw.length<6){toast("Min 6 chars",true);return;}setUsers(function(p){return p.map(function(u){return u.username===rP?Object.assign({},u,{password:nPw}):u;});});sRP(null);sNP("");toast("Password reset");};
+  var add=async function(){
+      if(!nu.username||!nu.password||!nu.name||!nu.phone){toast("All fields including phone required",true);return;}
+      if(users.find(function(u){return u.username===nu.username;})){toast("Username exists",true);return;}
+      try{
+        await apiClient.users.create(nu);
+        const all=await apiClient.users.getAll();
+        setUsers(all);
+        sN({username:"",password:"",name:"",phone:"",role:"manager",storeId:stores[0]?stores[0].id:"S1",active:true});
+        sA(false);
+        toast("User created");
+      }catch(e){toast(e.message,true);}    };
+  var toggle=async function(un){
+      try{
+        await apiClient.users.toggle(un);
+        const all=await apiClient.users.getAll();
+        setUsers(all);
+        toast("Updated");
+      }catch(e){toast(e.message,true);}    };
+  var doReset=async function(){
+      if(nPw.length<6){toast("Min 6 chars",true);return;}
+      try{
+        await apiClient.users.resetPassword(rP,nPw);
+        const all=await apiClient.users.getAll();
+        setUsers(all);
+        sRP(null);sNP("");
+        toast("Password reset");
+      }catch(e){toast(e.message,true);}    };
   return(<div><div style={S.card}><div style={S.cH}><div><div style={S.t}>Users</div><div style={S.d}>{users.length} total</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
     <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Phone</th><th style={S.th}>Role</th><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>
       {users.map(function(u){var sn=u.storeId?((stores.find(function(s){return s.id===u.storeId;})||{}).name||u.storeId):"-";return(<tr key={u.username}>
@@ -562,11 +668,37 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
   var _ed=useState(null),edSup=_ed[0],sEdSup=_ed[1];
   var _ef=useState({name:"",email:"",phone:""}),edF=_ef[0],sEdF=_ef[1];
   var _n=useState({id:"",name:"",email:"",phone:"",items:[]}),nS=_n[0],sNS=_n[1];
-  var add=function(){if(!nS.id||!nS.name||!nS.email){toast("ID, Name, Email required",true);return;}if(suppliers.find(function(s){return s.id===nS.id;})){toast("ID exists",true);return;}setSuppliers(function(p){return p.concat([Object.assign({},nS)]);});sNS({id:"",name:"",email:"",phone:"",items:[]});sA(false);toast("Supplier added");};
-  var rm=function(id){setSuppliers(function(p){return p.filter(function(s){return s.id!==id;});});toast("Removed");};
-  var toggleItem=function(supId,itemCode){setSuppliers(function(p){return p.map(function(s){if(s.id!==supId)return s;var its=s.items.indexOf(itemCode)>=0?s.items.filter(function(c){return c!==itemCode;}):s.items.concat([itemCode]);return Object.assign({},s,{items:its});});});};
+  var add=async function(){
+      if(!nS.id||!nS.name||!nS.email){toast("ID, Name, Email required",true);return;}
+      if(suppliers.find(function(s){return s.id===nS.id;})){toast("ID exists",true);return;}
+      try{
+        await apiClient.suppliers.create(nS);
+        const all=await apiClient.suppliers.getAll();
+        setSuppliers(all);
+        sNS({id:"",name:"",email:"",phone:"",items:[]});
+        sA(false);
+        toast("Supplier added");
+      }catch(e){toast(e.message,true);}    };
+  var rm=async function(id){
+      try{
+        await apiClient.suppliers.delete(id);
+        const all=await apiClient.suppliers.getAll();
+        setSuppliers(all);
+        toast("Removed");
+      }catch(e){toast(e.message,true);}    };
+  var toggleItem=function(supId,itemCode){
+      setSuppliers(function(p){return p.map(function(s){if(s.id!==supId)return s;var its=s.items.indexOf(itemCode)>=0?s.items.filter(function(c){return c!==itemCode;}):s.items.concat([itemCode]);return Object.assign({},s,{items:its});});});
+    };
   var startEdit=function(s){sEdSup(s.id);sEdF({name:s.name,email:s.email,phone:s.phone||""});};
-  var saveEdit=function(){if(!edF.name||!edF.email){toast("Name and Email required",true);return;}setSuppliers(function(p){return p.map(function(s){return s.id===edSup?Object.assign({},s,{name:edF.name,email:edF.email,phone:edF.phone}):s;});});sEdSup(null);toast("Supplier updated");};
+  var saveEdit=async function(){
+      if(!edF.name||!edF.email){toast("Name and Email required",true);return;}
+      try{
+        await apiClient.suppliers.update(edSup,{name:edF.name,email:edF.email,phone:edF.phone});
+        const all=await apiClient.suppliers.getAll();
+        setSuppliers(all);
+        sEdSup(null);
+        toast("Supplier updated");
+      }catch(e){toast(e.message,true);}    };
   var editSup=eId?suppliers.find(function(s){return s.id===eId;}):null;
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Suppliers</div><div style={S.d}>{suppliers.length} suppliers</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
@@ -585,7 +717,15 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
       <div style={{fontSize:11,color:"#9BA1B5",marginBottom:10}}>Check items this supplier provides:</div>
       <div style={Object.assign({},S.tw,{maxHeight:350})}><table style={S.tbl}><thead><tr><th style={Object.assign({},S.th,{width:40})}></th><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th></tr></thead><tbody>
         {items.map(function(it){var checked=editSup.items.indexOf(it.code)>=0;return(<tr key={it.code} style={checked?{background:"rgba(79,140,255,0.05)"}:{}}><td style={S.td}><input type="checkbox" checked={checked} onChange={function(){toggleItem(editSup.id,it.code);}}/></td><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category}</td></tr>);})}</tbody></table></div>
-      <div style={S.mA}><button style={Object.assign({},S.b,S.bP)} onClick={function(){sEId(null);toast("Assignments saved");}}>Done</button></div></div></div>)}
+      <div style={S.mA}><button style={Object.assign({},S.b,S.bP)} onClick={async function(){
+            try{
+              // send the updated item list for the supplier being edited
+              await apiClient.suppliers.assignItems(editSup.id, editSup.items);
+              const all=await apiClient.suppliers.getAll();
+              setSuppliers(all);
+              sEId(null);
+              toast("Assignments saved");
+            }catch(e){toast(e.message,true);}          }}>Done</button></div></div></div>)}
     {edSup&&(<div style={S.ov} onClick={function(){sEdSup(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Edit Supplier - {edSup}</div>
       <div style={S.fg}><div style={S.lb}>Name *</div><input style={S.inp} value={edF.name} onChange={function(e){sEdF(Object.assign({},edF,{name:e.target.value}));}}/></div>
@@ -598,8 +738,22 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
 /* ═══ NOTIFICATIONS ═══ */
 function NotifMgmt({notifs,setNotifs,toast}){
   var _a=useState(false),sh=_a[0],sS=_a[1];var _t=useState(""),tx=_t[0],sT=_t[1];var _ty=useState("info"),ty=_ty[0],sTy=_ty[1];
-  var add=function(){if(!tx.trim()){toast("Text required",true);return;}setNotifs(function(p){return[{id:Date.now(),text:tx.trim(),type:ty,date:new Date().toISOString().slice(0,10)}].concat(p);});sT("");sS(false);toast("Posted");};
-  var rm=function(id){setNotifs(function(p){return p.filter(function(n){return n.id!==id;});});toast("Removed");};
+  var add=async function(){
+      if(!tx.trim()){toast("Text required",true);return;}
+      try{
+        await apiClient.notifications.create({text:tx.trim(),type:ty});
+        const all=await apiClient.notifications.getAll();
+        setNotifs(all);
+        sT("");sS(false);
+        toast("Posted");
+      }catch(e){toast(e.message,true);}    };
+  var rm=async function(id){
+      try{
+        await apiClient.notifications.delete(id);
+        const all=await apiClient.notifications.getAll();
+        setNotifs(all);
+        toast("Removed");
+      }catch(e){toast(e.message,true);}    };
   return(<div style={S.card}><div style={S.cH}><div><div style={S.t}>Notifications</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sS(true);}}>+ New</button></div>
     {notifs.length===0&&<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>None</div>}
     {notifs.map(function(n){return(<div key={n.id} style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}><div style={Object.assign({},n.type==="promo"?S.nP:S.nI,{flex:1,marginBottom:0})}>{n.text}<span style={{float:"right",opacity:.6,fontSize:10}}>{n.date}</span></div><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(n.id);}}>Del</button></div>);})}
@@ -615,9 +769,34 @@ function NotifMgmt({notifs,setNotifs,toast}){
 function StoreMgmt({stores,setStores,toast}){
   var _e=useState(null),eId=_e[0],sEId=_e[1];var _en=useState(""),eN=_en[0],sEN=_en[1];
   var _a=useState(false),sh=_a[0],sS=_a[1];var _n=useState({id:"",name:""}),ns=_n[0],sN=_n[1];
-  var startE=function(s){sEId(s.id);sEN(s.name);};var saveE=function(){if(!eN.trim()){toast("Name required",true);return;}setStores(function(p){return p.map(function(s){return s.id===eId?Object.assign({},s,{name:eN.trim()}):s;});});sEId(null);toast("Updated");};
-  var addS=function(){if(!ns.id||!ns.name){toast("ID and Name required",true);return;}if(stores.find(function(s){return s.id===ns.id;})){toast("ID exists",true);return;}setStores(function(p){return p.concat([{id:ns.id.trim(),name:ns.name.trim()}]);});sN({id:"",name:""});sS(false);toast("Store added");};
-  var rmS=function(id){if(stores.length<=1){toast("Keep at least 1",true);return;}setStores(function(p){return p.filter(function(s){return s.id!==id;});});toast("Removed");};
+  var startE=function(s){sEId(s.id);sEN(s.name);};
+  var saveE=async function(){
+      if(!eN.trim()){toast("Name required",true);return;}
+      try{
+        await apiClient.stores.update(eId,{name:eN.trim()});
+        const all=await apiClient.stores.getAll();
+        setStores(all);
+        sEId(null);
+        toast("Updated");
+      }catch(e){toast(e.message,true);}    };
+  var addS=async function(){
+      if(!ns.id||!ns.name){toast("ID and Name required",true);return;}
+      if(stores.find(function(s){return s.id===ns.id;})){toast("ID exists",true);return;}
+      try{
+        await apiClient.stores.create({id:ns.id.trim(),name:ns.name.trim()});
+        const all=await apiClient.stores.getAll();
+        setStores(all);
+        sN({id:"",name:""});sS(false);
+        toast("Store added");
+      }catch(e){toast(e.message,true);}    };
+  var rmS=async function(id){
+      if(stores.length<=1){toast("Keep at least 1",true);return;}
+      try{
+        await apiClient.stores.delete(id);
+        const all=await apiClient.stores.getAll();
+        setStores(all);
+        toast("Removed");
+      }catch(e){toast(e.message,true);}    };
   return(<div><div style={S.card}><div style={S.cH}><div><div style={S.t}>Store Locations</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sS(true);}}>+ Add</button></div>
     <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>ID</th><th style={S.th}>Name</th><th style={Object.assign({},S.th,{width:140})}>Actions</th></tr></thead><tbody>
       {stores.map(function(s){return(<tr key={s.id}><td style={S.tm}>{s.id}</td><td style={S.td}>{eId===s.id?<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={Object.assign({},S.inp,{flex:1})} value={eN} onChange={function(e){sEN(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter")saveE();}}/><button style={Object.assign({},S.b,S.bG,{padding:"3px 8px"})} onClick={saveE}>Save</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px"})} onClick={function(){sEId(null);}}>X</button></div>:<span style={{fontWeight:500}}>{s.name}</span>}</td>
@@ -688,8 +867,21 @@ function Reports({orders,items,stores}){
 function Settings({stores,schedule,setSchedule,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo}){
   var _e=useState(null),ed=_e[0],sEd=_e[1];var _v=useState(0),eV=_v[0],sEV=_v[1];
   var _em=useState(null),emT=_em[0],sEmT=_em[1];var _emV=useState(""),emV=_emV[0],sEmV=_emV[1];
-  var saveDay=function(){var conflict=Object.keys(schedule).find(function(k){return k!==ed&&schedule[k]===eV;});if(conflict){toast("Day used by Order "+conflict,true);return;}setSchedule(function(p){var n=Object.assign({},p);n[ed]=eV;return n;});toast("Schedule updated");sEd(null);};
-  var saveMsg=function(){setOrderMsgs(function(p){var n=Object.assign({},p);n[emT]=emV;return n;});toast("Message updated for Order "+emT);sEmT(null);};
+  var saveDay=async function(){
+      var conflict=Object.keys(schedule).find(function(k){return k!==ed&&schedule[k]===eV;});if(conflict){toast("Day used by Order "+conflict,true);return;}    
+      try{
+        await apiClient.settings.updateSchedule(ed,eV);
+        setSchedule(function(p){var n=Object.assign({},p);n[ed]=eV;return n;});
+        toast("Schedule updated");
+        sEd(null);
+      }catch(e){toast(e.message,true);}  };
+  var saveMsg=async function(){
+      try{
+        await apiClient.settings.updateMessage(emT, emV);
+        setOrderMsgs(function(p){var n=Object.assign({},p);n[emT]=emV;return n;});
+        toast("Message updated for Order "+emT);
+        sEmT(null);
+      }catch(e){toast(e.message,true);}  };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>
       <div style={Object.assign({},S.tw,{marginTop:4})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Day</th><th style={Object.assign({},S.th,{width:120})}>Actions</th></tr></thead><tbody>
