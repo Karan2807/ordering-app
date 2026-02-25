@@ -49,10 +49,26 @@ transporter.verify((err, success) => {
 const router = express.Router();
 
 function getWeekKey() {
-  const today = new Date();
-  const day = today.getDate() - today.getDay() + (today.getDay() === 0 ? -6 : 1);
-  const week = Math.ceil((day + 1) / 7);
-  return `${today.getFullYear()}-W${String(week).padStart(2, '0')}`;
+  // Match frontend ISO-week logic so admin dashboard/consolidated keys line up.
+  const d = new Date();
+  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  dt.setUTCDate(dt.getUTCDate() + 4 - (dt.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((dt - yearStart) / 86400000 + 1) / 7);
+  return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function normalizeOrderItems(itemsInput, notesInput = {}) {
+  const itemsObj = itemsInput && typeof itemsInput === 'object' && !Array.isArray(itemsInput) ? itemsInput : {};
+  const notesObj = notesInput && typeof notesInput === 'object' && !Array.isArray(notesInput) ? notesInput : {};
+
+  return Object.entries(itemsObj)
+    .map(([itemCode, rawQty]) => {
+      const qty = Number(rawQty) || 0;
+      const note = typeof notesObj[itemCode] === 'string' ? notesObj[itemCode].trim() : '';
+      return { itemCode, quantity: qty, note };
+    })
+    .filter(({ quantity, note }) => quantity > 0 || note);
 }
 
 // Get orders for user
@@ -74,6 +90,10 @@ router.get('/', authMiddleware, async (req, res) => {
         acc[i.itemCode] = i.quantity;
         return acc;
       }, {}),
+      notes: (order.items || []).reduce((acc, i) => {
+        if (i.note) acc[i.itemCode] = i.note;
+        return acc;
+      }, {}),
       date: order.createdAt,
       itemCount: order.items ? order.items.length : 0,
     }));
@@ -88,7 +108,7 @@ router.get('/', authMiddleware, async (req, res) => {
 // Create or update order
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { type, items = [], status, storeId: bodyStoreId } = req.body;
+    const { type, items = {}, notes = {}, status, storeId: bodyStoreId } = req.body;
     // allow admin to specify a different store when creating/updating
     const storeId = req.user.role === 'admin' && bodyStoreId ? bodyStoreId : req.user.storeId;
     if (!type || !storeId) {
@@ -101,9 +121,7 @@ router.post('/', authMiddleware, async (req, res) => {
     if (order) {
       order.status = status;
       if (status === 'submitted') order.submittedAt = new Date();
-      order.items = Object.entries(items)
-        .filter(([_, qty]) => qty > 0)
-        .map(([itemCode, qty]) => ({ itemCode, quantity: qty }));
+      order.items = normalizeOrderItems(items, notes);
       await order.save();
     } else {
       const orderId = uuidv4();
@@ -114,9 +132,7 @@ router.post('/', authMiddleware, async (req, res) => {
         status,
         week: weekKey,
         submittedAt: status === 'submitted' ? new Date() : null,
-        items: Object.entries(items)
-          .filter(([_, qty]) => qty > 0)
-          .map(([itemCode, qty]) => ({ itemCode, quantity: qty })),
+        items: normalizeOrderItems(items, notes),
       });
       await order.save();
     }
@@ -163,12 +179,19 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
           itemsObj[i.itemCode] = i.quantity;
         });
       }
+      const notesObj = {};
+      if (order && order.items) {
+        order.items.forEach((i) => {
+          if (i.note) notesObj[i.itemCode] = i.note;
+        });
+      }
       response.push({
         id: store.id,
         name: store.name,
         order_id: order ? order.id : null,
         status: order ? order.status : null,
         items: itemsObj,
+        notes: notesObj,
       });
     }
 
@@ -197,7 +220,9 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
       body += `Store: ${store.name} (id: ${store.id})\n`;
       if (order && order.items && order.items.length) {
         order.items.forEach((i) => {
-          body += `  ${i.itemCode}: ${i.quantity}\n`;
+          body += `  ${i.itemCode}: ${i.quantity}`;
+          if (i.note) body += ` | note: ${i.note}`;
+          body += '\n';
         });
       } else {
         body += '  (no order)\n';

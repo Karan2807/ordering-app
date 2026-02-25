@@ -171,9 +171,17 @@ export default function App(){
   var _su=useState(INIT_SUPPLIERS),suppliers=_su[0],setSuppliers=_su[1];
   var _lg=useState(null),logo=_lg[0],setLogo=_lg[1];
   var tR=useRef(null);var logoRef=useRef(null);
+  var saveLogoToServer = async function(dataUrl){
+    try{
+      await apiClient.settings.updateLogo(dataUrl);
+    }catch(err){
+      console.error('logo save error',err);
+      toast('Unable to save logo',true);
+    }
+  };
   var toast=useCallback(function(m,e){sTM(m);sTE(!!e);if(tR.current)clearTimeout(tR.current);tR.current=setTimeout(function(){sTM("");},2500);},[]);
   var setItems=useCallback(function(up){setItemsR(function(p){var n=typeof up==="function"?up(p):up;return sortItems(n);});},[]);
-  var handleLogo=function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");};r.readAsDataURL(f);e.target.value="";};
+  var handleLogo=function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");saveLogoToServer(ev.target.result);};r.readAsDataURL(f);e.target.value="";};
   var aot=activeType(schedule);var isA=user&&user.role==="admin";
   if(!user)return(<Fragment><input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleLogo}/><Login users={users} onLogin={function(u){setUser(u);setPage("dashboard");}} logo={logo}/></Fragment>);
   var sN=user.storeId?(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId:"All Stores";
@@ -762,8 +770,43 @@ function Reports({orders,items,stores}){
 function Settings({stores,schedule,setSchedule,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo}){
   var _e=useState(null),ed=_e[0],sEd=_e[1];var _v=useState(0),eV=_v[0],sEV=_v[1];
   var _em=useState(null),emT=_em[0],sEmT=_em[1];var _emV=useState(""),emV=_emV[0],sEmV=_emV[1];
-  var saveDay=function(){var conflict=Object.keys(schedule).find(function(k){return k!==ed&&schedule[k]===eV;});if(conflict){toast("Day used by Order "+conflict,true);return;}setSchedule(function(p){var n=Object.assign({},p);n[ed]=eV;return n;});toast("Schedule updated");sEd(null);};
-  var saveMsg=function(){setOrderMsgs(function(p){var n=Object.assign({},p);n[emT]=emV;return n;});toast("Message updated for Order "+emT);sEmT(null);};
+  var saveDay=async function(){
+    // prevent duplicate days locally
+    var conflict=Object.keys(schedule).find(function(k){return k!==ed&&schedule[k]===eV;});
+    if(conflict){
+      toast("Day used by Order "+conflict,true);
+      return;
+    }
+    try{
+      const resp = await apiClient.settings.updateSchedule(ed,eV);
+      if(resp && resp.settings){
+        // sync with server-provided map
+        setSchedule({
+          A: resp.settings.A != null ? resp.settings.A : schedule.A,
+          B: resp.settings.B != null ? resp.settings.B : schedule.B,
+          C: resp.settings.C != null ? resp.settings.C : schedule.C,
+        });
+      } else {
+        setSchedule(function(p){var n=Object.assign({},p);n[ed]=eV;return n;});
+      }
+      toast("Schedule updated");
+      sEd(null);
+    }catch(err){
+      console.error('saveDay error',err);
+      toast("Failed to save schedule",true);
+    }
+  };
+  var saveMsg=async function(){
+    try{
+      await apiClient.settings.updateMessage(emT, emV);
+      setOrderMsgs(function(p){var n=Object.assign({},p);n[emT]=emV;return n;});
+      toast("Message updated for Order "+emT);
+      sEmT(null);
+    }catch(err){
+      console.error('saveMsg error',err);
+      toast("Failed to update message",true);
+    }
+  };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>
       <div style={Object.assign({},S.tw,{marginTop:4})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Day</th><th style={Object.assign({},S.th,{width:120})}>Actions</th></tr></thead><tbody>

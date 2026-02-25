@@ -16,11 +16,20 @@
 //    custom frontend domain (e.g. apnabazarstoresordering.com) still works
 //    even if the env var was accidentally omitted.
 const API_BASE_URL = (() => {
+  // explicit override always takes precedence (used in preview/dev via env var)
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
 
   const origin = window.location.origin;
+  // when the app is running on localhost during development we want to
+  // talk to the local backend automatically.  This is the typical
+  // case for `npm run dev` so you don't have to remember to set
+  // VITE_API_URL every time.
+  if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+    return 'http://localhost:5000/api';
+  }
+
   // if the origin already points at the Render deployment, use it directly
   if (origin.includes('ordering-app-uu24.onrender.com')) {
     return `${origin}/api`;
@@ -33,6 +42,9 @@ const API_BASE_URL = (() => {
 })();
 
 let authToken = localStorage.getItem('authToken');
+
+// log base URL once so developers can see which backend is being targeted
+console.log('API client initialized with base URL:', API_BASE_URL);
 
 export const apiClient = {
   setToken(token) {
@@ -319,6 +331,14 @@ export const apiClient = {
       return apiClient.request(`/settings/message/${type}`, {
         method: 'PATCH',
         body: JSON.stringify({ message }),
+      });
+    },
+
+    // logo may be a base64 data URL string or null
+    updateLogo(logo) {
+      return apiClient.request('/settings/logo', {
+        method: 'PATCH',
+        body: JSON.stringify({ logo }),
       });
     },
   },

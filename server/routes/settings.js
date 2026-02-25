@@ -8,15 +8,38 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const docs = await Setting.find().lean();
-    const settings = {};
+    const schedules = {};
+    const messages = {};
+    let logoValue = null;
+
     docs.forEach((row) => {
       if (row.key.startsWith('schedule')) {
-        settings[row.key.replace('schedule', '')] = parseInt(row.value);
+        const num = parseInt(row.value);
+        schedules[row.key.replace('schedule', '')] = Number.isNaN(num) ? null : num;
       } else if (row.key.startsWith('message')) {
-        settings[row.key.replace('message', '')] = row.value;
+        messages[row.key.replace('message', '')] = row.value;
+      } else if (row.key === 'logo') {
+        // store raw base64 string (or empty) for client
+        logoValue = row.value || null;
       }
     });
-    res.json(settings);
+
+    // ensure A/B/C always exist and persist defaults when missing
+    const defaultSched = { A: 0, B: 1, C: 5 };
+    for (const t of ['A', 'B', 'C']) {
+      if (!(t in schedules) || schedules[t] === null) {
+        schedules[t] = schedules[t] != null ? schedules[t] : defaultSched[t];
+        await Setting.updateOne(
+          { key: `schedule${t}` },
+          { value: schedules[t].toString() },
+          { upsert: true }
+        );
+      }
+    }
+
+    const result = { schedule: schedules, message: messages, logo: logoValue };
+    console.log('GET /settings returning', result);
+    res.json(result);
   } catch (err) {
     console.error('Get settings error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -24,6 +47,10 @@ router.get('/', async (req, res) => {
 });
 
 // Update schedule (admin only)
+// NOTE: use upsert so the setting is created when it doesn't yet exist.  Previously
+// calling this endpoint when the schedule key was missing would silently succeed but
+// not persist anything, which is why the UI would revert back to "Unset" after a
+// refresh.
 router.patch('/schedule/:type', authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -36,9 +63,26 @@ router.patch('/schedule/:type', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Invalid day' });
     }
 
-    await Setting.updateOne({ key: `schedule${req.params.type}` }, { value: day.toString() });
+    console.log('PATCH /settings/schedule', req.params.type, '->', day);
+    await Setting.updateOne(
+      { key: `schedule${req.params.type}` },
+      { value: day.toString() },
+      { upsert: true }
+    );
 
-    res.json({ success: true });
+    // return entire settings object so frontend can stay in sync
+    const docs2 = await Setting.find().lean();
+    const schedules = {};
+    const messages = {};
+    docs2.forEach((row) => {
+      if (row.key.startsWith('schedule')) {
+        var num = parseInt(row.value);
+        schedules[row.key.replace('schedule', '')] = Number.isNaN(num) ? null : num;
+      } else if (row.key.startsWith('message')) {
+        messages[row.key.replace('message', '')] = row.value;
+      }
+    });
+    res.json({ success: true, settings: { schedule: schedules, message: messages } });
   } catch (err) {
     console.error('Update schedule error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -46,6 +90,7 @@ router.patch('/schedule/:type', authMiddleware, async (req, res) => {
 });
 
 // Update message (admin only)
+// also use upsert so creating a new message works without needing a prior record
 router.patch('/message/:type', authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -58,7 +103,11 @@ router.patch('/message/:type', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Message required' });
     }
 
-    await Setting.updateOne({ key: `message${req.params.type}` }, { value: message });
+    await Setting.updateOne(
+      { key: `message${req.params.type}` },
+      { value: message },
+      { upsert: true }
+    );
 
     res.json({ success: true });
   } catch (err) {
@@ -67,4 +116,29 @@ router.patch('/message/:type', authMiddleware, async (req, res) => {
   }
 });
 
+// Update logo (admin only)
+// setting value stored as base64 string; empty/null means remove
+router.patch('/logo', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const { logo } = req.body;
+    // allow null/empty to clear
+    if (logo == null) {
+      await Setting.deleteOne({ key: 'logo' });
+      return res.json({ success: true, logo: null });
+    }
+    // ensure size limit enforced on client
+    await Setting.updateOne(
+      { key: 'logo' },
+      { value: logo },
+      { upsert: true }
+    );
+    res.json({ success: true, logo });
+  } catch (err) {
+    console.error('Update logo error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 export default router;

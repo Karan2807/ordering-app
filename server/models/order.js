@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 const orderItemSchema = new mongoose.Schema({
   itemCode: { type: String, required: true },
   quantity: { type: Number, default: 0 },
+  note: { type: String, default: '' },
 });
 
 const orderSchema = new mongoose.Schema({

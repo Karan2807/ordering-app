@@ -24,7 +24,7 @@ requiredEnv.forEach((key) => {
 });
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = Number(process.env.PORT) || 5000;
 
 // CORS configuration: only allow client origins listed in env + localhost during development
 const allowedOrigins = [];
@@ -85,13 +85,29 @@ app.get('/health', (req, res) => {
 });
 
 // Initialize database and start server
-async function start() {
+async function start(port = PORT) {
+  const listenPort = Number(port);
+  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) {
+    console.error(`Invalid port: ${port}`);
+    process.exit(1);
+  }
   try {
     await initializeDatabase();
     await seedDatabase();
-    
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on port ${PORT}`);
+
+    const serverInstance = app.listen(listenPort, "0.0.0.0", () => {
+      console.log(`Server running on port ${listenPort}`);
+    });
+
+    serverInstance.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`Port ${listenPort} in use, trying ${listenPort + 1}...`);
+        // try next port
+        start(listenPort + 1);
+      } else {
+        console.error('Server error:', err);
+        process.exit(1);
+      }
     });
   } catch (err) {
     console.error('Failed to start server:', err);
