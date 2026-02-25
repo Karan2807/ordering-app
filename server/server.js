@@ -31,17 +31,23 @@ const allowedOrigins = [];
 if (process.env.CLIENT_ORIGIN) {
   allowedOrigins.push(process.env.CLIENT_ORIGIN);
 }
+// during development we accept any localhost host/port combination
+const devLocalRegexp = /^https?:\/\/localhost(:\d+)?$/;
+
 if (process.env.NODE_ENV !== 'production') {
-  // allow typical dev hosts
-  allowedOrigins.push('http://localhost:5173', 'http://localhost:5000');
+  // also allow the backend itself
+  allowedOrigins.push('http://localhost:5000');
 }
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // allow requests with no origin (curl, mobile apps, etc.)
+      // allow requests with no origin (curl, mobile apps, Postman, etc.)
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+      if (allowedOrigins.includes(origin) || devLocalRegexp.test(origin)) {
+        return callback(null, true);
+      }
+      console.warn(`CORS denied for origin: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     },
     credentials: false,

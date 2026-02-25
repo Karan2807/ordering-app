@@ -1,8 +1,13 @@
 # OrderManager — GoDaddy WordPress Deployment Guide
 
+**Version 3.1.0**
+_Last updated February 2026_
+
 ## Overview
 
 Your OrderManager app is a React application that needs to be **built** into static files (HTML, JS, CSS), then uploaded to a subdirectory on your GoDaddy hosting. It will run **independently** from WordPress at a URL like `yourdomain.com/orders/`.
+
+> ⚙️ The frontend communicates with a backend API; set the API base URL in `VITE_API_URL` before building. The backend itself is configured via environment variables (see `/server/.env.example`).
 
 ---
 
@@ -35,10 +40,11 @@ cd ordermanager-deploy
 npm install
 ```
 
-4. **Edit the base path** in `vite.config.js` (line 9):
+4. **Edit the base path** in `vite.config.js` (line 9) if you intend to deploy under a folder other than `/orders/`:
 ```js
 base: '/orders/',   // ← Change this to match your desired URL path
 ```
+Also be sure to set `VITE_API_URL` in your `.env` before running the build (e.g. `VITE_API_URL=https://api.yourdomain.com/api`).
 For example:
 | You want the URL to be...         | Set base to...  |
 |-----------------------------------|-----------------|

@@ -7,7 +7,7 @@ import react from '@vitejs/plugin-react'
 // Example: if you upload to root (public_html/) → use '/'
 export default defineConfig({
   plugins: [react()],
-  base: '/orders/',
+  base: '/',
   build: {
     outDir: 'dist',
     sourcemap: false,
