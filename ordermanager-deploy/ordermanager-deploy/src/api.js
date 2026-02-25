@@ -8,11 +8,29 @@
 // the same host.  (The previous hardcoded localhost value caused
 // "Failed to fetch" errors in production when VITE_API_URL was
 // not provided.)
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL ||
-  // runtime look‑up falls back to the current origin + `/api`
-  // which works when the backend is served from the same domain.
-  `${window.location.origin}/api`;
+// Determine the backend URL.  Priority order:
+// 1. VITE_API_URL (build‑time environment - *always* set this for production)
+// 2. If the frontend is being served from the same host as the backend,
+//    talk to `origin + '/api'`.
+// 3. Otherwise fall back to the known Render backend address so that a
+//    custom frontend domain (e.g. apnabazarstoresordering.com) still works
+//    even if the env var was accidentally omitted.
+const API_BASE_URL = (() => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+
+  const origin = window.location.origin;
+  // if the origin already points at the Render deployment, use it directly
+  if (origin.includes('ordering-app-uu24.onrender.com')) {
+    return `${origin}/api`;
+  }
+
+  // lastly, default to the Render URL; this ensures the app continues
+  // working when you deploy the frontend somewhere else and forget to set
+  // VITE_API_URL.
+  return 'https://ordering-app-uu24.onrender.com/api';
+})();
 
 let authToken = localStorage.getItem('authToken');
 
