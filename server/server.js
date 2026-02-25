@@ -26,17 +26,20 @@ requiredEnv.forEach((key) => {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS configuration: only allow client origin plus localhost during development
+// CORS configuration: only allow client origins listed in env + localhost during development
 const allowedOrigins = [];
 
-// permit a client URL provided via environment; useful for Render or other hosts
+// permit one or more client URLs provided via environment; useful for Render or other hosts.
+// multiple origins can be comma separated.
 if (process.env.CLIENT_ORIGIN) {
-  allowedOrigins.push(process.env.CLIENT_ORIGIN);
+  process.env.CLIENT_ORIGIN.split(',').forEach((o) => {
+    const trimmed = o.trim();
+    if (trimmed) allowedOrigins.push(trimmed);
+  });
 }
 
-// for convenience, automatically allow our Render frontend when running in production
-// this means you can deploy the frontend to "https://ordering-app-uu24.onrender.com" without
-// needing to set CLIENT_ORIGIN, although it's still recommended for flexibility.
+// always allow the official Render frontend URL when in production; this helps
+// when deploying the backend by itself without remembering CLIENT_ORIGIN.
 if (process.env.NODE_ENV === 'production') {
   allowedOrigins.push('https://ordering-app-uu24.onrender.com');
 }
