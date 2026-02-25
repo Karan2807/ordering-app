@@ -130,10 +130,12 @@ export const apiClient = {
       return apiClient.request(`/orders/consolidated/${type}`);
     },
 
-    emailConsolidated(type, email) {
+    emailConsolidated(type, email, supplierName) {
+      const body = { email };
+      if (supplierName) body.supplierName = supplierName;
       return apiClient.request(`/orders/consolidated/${type}/email`, {
         method: 'POST',
-        body: JSON.stringify({ email }),
+        body: JSON.stringify(body),
       });
     },
 
@@ -243,6 +245,32 @@ export const apiClient = {
 
     delete(id) {
       return apiClient.request(`/notifications/${id}`, { method: 'DELETE' });
+    },
+  },
+
+  // Supplier orders (history/log)
+  supplierOrders: {
+    getAll() {
+      return apiClient.request('/supplier-orders');
+    },
+    create(data) {
+      return apiClient.request('/supplier-orders', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+  },
+
+  // Supplier orders (history/log)
+  supplierOrders: {
+    getAll() {
+      return apiClient.request('/supplier-orders');
+    },
+    create(data) {
+      return apiClient.request('/supplier-orders', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
     },
   },
 

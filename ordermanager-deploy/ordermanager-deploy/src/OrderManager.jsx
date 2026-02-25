@@ -429,9 +429,27 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
   var _v=useState(aot||"A"),vt=_v[0],sVt=_v[1];
   var _e=useState(null),eSt=_e[0],sES=_e[1];var _eq=useState({}),eQ=_eq[0],sEQ=_eq[1];
   var _em=useState(""),eEmail=_em[0],sEmail=_em[1];
+  var _es=useState(""),eSupplier=_es[0],sSupplier=_es[1];
   var _emg=useState(false),eMailing=_emg[0],sEMailing=_emg[1];
+  var _logs=useState([]),logs=_logs[0],setLogs=_logs[1];
   var dk=dateKey(vt);
-  var startE=function(sid){var k=sid+"_"+dk;var ex=orders[k]&&orders[k].items?orders[k].items:{};var q={};items.forEach(function(it){q[it.code]=ex[it.code]||0;});sEQ(q);sES(sid);};
+  
+  // finished status map derived from stored history
+  const finishedMap = useMemo(() => {
+    const m = {};
+    logs.forEach(l => { if (l.type) m[l.type] = true; });
+    return m;
+  }, [logs]);
+  const isFinished = !!finishedMap[vt];
+
+  // load supplier order history when component mounts
+  useEffect(function(){
+    let cancelled=false;
+    apiClient.supplierOrders.getAll().then(h=>{if(!cancelled) setLogs(h||[]);}).catch(()=>{});
+    return ()=>{cancelled=true;};
+  },[]);
+
+  var startE=function(sid){if(isFinished) return;var k=sid+"_"+dk;var ex=orders[k]&&orders[k].items?orders[k].items:{};var q={};items.forEach(function(it){q[it.code]=ex[it.code]||0;});sEQ(q);sES(sid);};
   var saveE=async function(){
       if(!eSt) return;
       try{
@@ -444,29 +462,60 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
       }catch(e){toast(e.message,true);}  };
   var cancelE=function(){sES(null);sEQ({});};
   var sendEmail=async function(){
-    if(!eEmail) return;
+    if(!eEmail || !eSupplier) return;
+    if (isFinished) return;
     sEMailing(true);
     try{
-      await apiClient.orders.emailConsolidated(vt,eEmail);
+      await apiClient.orders.emailConsolidated(vt,eEmail, eSupplier);
       toast("Email sent to " + eEmail);
+      // record history via supplierOrders API
+      const totalObj = {};
+      // recompute consolidated totals for email log (don't rely on `totals` variable)
+      items.forEach(function(it){
+        var sum=0;
+        stores.forEach(function(st){
+          var k=st.id+"_"+dk;
+          sum += (orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;
+        });
+        if(sum>0) totalObj[it.code]=sum;
+      });
+      try{
+        await apiClient.supplierOrders.create({
+          supplierName: eSupplier,
+          email: eEmail,
+          type: vt,
+          week: dk,
+          items: totalObj,
+        });
+        // update local logs state
+        setLogs(l=>[{supplierName:eSupplier,email:eEmail,type:vt,week:dk,items:totalObj,sentAt:new Date().toISOString()}].concat(l));
+      }catch(recErr){console.error('history log failed',recErr);}      
       sEmail("");
+      sSupplier("");
     }catch(e){toast(e.message,true);}finally{sEMailing(false);}  };
   return(<div>
+    {logs.length>0&&(<div style={Object.assign({},S.card,{marginBottom:12})}>
+      <div style={S.cH}><div><div style={S.t}>Sent Supplier Orders</div><div style={S.d}>{logs.length} records</div></div></div>
+      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Type</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th></tr></thead><tbody>
+        {logs.map(function(r){return(<tr key={r.sentAt}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td></tr>);})}
+      </tbody></table></div></div>)}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
-      <div style={S.tabs}>{["A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);cancelE();}}>Order {t}</button>;})}</div>
+      <div style={S.tabs}>{["A","B","C"].map(function(t){var done = !!finishedMap[t];return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);cancelE();}}>{done?`Order ${t} ✓`:`Order ${t}`}</button>;})}</div>
       <div style={{display:"flex",gap:5}}>{eSt&&<Fragment><button style={Object.assign({},S.b,S.bG)} onClick={saveE}>Save</button><button style={Object.assign({},S.b,S.bS)} onClick={cancelE}>Cancel</button></Fragment>}</div>
     </div>
     {eSt&&<div style={S.nI}>Editing: {(stores.find(function(s){return s.id===eSt;})||{}).name}</div>}
+    {isFinished&&<div style={Object.assign({},S.nI,{color:'#34D399'})}>Order {vt} has been sent and is finished; no further edits allowed.</div>}
     <div style={Object.assign({},S.card,{padding:0})}>
       <div style={{padding:"12px 14px",borderBottom:"1px solid #2A2E3B",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div><div style={S.t}>Consolidated Order {vt}</div><div style={S.d}>Click edit icon on store column to modify</div></div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <input style={S.inp} type="email" placeholder="email address" value={eEmail||""} onChange={function(e){sEmail(e.target.value);}} />
-          <button style={Object.assign({},S.b,S.bP)} onClick={sendEmail} disabled={!eEmail||eMailing}>{eMailing?"Sending...":"Email"}</button>
+          <input style={S.inp} placeholder="supplier name" value={eSupplier||""} onChange={function(e){sSupplier(e.target.value);}} disabled={isFinished} />
+          <input style={S.inp} type="email" placeholder="email address" value={eEmail||""} onChange={function(e){sEmail(e.target.value);}} disabled={isFinished} />
+          <button style={Object.assign({},S.b,S.bP)} onClick={sendEmail} disabled={!eEmail||!eSupplier||eMailing||isFinished}>{eMailing?"Sending...":"Email"}</button>
         </div>
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th>
-        {stores.map(function(st){return(<th key={st.id} style={Object.assign({},S.th,{textAlign:"center",minWidth:80})}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:2}}><span>{st.name.split(" ")[0]}</span><button style={Object.assign({},S.eB,eSt===st.id?{color:"#4F8CFF"}:{})} onClick={function(){eSt===st.id?cancelE():startE(st.id);}}><Ic type="edit" size={11}/></button></div></th>);})}<th style={Object.assign({},S.th,{textAlign:"center",background:"#272B38"})}>Total</th></tr></thead>
+        {stores.map(function(st){return(<th key={st.id} style={Object.assign({},S.th,{textAlign:"center",minWidth:80})}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:2}}><span>{st.name.split(" ")[0]}</span><button disabled={isFinished} style={Object.assign({},S.eB,eSt===st.id?{color:"#4F8CFF"}:{},isFinished?{opacity:0.4,cursor:'not-allowed'}:{})} onClick={function(){if(isFinished) return; eSt===st.id?cancelE():startE(st.id);}}><Ic type="edit" size={11}/></button></div></th>);})}<th style={Object.assign({},S.th,{textAlign:"center",background:"#272B38"})}>Total</th></tr></thead>
         <tbody>{items.map(function(it){
           var qs=stores.map(function(st){if(eSt===st.id)return eQ[it.code]||0;var k=st.id+"_"+dk;return orders[k]&&orders[k].items?(orders[k].items[it.code]||0):0;});
           var tot=qs.reduce(function(a,b){return a+b;},0);
@@ -483,14 +532,24 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
 function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
   var _v=useState(aot||"A"),vt=_v[0],sVt=_v[1];
   var _sent=useState({}),sent=_sent[0],sSent=_sent[1];
+  var _sending=useState({}),sending=_sending[0],sSending=_sending[1];
+  var _hist=useState([]),history=_hist[0],setHistory=_hist[1];
   var dk=dateKey(vt);
+
+  useEffect(function(){
+    let cancelled=false;
+    apiClient.supplierOrders.getAll().then(h=>{if(!cancelled) setHistory(h||[]);}).catch(()=>{});
+    return ()=>{cancelled=true;};
+  },[]);
   // Compute totals per item across all stores
-  var totals=useMemo(function(){var t={};items.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;});if(sum>0)t[it.code]=sum;});return t;},[items,stores,orders,dk]);
+  const itemList = Array.isArray(items) ? items : [];
+  const supList = Array.isArray(suppliers) ? suppliers : [];
+  var totals=useMemo(function(){var t={};itemList.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;});if(sum>0)t[it.code]=sum;});return t;},[itemList,stores,orders,dk]);
   // Group by supplier
-  var supplierGroups=useMemo(function(){return suppliers.map(function(sup){var supItems=items.filter(function(it){return sup.items.indexOf(it.code)>=0&&totals[it.code]>0;});return{supplier:sup,items:supItems};}).filter(function(g){return g.items.length>0;});},[suppliers,items,totals]);
+  var supplierGroups=useMemo(function(){return supList.map(function(sup){var supItems=itemList.filter(function(it){return (sup.items||[]).indexOf(it.code)>=0&&totals[it.code]>0;});return{supplier:sup,items:supItems};}).filter(function(g){return g.items.length>0;});},[supList,itemList,totals]);
   // Unassigned items
-  var assigned={};suppliers.forEach(function(s){s.items.forEach(function(c){assigned[c]=true;});});
-  var unassigned=items.filter(function(it){return totals[it.code]>0&&!assigned[it.code];});
+  var assigned={};supList.forEach(function(s){(s.items||[]).forEach(function(c){assigned[c]=true;});});
+  var unassigned=itemList.filter(function(it){return totals[it.code]>0&&!assigned[it.code];});
 
   var sendEmail=function(sup,supItems){
     var subject="Purchase Order - Order "+vt+" - "+new Date().toLocaleDateString();
@@ -517,6 +576,11 @@ function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
   var allSent=supplierGroups.every(function(g){return sent[g.supplier.id+"_"+vt];});
 
   return(<div>
+    {history.length>0&&(<div style={Object.assign({},S.card,{marginBottom:12})}>
+      <div style={S.cH}><div><div style={S.t}>Sent Supplier Orders</div><div style={S.d}>{history.length} records</div></div></div>
+      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Type</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th></tr></thead><tbody>
+        {history.map(function(r){return(<tr key={r._id||r.sentAt}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td></tr>);})}
+      </tbody></table></div></div>)}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
       <div style={S.tabs}>{["A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);}}>Order {t}</button>;})}</div>
       {allSent&&supplierGroups.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
@@ -663,6 +727,8 @@ function UserMgmt({users,setUsers,toast,stores}){
 
 /* ═══ SUPPLIER MANAGEMENT ═══ */
 function SupplierMgmt({suppliers,setSuppliers,items,toast}){
+  const supList = Array.isArray(suppliers) ? suppliers : [];
+  const itemList = Array.isArray(items) ? items : [];
   var _a=useState(false),shA=_a[0],sA=_a[1];
   var _e=useState(null),eId=_e[0],sEId=_e[1];
   var _ed=useState(null),edSup=_ed[0],sEdSup=_ed[1];
@@ -670,7 +736,7 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
   var _n=useState({id:"",name:"",email:"",phone:"",items:[]}),nS=_n[0],sNS=_n[1];
   var add=async function(){
       if(!nS.id||!nS.name||!nS.email){toast("ID, Name, Email required",true);return;}
-      if(suppliers.find(function(s){return s.id===nS.id;})){toast("ID exists",true);return;}
+      if(supList.find(function(s){return s.id===nS.id;})){toast("ID exists",true);return;}
       try{
         await apiClient.suppliers.create(nS);
         const all=await apiClient.suppliers.getAll();
@@ -699,11 +765,11 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
         sEdSup(null);
         toast("Supplier updated");
       }catch(e){toast(e.message,true);}    };
-  var editSup=eId?suppliers.find(function(s){return s.id===eId;}):null;
+  var editSup=eId?supList.find(function(s){return s.id===eId;}):null;
   return(<div>
-    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Suppliers</div><div style={S.d}>{suppliers.length} suppliers</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
+    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Suppliers</div><div style={S.d}>{supList.length} suppliers</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>ID</th><th style={S.th}>Name</th><th style={S.th}>Email</th><th style={S.th}>Phone</th><th style={S.th}>Items</th><th style={Object.assign({},S.th,{width:200})}>Actions</th></tr></thead><tbody>
-        {suppliers.map(function(s){return(<tr key={s.id}><td style={S.tm}>{s.id}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{s.name}</td><td style={S.tm}>{s.email}</td><td style={S.tm}>{s.phone}</td><td style={S.td}><span style={Object.assign({},S.bg,S.bgB)}>{s.items.length} items</span></td>
+        {supList.map(function(s){return(<tr key={s.id}><td style={S.tm}>{s.id}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{s.name}</td><td style={S.tm}>{s.email}</td><td style={S.tm}>{s.phone}</td><td style={S.td}><span style={Object.assign({},S.bg,S.bgB)}>{(s.items||[]).length} items</span></td>
           <td style={S.td}><div style={{display:"flex",gap:3}}><button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){startEdit(s);}}>Edit</button><button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){sEId(s.id);}}>Assign</button><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(s.id);}}>Del</button></div></td></tr>);})}</tbody></table></div></div>
     {shA&&(<div style={S.ov} onClick={function(){sA(false);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Add Supplier</div>

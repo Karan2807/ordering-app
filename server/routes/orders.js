@@ -3,6 +3,7 @@ import { authMiddleware } from '../auth.js';
 import { v4 as uuidv4 } from 'uuid';
 import Order from '../models/order.js';
 import Store from '../models/store.js';
+import SupplierOrder from '../models/supplierOrder.js';
 import nodemailer from 'nodemailer';
 
 // create a simple transporter; configure via SMTP_URL env var or Gmail credentials
@@ -184,8 +185,9 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const { email } = req.body;
+    const { email, supplierName } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
+    // supplierName is optional here; frontend will send when available
 
     const weekKey = getWeekKey();
     const stores = await Store.find().sort({ id: 1 }).lean();
@@ -217,6 +219,38 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     if (err.response) {
       console.error('SMTP response:', err.response);
     }
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// supplier order history endpoints (admin only)
+router.get('/supplier-orders', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const list = await SupplierOrder.find().sort({ sentAt: -1 }).lean();
+    res.json(list);
+  } catch (err) {
+    console.error('Get supplier orders error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/supplier-orders', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const { supplierName, email, type, week, items } = req.body;
+    if (!supplierName || !email || !type || !week) {
+      return res.status(400).json({ error: 'Missing fields' });
+    }
+    const so = new SupplierOrder({ supplierName, email, type, week, items });
+    await so.save();
+    res.json({ success: true, supplierOrder: so });
+  } catch (err) {
+    console.error('Create supplier order error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
