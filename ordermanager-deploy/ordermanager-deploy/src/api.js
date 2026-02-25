@@ -2,7 +2,17 @@
  * API Client - Centralized HTTP client with token management
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// `VITE_API_URL` is injected at build time.  When omitted we
+// default to a sensible value so the frontend can talk to the
+// backend whether it's running locally or deployed to Render on
+// the same host.  (The previous hardcoded localhost value caused
+// "Failed to fetch" errors in production when VITE_API_URL was
+// not provided.)
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  // runtime look‑up falls back to the current origin + `/api`
+  // which works when the backend is served from the same domain.
+  `${window.location.origin}/api`;
 
 let authToken = localStorage.getItem('authToken');
 
