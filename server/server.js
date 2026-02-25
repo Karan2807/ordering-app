@@ -28,9 +28,19 @@ const PORT = process.env.PORT || 5000;
 
 // CORS configuration: only allow client origin plus localhost during development
 const allowedOrigins = [];
+
+// permit a client URL provided via environment; useful for Render or other hosts
 if (process.env.CLIENT_ORIGIN) {
   allowedOrigins.push(process.env.CLIENT_ORIGIN);
 }
+
+// for convenience, automatically allow our Render frontend when running in production
+// this means you can deploy the frontend to "https://ordering-app-uu24.onrender.com" without
+// needing to set CLIENT_ORIGIN, although it's still recommended for flexibility.
+if (process.env.NODE_ENV === 'production') {
+  allowedOrigins.push('https://ordering-app-uu24.onrender.com');
+}
+
 // during development we accept any localhost host/port combination
 const devLocalRegexp = /^https?:\/\/localhost(:\d+)?$/;
 
