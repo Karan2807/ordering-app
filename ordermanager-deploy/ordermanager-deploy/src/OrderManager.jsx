@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useRef, Fragment, useContext, useEffect } from "react";
+import * as XLSX from 'xlsx';
 import { AuthContext } from "./AuthContext";
 import { apiClient } from "./api";
 
@@ -636,7 +637,46 @@ function ItemMaster({items,setItems,toast}){
         setItems(sortItems(all));
         toast("Removed");
       }catch(e){toast(e.message,true);}    };
-  var hF=function(e){var f=e.target.files&&e.target.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){var p=parseCSV(ev.target.result);if(!p.length){toast("Could not parse CSV",true);return;}sC(p);sU(true);};r.readAsText(f);e.target.value="";};
+  var hF=function(e){var f=e.target.files&&e.target.files[0];if(!f)return;var name=f.name||"";var ext=name.split(".").pop().toLowerCase();
+    if(ext==="csv"||ext==="txt"){
+      var r=new FileReader();
+      r.onload=function(ev){var p=parseCSV(ev.target.result);if(!p.length){toast("Could not parse CSV",true);return;}sC(p);sU(true);};
+      r.readAsText(f);
+    }else if(ext==="xls"||ext==="xlsx"){
+      var r=new FileReader();
+      r.onload=function(ev){
+        try{
+          var data=new Uint8Array(ev.target.result);
+          var wb=XLSX.read(data,{type:'array'});
+          var ws=wb.Sheets[wb.SheetNames[0]];
+          if(!ws){toast("No sheets found in Excel file",true);return;}
+          var rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false});
+          if(rows.length<2){toast("Excel file has no data",true);return;}
+          var hdr=rows[0].map(function(h){return String(h).trim().toLowerCase().replace(/[^a-z0-9]/g,"");});
+          var ci=hdr.findIndex(function(h){return h.includes("code")||h==="sku";});
+          var ni=hdr.findIndex(function(h){return h.includes("name")||h==="item"||h==="description";});
+          var cti=hdr.findIndex(function(h){return h.includes("cat")||h==="group";});
+          var ui=hdr.findIndex(function(h){return h.includes("unit")||h==="uom";});
+          if(ni===-1){toast("Excel file missing 'name' column",true);return;}
+          var parsed=[];
+          for(var i=1;i<rows.length;i++){
+            var cols=rows[i];
+            if(!cols||!cols[ni]) continue;
+            parsed.push({
+              code:ci>=0&&cols[ci]?cols[ci]:"CSV"+String(i).padStart(4,"0"),
+              name:cols[ni],
+              category:cti>=0?(cols[cti]||""):"",
+              unit:ui>=0?(cols[ui]||""):"",
+            });
+          }
+          if(parsed.length===0){toast("No valid item rows in Excel file",true);return;}
+          sC(parsed);sU(true);
+        }catch(err){console.error('Excel parse error',err);toast("Could not parse Excel file",true);}      };
+      r.readAsArrayBuffer(f);
+    }else{
+      toast("Unsupported file type",true);
+    }
+    e.target.value="";};
   var cfU=async function(){if(!csv)return;try{await apiClient.items.bulkImport(csv,md);const all=await apiClient.items.getAll();setItems(sortItems(all));toast(md==="replace"?"Replaced "+csv.length+" items":"Merged "+csv.length+" items");}catch(e){toast(e.message,true);}sC(null);sU(false);};
   return(<div><div style={S.card}><div style={S.cH}>
     <div><div style={S.t}>Item Master</div><div style={S.d}>{items.length} items</div></div>
@@ -645,9 +685,9 @@ function ItemMaster({items,setItems,toast}){
       <select style={Object.assign({},S.inp,{width:130,padding:"5px 8px",fontSize:11})} value={sortBy} onChange={function(e){setSortBy(e.target.value);}}>
         <option value="category">Sort: Category</option><option value="name">Sort: Name</option><option value="code">Sort: Code</option>
       </select>
-      <button style={Object.assign({},S.b,S.bS)} onClick={function(){fR.current&&fR.current.click();}}>Upload CSV</button>
+      <button style={Object.assign({},S.b,S.bS)} onClick={function(){fR.current&&fR.current.click();}}>Upload CSV/Excel</button>
       <button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button>
-      <input ref={fR} type="file" accept=".csv,.txt" style={{display:"none"}} onChange={hF}/>
+      <input ref={fR} type="file" accept=".csv,.txt,.xls,.xlsx" style={{display:"none"}} onChange={hF}/>
     </div></div>
     <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{width:40})}></th></tr></thead>
       <tbody>{sorted.map(function(it){return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.unit||"-"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(it.code);}}>Del</button></td></tr>);})}{sorted.length===0&&<tr><td colSpan={5} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items</td></tr>}</tbody></table></div></div>

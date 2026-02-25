@@ -14,11 +14,40 @@ import storeRoutes from './routes/stores.js';
 import notificationRoutes from './routes/notifications.js';
 import settingsRoutes from './routes/settings.js';
 
+// make sure required environment variables are present
+const requiredEnv = ['MONGODB_URI', 'JWT_SECRET'];
+requiredEnv.forEach((key) => {
+  if (!process.env[key]) {
+    console.error(`❌ Required environment variable ${key} is not set. Aborting.`);
+    process.exit(1);
+  }
+});
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors());
+// CORS configuration: only allow client origin plus localhost during development
+const allowedOrigins = [];
+if (process.env.CLIENT_ORIGIN) {
+  allowedOrigins.push(process.env.CLIENT_ORIGIN);
+}
+if (process.env.NODE_ENV !== 'production') {
+  // allow typical dev hosts
+  allowedOrigins.push('http://localhost:5173', 'http://localhost:5000');
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // allow requests with no origin (curl, mobile apps, etc.)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error('Not allowed by CORS'));
+    },
+    credentials: false,
+    optionsSuccessStatus: 200,
+  })
+);
 app.use(express.json());
 
 // Routes
@@ -43,7 +72,7 @@ async function start() {
     await seedDatabase();
     
     app.listen(PORT, () => {
-      console.log(`✓ Server running on http://localhost:${PORT}`);
+      console.log(`✓ Server listening on port ${PORT}`);
     });
   } catch (err) {
     console.error('Failed to start server:', err);

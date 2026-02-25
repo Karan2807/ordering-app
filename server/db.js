@@ -3,7 +3,11 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/ordermanager';
+const mongoUri = process.env.MONGODB_URI;
+if (!mongoUri) {
+  console.error('❌ MONGODB_URI is not set. Cannot connect to database.');
+  process.exit(1);
+}
 
 mongoose.set('strictQuery', false); // optional to silence deprecation warnings
 
