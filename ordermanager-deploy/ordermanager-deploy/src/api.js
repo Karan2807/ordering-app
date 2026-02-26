@@ -211,6 +211,19 @@ export const apiClient = {
         body: JSON.stringify({ password }),
       });
     },
+    getRegistrationRequests() {
+      return apiClient.request('/users/registration-requests');
+    },
+    approveRegistrationRequest(requestId) {
+      return apiClient.request(`/users/registration-requests/${requestId}/approve`, {
+        method: 'POST',
+      });
+    },
+    rejectRegistrationRequest(requestId) {
+      return apiClient.request(`/users/registration-requests/${requestId}/reject`, {
+        method: 'POST',
+      });
+    },
   },
 
   // Suppliers
@@ -291,25 +304,17 @@ export const apiClient = {
   // Supplier orders (history/log)
   supplierOrders: {
     getAll() {
-      return apiClient.request('/supplier-orders');
+      return apiClient.request('/orders/supplier-orders');
     },
     create(data) {
-      return apiClient.request('/supplier-orders', {
+      return apiClient.request('/orders/supplier-orders', {
         method: 'POST',
         body: JSON.stringify(data),
       });
     },
-  },
-
-  // Supplier orders (history/log)
-  supplierOrders: {
-    getAll() {
-      return apiClient.request('/supplier-orders');
-    },
-    create(data) {
-      return apiClient.request('/supplier-orders', {
-        method: 'POST',
-        body: JSON.stringify(data),
+    reopen(id) {
+      return apiClient.request(`/orders/supplier-orders/${id}/reopen`, {
+        method: 'PATCH',
       });
     },
   },
@@ -339,6 +344,12 @@ export const apiClient = {
       return apiClient.request('/settings/logo', {
         method: 'PATCH',
         body: JSON.stringify({ logo }),
+      });
+    },
+    updateManualOpen(type) {
+      return apiClient.request('/settings/manual-open', {
+        method: 'PATCH',
+        body: JSON.stringify({ type }),
       });
     },
   },

@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import Order from '../models/order.js';
 import Store from '../models/store.js';
 import SupplierOrder from '../models/supplierOrder.js';
+import Item from '../models/item.js';
 import nodemailer from 'nodemailer';
 
 // create a simple transporter; configure via SMTP_URL env var or Gmail credentials
@@ -47,6 +48,8 @@ transporter.verify((err, success) => {
 });
 
 const router = express.Router();
+const displayOrderItemCode = (code) =>
+  String(code || '').startsWith('XLS::') ? String(code).slice(5) : String(code || '');
 
 function getWeekKey() {
   // Match frontend ISO-week logic so admin dashboard/consolidated keys line up.
@@ -56,6 +59,24 @@ function getWeekKey() {
   const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
   const week = Math.ceil(((dt - yearStart) / 86400000 + 1) / 7);
   return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function getIsoWeekKeyForDate(value) {
+  const d = new Date(value);
+  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  dt.setUTCDate(dt.getUTCDate() + 4 - (dt.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((dt - yearStart) / 86400000 + 1) / 7);
+  return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+async function findCurrentWeekOrder(storeId, type, weekKey) {
+  const exact = await Order.findOne({ storeId, type, week: weekKey }).lean();
+  if (exact) return exact;
+  const latest = await Order.findOne({ storeId, type }).sort({ createdAt: -1 }).lean();
+  if (!latest) return null;
+  const latestWeek = getIsoWeekKeyForDate(latest.createdAt || latest.submittedAt || new Date());
+  return latestWeek === weekKey ? latest : null;
 }
 
 function normalizeOrderItems(itemsInput, notesInput = {}) {
@@ -69,6 +90,83 @@ function normalizeOrderItems(itemsInput, notesInput = {}) {
       return { itemCode, quantity: qty, note };
     })
     .filter(({ quantity, note }) => quantity > 0 || note);
+}
+
+function escapePdfText(s = '') {
+  return String(s).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+function splitPdfLines(lines, maxChars = 95) {
+  const out = [];
+  for (const line of lines) {
+    const txt = String(line ?? '');
+    if (txt.length <= maxChars) {
+      out.push(txt);
+      continue;
+    }
+    let rem = txt;
+    while (rem.length > maxChars) {
+      let cut = rem.lastIndexOf(' ', maxChars);
+      if (cut < 10) cut = maxChars;
+      out.push(rem.slice(0, cut));
+      rem = rem.slice(cut).trimStart();
+    }
+    if (rem) out.push(rem);
+  }
+  return out;
+}
+
+function buildSimplePdf(lines) {
+  const pageLines = 48;
+  const pages = [];
+  const normalized = splitPdfLines(lines);
+  for (let i = 0; i < normalized.length; i += pageLines) {
+    pages.push(normalized.slice(i, i + pageLines));
+  }
+  if (!pages.length) pages.push(['']);
+
+  const objects = [''];
+  const addObj = (s) => {
+    objects.push(s);
+    return objects.length - 1;
+  };
+
+  const fontId = addObj('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  const pageEntries = [];
+
+  for (const page of pages) {
+    const contentLines = ['BT', '/F1 10 Tf', '14 TL', '40 770 Td'];
+    page.forEach((line, idx) => {
+      contentLines.push(`(${escapePdfText(line)}) Tj`);
+      if (idx !== page.length - 1) contentLines.push('T*');
+    });
+    contentLines.push('ET');
+    const content = contentLines.join('\n');
+    const contentId = addObj(`<< /Length ${Buffer.byteLength(content, 'utf8')} >>\nstream\n${content}\nendstream`);
+    const pageId = addObj(`<< /Type /Page /Parent __PAGES__ 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+    pageEntries.push(pageId);
+  }
+
+  const pagesId = addObj(`<< /Type /Pages /Kids [${pageEntries.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageEntries.length} >>`);
+  pageEntries.forEach((id) => {
+    objects[id] = objects[id].replace('__PAGES__', String(pagesId));
+  });
+  const rootId = addObj(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (let i = 1; i < objects.length; i++) {
+    offsets[i] = Buffer.byteLength(pdf, 'utf8');
+    pdf += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, 'utf8');
+  pdf += `xref\n0 ${objects.length}\n`;
+  pdf += '0000000000 65535 f \n';
+  for (let i = 1; i < objects.length; i++) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length} /Root ${rootId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf, 'utf8');
 }
 
 // Get orders for user
@@ -172,7 +270,7 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     const response = [];
 
     for (const store of stores) {
-      const order = await Order.findOne({ storeId: store.id, type: req.params.type, week: weekKey }).lean();
+      const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey);
       const itemsObj = {};
       if (order && order.items) {
         order.items.forEach((i) => {
@@ -214,27 +312,49 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
 
     const weekKey = getWeekKey();
     const stores = await Store.find().sort({ id: 1 }).lean();
-    let body = `Consolidated Order ${req.params.type} - week ${weekKey}\n\n`;
+    const itemDocs = await Item.find().lean();
+    const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [it.code, it.name]));
+    const supplierDisplayName = (supplierName || 'Supplier').trim();
+    let body = `Dear ${supplierDisplayName},\n\nPlease find attached the consolidated order for all five stores for Order ${req.params.type} (Week ${weekKey}).\n\nStores included: ${stores.map((s) => s.name).join(', ')}.\n\nRegards,\nApna Bazar Team`;
+    const pdfLines = [
+      `Consolidated Order ${req.params.type}`,
+      `Week: ${weekKey}`,
+      supplierName ? `Supplier: ${supplierName}` : '',
+      `Generated: ${new Date().toLocaleString()}`,
+      '',
+      'Consolidated order for all five stores',
+      ''.padEnd(75, '-'),
+    ].filter(Boolean);
     for (const store of stores) {
-      const order = await Order.findOne({ storeId: store.id, type: req.params.type, week: weekKey }).lean();
-      body += `Store: ${store.name} (id: ${store.id})\n`;
+      const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey);
+      pdfLines.push(`Store: ${store.name} (${store.id})`);
       if (order && order.items && order.items.length) {
         order.items.forEach((i) => {
-          body += `  ${i.itemCode}: ${i.quantity}`;
-          if (i.note) body += ` | note: ${i.note}`;
-          body += '\n';
+          const cleanCode = displayOrderItemCode(i.itemCode);
+          const itemLabel = itemNameByCode[i.itemCode] ? `${itemNameByCode[i.itemCode]} (${cleanCode})` : cleanCode;
+          let line = `  ${itemLabel} - Qty: ${i.quantity}`;
+          if (i.note) line += ` | Note: ${i.note}`;
+          pdfLines.push(line);
         });
       } else {
-        body += '  (no order)\n';
+        pdfLines.push('  (no order)');
       }
-      body += '\n';
+      pdfLines.push('');
     }
+    const pdfBuffer = buildSimplePdf(pdfLines);
 
     const mailOptions = {
       from: process.env.EMAIL_FROM || 'noreply@ordermanager.local',
       to: email,
-      subject: `Consolidated Order ${req.params.type}`,
+      subject: `Consolidated Order ${req.params.type} (Week ${weekKey})`,
       text: body,
+      attachments: [
+        {
+          filename: `consolidated-order-${req.params.type}-${weekKey}.pdf`,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        },
+      ],
     };
 
     await transporter.sendMail(mailOptions);
@@ -280,6 +400,22 @@ router.post('/supplier-orders', authMiddleware, async (req, res) => {
   }
 });
 
+router.patch('/supplier-orders/:id/reopen', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const doc = await SupplierOrder.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
+    doc.finished = false;
+    await doc.save();
+    res.json({ success: true, supplierOrder: doc });
+  } catch (err) {
+    console.error('Reopen supplier order error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // generic email-sending endpoint (admin only)
 router.post('/email', authMiddleware, async (req, res) => {
   try {
@@ -313,3 +449,4 @@ router.post('/email', authMiddleware, async (req, res) => {
 });
 
 export default router;
+

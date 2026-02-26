@@ -177,7 +177,7 @@ function Login({logo}){
     try{
       await apiClient.auth.register({username:un,password:pw,name:name,phone:phone,storeId:storeId});
       sReg(false);
-      sE("Registration successful, you may now sign in.");
+      sE("Registration request submitted. You can sign in after admin approval.");
     }catch(e){sRErr(e.message);}finally{sL(false);}  };
   return(<div style={S.lP}><div style={S.lC}>
     <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"center",marginBottom:20}}>{logo?<img src={logo} alt="Logo" style={{width:34,height:34,borderRadius:8,objectFit:"cover"}}/>:<div style={S.logo}>OM</div>}<div><div style={{fontWeight:700,fontSize:16}}>OrderManager</div><div style={{fontSize:10,color:"#6B7186"}}>Multi-Store Platform v3</div></div></div>
@@ -195,11 +195,6 @@ function Login({logo}){
     </>)}
     <button style={Object.assign({},S.b,S.bP,{width:"100%",justifyContent:"center",padding:9,opacity:loading?0.6:1})} onClick={isReg?register:go} disabled={loading}>{loading?(isReg?"Registering...":"Signing in..."):(isReg?"Register":"Sign In")}</button>
     <div style={{marginTop:14,color:"#9BA1B5",fontSize:11,cursor:"pointer",textAlign:"center"}} onClick={function(){sReg(!isReg);sE("");sRErr("");}}>{isReg?"Already have an account? Sign in":"Need an account? Register"}</div>
-    <div style={{marginTop:14,padding:10,borderRadius:6,background:"#1F2330",border:"1px solid #2A2E3B"}}>
-      <div style={{fontSize:9,color:"#6B7186",textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontWeight:600}}>Demo Accounts</div>
-      <div style={{fontSize:11,color:"#9BA1B5",fontFamily:"monospace"}}>Admin: admin / admin123</div>
-      <div style={{fontSize:11,color:"#9BA1B5",fontFamily:"monospace"}}>Stores: store1-store5 / pass123</div>
-    </div>
   </div></div>);
 }
 
@@ -207,14 +202,18 @@ function Login({logo}){
 export default function App(){
   var auth=useContext(AuthContext);
   var user=auth.user;
+  var userKey=user?(String(user.username||"")+"|"+String(user.role||"")+"|"+String(user.storeId||"")):"anon";
   var _p=useState("dashboard"),page=_p[0],setPage=_p[1];
   var _t=useState(""),tM=_t[0],sTM=_t[1];var _te=useState(false),tE=_te[0],sTE=_te[1];
   var _i=useState([]),items=_i[0],setItems=_i[1];
   var _us=useState([]),users=_us[0],setUsers=_us[1];
+  var _ur=useState([]),registrationRequests=_ur[0],setRegistrationRequests=_ur[1];
   var _o=useState({}),orders=_o[0],setOrders=_o[1];
   var _n=useState([]),notifs=_n[0],setNotifs=_n[1];
   var _s=useState([]),stores=_s[0],setStores=_s[1];
   var _sc=useState({}),schedule=_sc[0],setSchedule=_sc[1];
+  var _mo=useState(null),manualOpenOrder=_mo[0],setManualOpenOrder=_mo[1];
+  var _ct=useState(null),consolidatedType=_ct[0],setConsolidatedType=_ct[1];
   var _om=useState({}),orderMsgs=_om[0],setOrderMsgs=_om[1];
   var _su=useState([]),suppliers=_su[0],setSuppliers=_su[1];
   var _lg=useState(null),logo=_lg[0],setLogo=_lg[1];
@@ -234,13 +233,35 @@ export default function App(){
 
   var toast=useCallback(function(m,e){sTM(m);sTE(!!e);if(tR.current)clearTimeout(tR.current);tR.current=setTimeout(function(){sTM("");},2500);},[]);
   
+  // Reset UI/data immediately when auth user changes to avoid showing previous user's screen/state.
+  useEffect(function(){
+    setPage("dashboard");
+    setLoadError(null);
+    setConsolidatedType(null);
+    setOrders({});
+    setNotifs([]);
+    setUsers([]);
+    setRegistrationRequests([]);
+    setSuppliers([]);
+    if(!user){
+      setItems([]);
+      setStores([]);
+      setSchedule({});
+      setOrderMsgs({});
+      setManualOpenOrder(null);
+      setIsLoading(false);
+      return;
+    }
+    setIsLoading(true);
+  },[userKey]);
+  
   // Fetch data on user login
   useEffect(function(){
     if(!user){setIsLoading(false);return;}
+    var cancelled=false;
     var fetchData=async function(){
       try{setIsLoading(true);setLoadError(null);
         var isA=user.role==="admin";
-  var aot=activeType(schedule);
         var fetches={
           items:apiClient.items.getAll(),
           stores:apiClient.stores.getAll(),
@@ -248,8 +269,9 @@ export default function App(){
           orders:apiClient.orders.getAll(isA?null:user.storeId),
           settings:apiClient.settings.getAll(),
         };
-        if(isA){fetches.users=apiClient.users.getAll();fetches.suppliers=apiClient.suppliers.getAll();}
+        if(isA){fetches.users=apiClient.users.getAll();fetches.suppliers=apiClient.suppliers.getAll();fetches.registrationRequests=apiClient.users.getRegistrationRequests();}
         var results=await Promise.all(Object.values(fetches));
+        if(cancelled) return;
         var keys=Object.keys(fetches);
         var data={};keys.forEach(function(k,i){data[k]=results[i];});
         
@@ -259,7 +281,9 @@ export default function App(){
         var settings = data.settings || {};
         var serverSched = settings.schedule || {};
         var serverMsg = settings.message || {};
+        var serverManualOpen = settings.manualOpenOrder || null;
         setOrderMsgs({A:serverMsg.A||"",B:serverMsg.B||"",C:serverMsg.C||""});
+        setManualOpenOrder(serverManualOpen);
         // pull logo value too (may be null)
         setLogo(settings.logo || null);
         // ensure schedule values are explicit null when not set
@@ -286,13 +310,18 @@ export default function App(){
             orderMap[key] = {id:o.id, items:o.items||{}, notes:o.notes||{}, status:o.status, store:o.storeId, type:o.type, date:o.date};
           });
           setOrders(orderMap);
+        }else{
+          setOrders({});
         }
-        if(isA){setUsers(data.users||[]);setSuppliers(data.suppliers||[]);}
+        if(isA){setUsers(data.users||[]);setSuppliers(data.suppliers||[]);setRegistrationRequests(data.registrationRequests||[]);}
+        else {setUsers([]);setSuppliers([]);setRegistrationRequests([]);}
         setIsLoading(false);
-      }catch(e){setLoadError(e.message);setIsLoading(false);toast(e.message,true);}
+      }catch(e){if(cancelled) return;setLoadError(e.message);setIsLoading(false);toast(e.message,true);}
     };
-    if(auth.loading)return;fetchData();
-  },[user,auth.loading]);
+    if(auth.loading)return;
+    fetchData();
+    return function(){cancelled=true;};
+  },[userKey,auth.loading]);
   
   if(auth.loading){return <div style={Object.assign({},S.lP,{justifyContent:"center"})}><div style={{color:"#9BA1B5"}}>Loading...</div></div>;}
   if(!user){return(<Fragment><input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={function(e){
@@ -302,7 +331,7 @@ export default function App(){
   
   var sN=user.storeId?(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId:"All Stores";
   var isA=user.role==="admin";
-  var aot=activeType(schedule);
+  var aot=manualOpenOrder||activeType(schedule);
   var navs=isA?[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"orders",label:"Order Monitor",ico:"clip"},
     {id:"consolidated",label:"Consolidated",ico:"grid"},{id:"supplier-orders",label:"Supplier Orders",ico:"truck"},
@@ -314,7 +343,7 @@ export default function App(){
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"order-entry",label:"Place Order",ico:"clip"},
     {id:"history",label:"Order History",ico:"eye"},
   ];
-  var PP={aot:aot,orders:orders,setOrders:setOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
+  var PP={aot:aot,manualOpenOrder:manualOpenOrder,setManualOpenOrder:setManualOpenOrder,consolidatedType:consolidatedType,setConsolidatedType:setConsolidatedType,orders:orders,setOrders:setOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,registrationRequests:registrationRequests,setRegistrationRequests:setRegistrationRequests,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
   var rP=function(){
     if(page==="dashboard"&&isA)return <AdminDash {...PP}/>;if(page==="dashboard")return <MgrDash {...PP}/>;
     if(page==="order-entry")return <OrderEntry {...PP}/>;if(page==="history")return <OrderHistory {...PP}/>;
@@ -326,7 +355,7 @@ export default function App(){
     if(page==="reports")return <Reports {...PP}/>;if(page==="settings")return <Settings {...PP}/>;
     return null;
   };
-  return(<div style={S.page}><Toast msg={tM} isErr={tE}/>
+  return(<div key={userKey} style={S.page}><Toast msg={tM} isErr={tE}/>
     <input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");saveLogoToServer(ev.target.result);};r.readAsDataURL(f);e.target.value="";}}/><aside style={S.sidebar}>
       <div style={S.sideHdr}>{logo?<img src={logo} alt="Logo" style={{width:34,height:34,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<div style={S.logo}>OM</div>}<div><div style={{fontWeight:700,fontSize:13}}>OrderManager</div><div style={{fontSize:10,color:"#6B7186"}}>{sN}</div></div></div>
       <nav style={{flex:1,padding:"8px 6px",overflowY:"auto"}}>
@@ -585,17 +614,41 @@ function OrderHistory({user,orders,items,setOrders,toast}){
 }
 
 /* ═══ ORDER MONITOR (with time + process button) ═══ */
-function OrderMonitor({orders,setOrders,items,stores,aot,toast}){
+function OrderMonitor({orders,setOrders,items,stores,aot,toast,setPage,setConsolidatedType}){
   var _f=useState("all"),ft=_f[0],sFt=_f[1];
+  var _cl=useState([]),completedLogs=_cl[0],setCompletedLogs=_cl[1];
   var all=Object.entries(orders).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
-  var f=ft==="all"?all:all.filter(function(e){return e[1].type===ft;});
+  var f=(ft==="all"||ft==="completed")?all:all.filter(function(e){return e[1].type===ft;});
   var isReceived=function(st){return st==="submitted"||st==="draft_shared";};
   var statusBg=function(st){return st==="processed"?S.bgP:isReceived(st)?S.bgG:S.bgY;};
   var statusLabel=function(st){return st==="draft_shared"?"submitted":st;};
-  var processAll=async function(type){
-    var dk=dateKey(type);
+  useEffect(function(){
+    var cancelled=false;
+    apiClient.supplierOrders.getAll().then(function(list){
+      if(cancelled) return;
+      var today=(new Date()).toDateString();
+      setCompletedLogs((list||[]).filter(function(l){return l.finished!==false && new Date(l.sentAt||0).toDateString()===today;}));
+    }).catch(function(){});
+    return function(){cancelled=true;};
+  },[]);
+  var refreshCompletedLogs=async function(){
     try{
-      // process each submitted order via API
+      const list=await apiClient.supplierOrders.getAll();
+      var today=(new Date()).toDateString();
+      setCompletedLogs((list||[]).filter(function(l){return l.finished!==false && new Date(l.sentAt||0).toDateString()===today;}));
+    }catch(e){}
+  };
+  var reopenCompleted=async function(log){
+    try{
+      await apiClient.supplierOrders.reopen(log._id);
+      await refreshCompletedLogs();
+      if(setConsolidatedType) setConsolidatedType(log.type);
+      if(setPage) setPage("consolidated");
+      toast("Completed order reopened. You can edit and resend from Consolidated.");
+    }catch(e){toast(e.message,true);}
+  };
+  var processAll=async function(type){
+    try{
       var tasks=[];
       Object.entries(orders).forEach(function([k,o]){
         if(o.type===type&&isReceived(o.status)&&o.id){
@@ -603,7 +656,6 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast}){
         }
       });
       await Promise.all(tasks);
-      // update local state
       setOrders(function(prev){
         var n=Object.assign({},prev);
         Object.entries(n).forEach(function([k,o]){if(o.type===type&&isReceived(o.status)){n[k]=Object.assign({},o,{status:"processed"});}});
@@ -614,29 +666,39 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast}){
   };
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:14}}>
-      <div style={S.tabs}>{["all","A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?"All":"Order "+t}</button>;})}</div>
-      {ft!=="all"&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){processAll(ft);}}>Process Order {ft} (All Stores)</button>}
+      <div style={S.tabs}>{["all","A","B","C","completed"].map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?"All":t==="completed"?"Completed":"Order "+t}</button>;})}</div>
+      {ft!=="all"&&ft!=="completed"&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){processAll(ft);}}>Process Order {ft} (All Stores)</button>}
     </div>
-    <div style={S.card}><div style={S.t}>Submissions ({f.length})</div>
-      {f.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders</div>:
-      <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Order</th><th style={S.th}>Date / Time</th><th style={S.th}>Status</th><th style={S.th}>Filled</th><th style={S.th}>Action</th></tr></thead><tbody>
-        {f.map(function(e){var k=e[0],o=e[1];var sn=(stores.find(function(s){return s.id===o.store;})||{}).name||o.store;return(<tr key={k}>
-          <td style={Object.assign({},S.td,{fontWeight:500})}>{sn}</td><td style={S.td}>Order {o.type}</td>
-          <td style={S.tm}>{fmtDT(o.date)}</td>
-          <td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{statusLabel(o.status)}</span></td>
-          <td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}/{items.length}</td>
-          <td style={S.td}>{isReceived(o.status)&&o.id&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10})} onClick={async function(){
-              try{await apiClient.orders.process(o.id);
-                setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},n[k],{status:"processed"});return n;});
-                toast("Processed");
-              }catch(e){toast(e.message,true);} }}>Process</button>}</td>
-        </tr>);})}</tbody></table></div>}</div>
+    {ft==="completed" ? (
+      <div style={S.card}><div style={S.t}>Completed Orders (Today)</div>
+        {completedLogs.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No completed orders</div>:
+        <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Order</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th><th style={S.th}>Actions</th></tr></thead><tbody>
+          {completedLogs.map(function(l){return(<tr key={l._id||l.sentAt}><td style={S.tm}>{fmtDT(l.sentAt)}</td><td style={S.td}>Order {l.type}</td><td style={S.td}>{l.supplierName}</td><td style={S.tm}>{l.email}</td><td style={S.tm}>{l.week}</td><td style={S.td}><button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10})} onClick={function(){reopenCompleted(l);}}>Reopen / Resend</button></td></tr>);})}
+        </tbody></table></div>}
+      </div>
+    ) : (
+      <div style={S.card}><div style={S.t}>Submissions ({f.length})</div>
+        {f.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders</div>:
+        <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Order</th><th style={S.th}>Date / Time</th><th style={S.th}>Status</th><th style={S.th}>Filled</th><th style={S.th}>Action</th></tr></thead><tbody>
+          {f.map(function(e){var k=e[0],o=e[1];var sn=(stores.find(function(s){return s.id===o.store;})||{}).name||o.store;return(<tr key={k}>
+            <td style={Object.assign({},S.td,{fontWeight:500})}>{sn}</td><td style={S.td}>Order {o.type}</td>
+            <td style={S.tm}>{fmtDT(o.date)}</td>
+            <td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{statusLabel(o.status)}</span></td>
+            <td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}/{items.length}</td>
+            <td style={S.td}>{isReceived(o.status)&&o.id&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10})} onClick={async function(){
+                try{await apiClient.orders.process(o.id);
+                  setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},n[k],{status:"processed"});return n;});
+                  toast("Processed");
+                }catch(e){toast(e.message,true);} }}>Process</button>}</td>
+          </tr>);})}</tbody></table></div>}
+      </div>
+    )}
   </div>);
 }
 
 /* ═══ CONSOLIDATED ═══ */
-function Consolidated({orders,setOrders,items,aot,toast,stores}){
-  var _v=useState(aot||"A"),vt=_v[0],sVt=_v[1];
+function Consolidated({orders,setOrders,items,aot,toast,stores,consolidatedType,setConsolidatedType}){
+  var _v=useState(consolidatedType||aot||"A"),vt=_v[0],sVt=_v[1];
   var _e=useState(null),eSt=_e[0],sES=_e[1];var _eq=useState({}),eQ=_eq[0],sEQ=_eq[1];
   var _en=useState({}),eNotes=_en[0],sENotes=_en[1];
   var _em=useState(""),eEmail=_em[0],sEmail=_em[1];
@@ -645,14 +707,17 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
   var _logs=useState([]),logs=_logs[0],setLogs=_logs[1];
   var dk=dateKey(vt);
   var getStoreOrder=function(storeId){return getCurrentOrderForStoreType(orders,storeId,vt);};
+  var weekPrefix=dk.slice(0,8);
+  var todaySentKey=(new Date()).toDateString();
   
   // finished status map derived from stored history
   const finishedMap = useMemo(() => {
     const m = {};
-    logs.forEach(l => { if (l.type) m[l.type] = true; });
+    logs.forEach(l => { if (l.finished!==false && l.type && String(l.week||"").indexOf(weekPrefix)===0 && new Date(l.sentAt||0).toDateString()===todaySentKey) m[l.type] = true; });
     return m;
-  }, [logs]);
+  }, [logs, weekPrefix, todaySentKey]);
   const isFinished = !!finishedMap[vt];
+  useEffect(function(){ if(consolidatedType&&consolidatedType!==vt) sVt(consolidatedType); },[consolidatedType]);
 
   // load supplier order history when component mounts
   useEffect(function(){
@@ -708,19 +773,14 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
           items: totalObj,
         });
         // update local logs state
-        setLogs(l=>[{supplierName:eSupplier,email:eEmail,type:vt,week:dk,items:totalObj,sentAt:new Date().toISOString()}].concat(l));
+        setLogs(l=>[{supplierName:eSupplier,email:eEmail,type:vt,week:dk,items:totalObj,sentAt:new Date().toISOString(),finished:true}].concat(l));
       }catch(recErr){console.error('history log failed',recErr);}      
       sEmail("");
       sSupplier("");
     }catch(e){toast(e.message,true);}finally{sEMailing(false);}  };
   return(<div>
-    {logs.length>0&&(<div style={Object.assign({},S.card,{marginBottom:12})}>
-      <div style={S.cH}><div><div style={S.t}>Sent Supplier Orders</div><div style={S.d}>{logs.length} records</div></div></div>
-      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Type</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th></tr></thead><tbody>
-        {logs.map(function(r){return(<tr key={r.sentAt}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td></tr>);})}
-      </tbody></table></div></div>)}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
-      <div style={S.tabs}>{["A","B","C"].map(function(t){var done = !!finishedMap[t];return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);cancelE();}}>{done?`Order ${t} ✓`:`Order ${t}`}</button>;})}</div>
+      <div style={S.tabs}>{["A","B","C"].map(function(t){var done = !!finishedMap[t];return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);if(setConsolidatedType)setConsolidatedType(t);cancelE();}}>{done?`Order ${t} ✓`:`Order ${t}`}</button>;})}</div>
       <div style={{display:"flex",gap:5}}>{eSt&&<Fragment><button style={Object.assign({},S.b,S.bG)} onClick={saveE}>Save</button><button style={Object.assign({},S.b,S.bS)} onClick={cancelE}>Cancel</button></Fragment>}</div>
     </div>
     {eSt&&<div style={S.nI}>Editing: {(stores.find(function(s){return s.id===eSt;})||{}).name}</div>}
@@ -920,7 +980,7 @@ function ItemMaster({items,setItems,toast}){
       <button style={Object.assign({},S.b,S.bS)} onClick={function(){fR.current&&fR.current.click();}}>Upload CSV/Excel</button>
       <button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button>
       <input ref={fR} type="file" accept=".csv,.txt,.xls,.xlsx" style={{display:"none"}} onChange={hF}/>
-    </div></div>
+    </div>
     <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{width:40})}></th></tr></thead>
       <tbody>{sorted.map(function(it){return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.unit||"-"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(it.code);}}>Del</button></td></tr>);})}{sorted.length===0&&<tr><td colSpan={5} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items</td></tr>}</tbody></table></div></div>
     {shA&&(<div style={S.ov} onClick={function(){sA(false);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
@@ -937,11 +997,11 @@ function ItemMaster({items,setItems,toast}){
       <div style={Object.assign({},S.tw,{maxHeight:180})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th></tr></thead><tbody>
         {csv.slice(0,8).map(function(it,i){return <tr key={i}><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={S.td}>{it.category||"-"}</td><td style={S.td}>{it.unit||"-"}</td></tr>;})}</tbody></table></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sU(false);sC(null);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={cfU}>Confirm</button></div></div></div>)}
-  </div>);
+  </div></div>);
 }
 
 /* ═══ USER MANAGEMENT (with phone) ═══ */
-function UserMgmt({users,setUsers,toast,stores}){
+function UserMgmt({users,setUsers,registrationRequests,setRegistrationRequests,toast,stores}){
   var _a=useState(false),shA=_a[0],sA=_a[1];
   var _n=useState({username:"",password:"",name:"",phone:"",role:"manager",storeId:stores[0]?stores[0].id:"S1",active:true}),nu=_n[0],sN=_n[1];
   var _r=useState(null),rP=_r[0],sRP=_r[1];var _pw=useState(""),nPw=_pw[0],sNP=_pw[1];
@@ -972,7 +1032,29 @@ function UserMgmt({users,setUsers,toast,stores}){
         sRP(null);sNP("");
         toast("Password reset");
       }catch(e){toast(e.message,true);}    };
-  return(<div><div style={S.card}><div style={S.cH}><div><div style={S.t}>Users</div><div style={S.d}>{users.length} total</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
+  var approveReq=async function(id){
+      try{
+        await apiClient.users.approveRegistrationRequest(id);
+        const all=await apiClient.users.getAll();
+        const reqs=await apiClient.users.getRegistrationRequests();
+        setUsers(all);setRegistrationRequests(reqs);
+        toast("Registration approved");
+      }catch(e){toast(e.message,true);}    };
+  var rejectReq=async function(id){
+      try{
+        await apiClient.users.rejectRegistrationRequest(id);
+        const reqs=await apiClient.users.getRegistrationRequests();
+        setRegistrationRequests(reqs);
+        toast("Registration rejected");
+      }catch(e){toast(e.message,true);}    };
+  return(<div>
+    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Registration Requests</div><div style={S.d}>{(registrationRequests||[]).length} pending approval</div></div></div>
+      {!(registrationRequests||[]).length?<div style={{color:"#6B7186",fontSize:12}}>No pending requests</div>:
+      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Phone</th><th style={S.th}>Store</th><th style={S.th}>Requested</th><th style={S.th}>Actions</th></tr></thead><tbody>
+        {(registrationRequests||[]).map(function(r){var sn=((stores.find(function(s){return s.id===r.storeId;})||{}).name)||r.storeId;return(<tr key={r.id}><td style={S.td}>{r.name}</td><td style={S.tm}>{r.username}</td><td style={S.tm}>{r.phone}</td><td style={S.td}>{sn}</td><td style={S.tm}>{fmtDT(r.createdAt)}</td><td style={S.td}><div style={{display:"flex",gap:4}}><button style={Object.assign({},S.b,S.bG,{padding:"2px 6px",fontSize:10})} onClick={function(){approveReq(r.id);}}>Approve</button><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rejectReq(r.id);}}>Reject</button></div></td></tr>);})}
+      </tbody></table></div>}
+    </div>
+    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Users</div><div style={S.d}>{users.length} total</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
     <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Phone</th><th style={S.th}>Role</th><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>
       {users.map(function(u){var sn=u.storeId?((stores.find(function(s){return s.id===u.storeId;})||{}).name||u.storeId):"-";return(<tr key={u.username}>
         <td style={Object.assign({},S.td,{fontWeight:500})}>{u.name}</td><td style={S.tm}>{u.username}</td><td style={S.tm}>{u.phone||"-"}</td>
@@ -1158,7 +1240,7 @@ function Reports({orders,items,stores}){
       Object.entries(o.items).forEach(function(ie){var code=ie[0],qty=ie[1];if(qty<=0)return;if(!itemTotals[code])itemTotals[code]={qty:0,orders:0};itemTotals[code].qty+=qty;itemTotals[code].orders++;
         var it=items.find(function(i){return i.code===code;});if(it){var cat=it.category||"Other";if(!catTotals[cat])catTotals[cat]={qty:0,items:{}};catTotals[cat].qty+=qty;catTotals[cat].items[code]=true;}});});
     // Top items sorted by qty
-    var topItems=Object.entries(itemTotals).map(function(e){var it=items.find(function(i){return i.code===e[0];});return{code:e[0],name:it?it.name:e[0],category:it?it.category:"",qty:e[1].qty,orders:e[1].orders};}).sort(function(a,b){return b.qty-a.qty;});
+    var topItems=Object.entries(itemTotals).map(function(e){var it=items.find(function(i){return i.code===e[0];});return{code:e[0],codeDisplay:String(e[0]||"").indexOf("XLS::")===0?String(e[0]).slice(5):e[0],name:it?it.name:displayNameForOrderKey(e[0],items),category:it?it.category:"",qty:e[1].qty,orders:e[1].orders};}).sort(function(a,b){return b.qty-a.qty;});
     var catList=Object.entries(catTotals).map(function(e){return{category:e[0],qty:e[1].qty,uniqueItems:Object.keys(e[1].items).length};}).sort(function(a,b){return b.qty-a.qty;});
     var storeList=Object.entries(storeTotals).map(function(e){var st=stores.find(function(s){return s.id===e[0];});return Object.assign({id:e[0],name:st?st.name:e[0]},e[1]);});
     return{topItems:topItems,catList:catList,storeList:storeList,orderCount:orderCount};
@@ -1177,7 +1259,7 @@ function Reports({orders,items,stores}){
     {tab==="top"&&(<div style={S.card}><div style={S.t}>Most Ordered Items</div><div style={S.d}>Ranked by total quantity across all orders</div>
       {agg.topItems.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No order data yet. Submit some orders first.</div>:
       <div style={Object.assign({},S.tw,{marginTop:10})}><table style={S.tbl}><thead><tr><th style={S.th}>#</th><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={S.th}>Category</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Total Qty</th><th style={Object.assign({},S.th,{textAlign:"right"})}>In Orders</th><th style={S.th}>Bar</th></tr></thead><tbody>
-        {agg.topItems.slice(0,20).map(function(it,i){var maxQ=agg.topItems[0].qty;var pct=maxQ>0?Math.round(it.qty/maxQ*100):0;return(<tr key={it.code}><td style={Object.assign({},S.td,{fontWeight:700,color:"#6B7186"})}>{i+1}</td><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category}</td>
+        {agg.topItems.slice(0,20).map(function(it,i){var maxQ=agg.topItems[0].qty;var pct=maxQ>0?Math.round(it.qty/maxQ*100):0;return(<tr key={it.code}><td style={Object.assign({},S.td,{fontWeight:700,color:"#6B7186"})}>{i+1}</td><td style={S.tm}>{it.codeDisplay}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category}</td>
           <td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace",fontWeight:700,color:"#4F8CFF"})}>{it.qty}</td>
           <td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{it.orders}</td>
           <td style={Object.assign({},S.td,{width:120})}><div style={{height:8,borderRadius:4,background:"#1F2330",overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",background:"linear-gradient(90deg,#4F8CFF,#7C5CFF)",borderRadius:4}}/></div></td></tr>);})}</tbody></table></div>}</div>)}
@@ -1202,9 +1284,11 @@ function Reports({orders,items,stores}){
 }
 
 /* ═══ SETTINGS (editable schedule + order messages) ═══ */
-function Settings({stores,schedule,setSchedule,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo}){
+function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrder,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo}){
   var _e=useState(null),ed=_e[0],sEd=_e[1];var _v=useState(0),eV=_v[0],sEV=_v[1];
   var _em=useState(null),emT=_em[0],sEmT=_em[1];var _emV=useState(""),emV=_emV[0],sEmV=_emV[1];
+  var _mo=useState(manualOpenOrder||""),moType=_mo[0],sMoType=_mo[1];
+  useEffect(function(){ sMoType(manualOpenOrder||""); },[manualOpenOrder]);
   var saveDay=async function(){
       if (eV === '' || eV === null) {
         toast('Please select a day', true);
@@ -1238,6 +1322,12 @@ function Settings({stores,schedule,setSchedule,orderMsgs,setOrderMsgs,toast,logo
         toast("Message updated for Order "+emT);
         sEmT(null);
       }catch(e){toast(e.message,true);}  };
+  var saveManualOpen=async function(){
+      try{
+        var resp=await apiClient.settings.updateManualOpen(moType||null);
+        setManualOpenOrder(resp.manualOpenOrder||null);
+        toast(resp.manualOpenOrder?("Manual open active: Order "+resp.manualOpenOrder):"Manual open cleared");
+      }catch(e){toast(e.message,true);}  };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>
       <div style={Object.assign({},S.tw,{marginTop:4})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Day</th><th style={Object.assign({},S.th,{width:120})}>Actions</th></tr></thead><tbody>
@@ -1256,7 +1346,22 @@ function Settings({stores,schedule,setSchedule,orderMsgs,setOrderMsgs,toast,logo
                   sEd(t);
                   // initialize editor value; if unset then leave blank so placeholder shows
                   sEV(schedule[t] != null ? schedule[t] : "");
-                }}><Ic type="edit" size={11}/> Edit</button>}</td></tr>);})}</tbody></table></div></div>
+                }}><Ic type="edit" size={11}/> Edit</button>}</td></tr>);})}</tbody></table></div>
+      <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #2A2E3B"}}>
+        <div style={{fontSize:12,fontWeight:600,color:"#E8EAF0",marginBottom:4}}>Manual Open Override</div>
+        <div style={{fontSize:11,color:"#9BA1B5",marginBottom:8}}>Open an order for stores even when today is not its scheduled day.</div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <select style={Object.assign({},S.inp,{width:240})} value={moType} onChange={function(e){sMoType(e.target.value);}}>
+            <option value="">No override (use schedule)</option>
+            <option value="A">Open Order A</option>
+            <option value="B">Open Order B</option>
+            <option value="C">Open Order C</option>
+          </select>
+          <button style={Object.assign({},S.b,S.bG)} onClick={saveManualOpen}>Save Override</button>
+          {manualOpenOrder&&<span style={Object.assign({},S.bg,S.bgW)}>Active: Order {manualOpenOrder}</span>}
+        </div>
+      </div>
+    </div>
 
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Messages</div><div style={S.d}>Custom instructions shown to managers for each order type</div></div></div>
       {["A","B","C"].map(function(t){var isE=emT===t;return(<div key={t} style={{padding:"10px 0",borderBottom:"1px solid #2A2E3B"}}>
@@ -1284,5 +1389,6 @@ function Settings({stores,schedule,setSchedule,orderMsgs,setOrderMsgs,toast,logo
       <strong style={{color:"#E8EAF0"}}>OrderManager v3.1</strong> - Supplier edit, submit confirm, sort options, mailto emails, company logo, custom messages.</div>
   </div>);
 }
+
 
 

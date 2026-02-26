@@ -11,6 +11,7 @@ router.get('/', async (req, res) => {
     const schedules = {};
     const messages = {};
     let logoValue = null;
+    let manualOpen = null;
 
     docs.forEach((row) => {
       if (row.key.startsWith('schedule')) {
@@ -21,6 +22,8 @@ router.get('/', async (req, res) => {
       } else if (row.key === 'logo') {
         // store raw base64 string (or empty) for client
         logoValue = row.value || null;
+      } else if (row.key === 'manualOpenOrder') {
+        manualOpen = row.value || null;
       }
     });
 
@@ -37,7 +40,7 @@ router.get('/', async (req, res) => {
       }
     }
 
-    const result = { schedule: schedules, message: messages, logo: logoValue };
+    const result = { schedule: schedules, message: messages, logo: logoValue, manualOpenOrder: manualOpen };
     console.log('GET /settings returning', result);
     res.json(result);
   } catch (err) {
@@ -138,6 +141,29 @@ router.patch('/logo', authMiddleware, async (req, res) => {
     res.json({ success: true, logo });
   } catch (err) {
     console.error('Update logo error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Manual open override (admin only): allow stores to place a selected order type
+// regardless of scheduled day. Pass null to clear.
+router.patch('/manual-open', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const { type } = req.body;
+    if (type == null || type === '') {
+      await Setting.deleteOne({ key: 'manualOpenOrder' });
+      return res.json({ success: true, manualOpenOrder: null });
+    }
+    if (!['A', 'B', 'C'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid order type' });
+    }
+    await Setting.updateOne({ key: 'manualOpenOrder' }, { value: type }, { upsert: true });
+    res.json({ success: true, manualOpenOrder: type });
+  } catch (err) {
+    console.error('Update manual open error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

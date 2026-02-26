@@ -1,6 +1,8 @@
 import express from 'express';
 import User from '../models/user.js';
-import { generateToken, verifyToken, registerUser } from '../auth.js';
+import RegistrationRequest from '../models/registrationRequest.js';
+import { generateToken, verifyToken } from '../auth.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
 
@@ -8,8 +10,29 @@ const router = express.Router();
 router.post('/register', async (req, res) => {
   try {
     const { username, password, name, phone, storeId } = req.body;
-    await registerUser({ username, password, name, phone, storeId });
-    res.json({ success: true });
+    if (!username || !password || !name || !phone || !storeId) {
+      return res.status(400).json({ error: 'All fields required' });
+    }
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+    const existingReq = await RegistrationRequest.findOne({ username, status: 'pending' });
+    if (existingReq) {
+      return res.status(400).json({ error: 'Registration request already pending approval' });
+    }
+
+    await RegistrationRequest.create({
+      id: uuidv4(),
+      username,
+      password,
+      name,
+      phone,
+      storeId,
+      status: 'pending',
+    });
+
+    res.json({ success: true, pendingApproval: true });
   } catch (err) {
     console.error('Register error:', err);
     res.status(400).json({ error: err.message || 'Registration failed' });
