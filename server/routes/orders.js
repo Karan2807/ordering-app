@@ -375,7 +375,12 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
     const list = await SupplierOrder.find().sort({ sentAt: -1 }).lean();
-    res.json(list);
+    res.json(
+      list.map(({ pdfBase64, ...row }) => ({
+        ...row,
+        hasPdf: !!pdfBase64,
+      }))
+    );
   } catch (err) {
     console.error('Get supplier orders error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -396,6 +401,24 @@ router.post('/supplier-orders', authMiddleware, async (req, res) => {
     res.json({ success: true, supplierOrder: so });
   } catch (err) {
     console.error('Create supplier order error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/supplier-orders/:id/pdf', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const doc = await SupplierOrder.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
+    if (!doc.pdfBase64) return res.status(404).json({ error: 'PDF not stored for this record' });
+    const pdfBuffer = Buffer.from(doc.pdfBase64, 'base64');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${doc.pdfFilename || `consolidated-order-${doc.type || 'X'}.pdf`}"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('Download supplier order PDF error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -438,7 +461,50 @@ router.post('/email', authMiddleware, async (req, res) => {
     // transporter may be configured with an SMTP_URL; if not it will 
     // use jsonTransport which only logs the message (development fallback).
     await transporter.sendMail(mailOptions);
-    res.json({ success: true });
+
+    let supplierOrder = null;
+    try {
+      const totalObj = {};
+      for (const store of stores) {
+        const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey);
+        if (order && order.items) {
+          order.items.forEach((i) => {
+            totalObj[i.itemCode] = (totalObj[i.itemCode] || 0) + (i.quantity || 0);
+          });
+        }
+      }
+      supplierOrder = await SupplierOrder.create({
+        supplierName: supplierDisplayName,
+        email,
+        type: req.params.type,
+        week: weekKey,
+        items: totalObj,
+        snapshotLines: pdfLines,
+        pdfBase64: pdfBuffer.toString('base64'),
+        pdfFilename: `consolidated-order-${req.params.type}-${weekKey}.pdf`,
+        finished: true,
+      });
+    } catch (historyErr) {
+      console.error('Supplier email history save error:', historyErr);
+    }
+
+    res.json({
+      success: true,
+      supplierOrder: supplierOrder
+        ? {
+            _id: supplierOrder._id,
+            supplierName: supplierOrder.supplierName,
+            email: supplierOrder.email,
+            type: supplierOrder.type,
+            week: supplierOrder.week,
+            items: supplierOrder.items,
+            snapshotLines: supplierOrder.snapshotLines,
+            sentAt: supplierOrder.sentAt,
+            finished: supplierOrder.finished,
+            hasPdf: !!supplierOrder.pdfBase64,
+          }
+        : null,
+    });
   } catch (err) {
     console.error('Generic email send error:', err);
     if (err.response) {

@@ -88,62 +88,62 @@ function worksheetToRows(ws){
 
 
 var S={
-  page:{minHeight:"100vh",display:"flex",fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",background:"#0F1117",color:"#E8EAF0"},
-  sidebar:{width:240,minWidth:240,background:"#181B25",borderRight:"1px solid #2A2E3B",display:"flex",flexDirection:"column",height:"100vh",position:"sticky",top:0,overflowY:"auto"},
-  sideHdr:{padding:"18px 14px",borderBottom:"1px solid #2A2E3B",display:"flex",alignItems:"center",gap:8},
-  logo:{width:34,height:34,borderRadius:8,background:"linear-gradient(135deg,#4F8CFF,#7C5CFF)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,color:"#fff",flexShrink:0},
+  page:{minHeight:"100vh",display:"flex",fontFamily:"'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif",background:"#ECEFF3",color:"#111827"},
+  sidebar:{width:240,minWidth:240,background:"rgba(250,250,247,.78)",backdropFilter:"blur(10px)",WebkitBackdropFilter:"blur(10px)",borderRight:"1px solid rgba(148,163,184,.28)",display:"flex",flexDirection:"column",height:"100vh",position:"sticky",top:0,overflowY:"auto"},
+  sideHdr:{padding:"18px 14px",borderBottom:"1px solid rgba(148,163,184,.22)",display:"flex",alignItems:"center",gap:8},
+  logo:{width:34,height:34,borderRadius:8,background:"linear-gradient(135deg,#22C55E,#15803D)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,color:"#fff",flexShrink:0},
   navItem:{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:6,cursor:"pointer",fontSize:12.5,fontWeight:500,marginBottom:1},
-  navA:{background:"rgba(79,140,255,0.15)",color:"#4F8CFF"},navI:{color:"#9BA1B5"},
+  navA:{background:"#DCFCE7",color:"#166534"},navI:{color:"#475569"},
   main:{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"},
-  topbar:{height:52,minHeight:52,borderBottom:"1px solid #2A2E3B",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",background:"#181B25"},
+  topbar:{height:52,minHeight:52,borderBottom:"1px solid rgba(148,163,184,.22)",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",background:"rgba(252,252,250,.72)",backdropFilter:"blur(10px)",WebkitBackdropFilter:"blur(10px)"},
   content:{flex:1,overflowY:"auto",padding:20},
-  card:{background:"#181B25",border:"1px solid #2A2E3B",borderRadius:10,padding:18,marginBottom:14},
+  card:{background:"rgba(255,255,255,.72)",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)",border:"1px solid rgba(148,163,184,.24)",borderRadius:12,padding:18,marginBottom:14,boxShadow:"0 8px 20px rgba(15,23,42,.06)"},
   cH:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8},
-  t:{fontSize:14,fontWeight:700},d:{fontSize:12,color:"#9BA1B5",marginTop:2},
+  t:{fontSize:15,fontWeight:700,color:"#0F172A"},d:{fontSize:12,color:"#64748B",marginTop:2},
   sg:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10,marginBottom:16},
-  sc:{background:"#181B25",border:"1px solid #2A2E3B",borderRadius:10,padding:14},
-  sL:{fontSize:10,color:"#6B7186",fontWeight:600,textTransform:"uppercase",letterSpacing:.5},
-  sV:{fontSize:24,fontWeight:700,marginTop:3,fontFamily:"monospace"},sS:{fontSize:11,color:"#9BA1B5",marginTop:2},
-  tw:{overflow:"auto",borderRadius:6,border:"1px solid #2A2E3B",maxHeight:"62vh"},
-  th:{padding:"7px 10px",textAlign:"left",fontWeight:600,color:"#9BA1B5",fontSize:10.5,textTransform:"uppercase",letterSpacing:.5,whiteSpace:"nowrap",borderBottom:"1px solid #2A2E3B",background:"#1F2330",position:"sticky",top:0,zIndex:5},
-  td:{padding:"7px 10px",borderBottom:"1px solid #2A2E3B",fontSize:12.5},
-  tm:{padding:"7px 10px",borderBottom:"1px solid #2A2E3B",fontFamily:"monospace",fontSize:11.5,color:"#9BA1B5"},
+  sc:{background:"rgba(255,255,255,.72)",border:"1px solid rgba(148,163,184,.24)",borderRadius:12,padding:14,backdropFilter:"blur(6px)",WebkitBackdropFilter:"blur(6px)"},
+  sL:{fontSize:10,color:"#64748B",fontWeight:600,textTransform:"uppercase",letterSpacing:.5},
+  sV:{fontSize:24,fontWeight:700,marginTop:3,fontFamily:"monospace",color:"#0F172A"},sS:{fontSize:11,color:"#64748B",marginTop:2},
+  tw:{overflow:"auto",borderRadius:8,border:"1px solid rgba(148,163,184,.25)",maxHeight:"62vh",background:"rgba(255,255,255,.58)"},
+  th:{padding:"9px 10px",textAlign:"left",fontWeight:600,color:"#334155",fontSize:11,textTransform:"uppercase",letterSpacing:.5,whiteSpace:"nowrap",borderBottom:"1px solid rgba(148,163,184,.24)",background:"rgba(241,245,249,.8)",position:"sticky",top:0,zIndex:5},
+  td:{padding:"9px 10px",borderBottom:"1px solid rgba(148,163,184,.22)",fontSize:13,color:"#0F172A"},
+  tm:{padding:"9px 10px",borderBottom:"1px solid rgba(148,163,184,.22)",fontFamily:"monospace",fontSize:12,color:"#475569"},
   b:{display:"inline-flex",alignItems:"center",gap:4,padding:"7px 12px",borderRadius:6,fontSize:11.5,fontWeight:600,cursor:"pointer",border:"none",whiteSpace:"nowrap",fontFamily:"inherit"},
-  bP:{background:"#4F8CFF",color:"#fff"},bS:{background:"#1F2330",color:"#E8EAF0",border:"1px solid #2A2E3B"},
+  bP:{background:"#16A34A",color:"#fff"},bS:{background:"rgba(255,255,255,.72)",color:"#0F172A",border:"1px solid rgba(148,163,184,.34)"},
   bD:{background:"rgba(248,113,113,0.1)",color:"#F87171",border:"1px solid rgba(248,113,113,0.2)"},
-  bG:{background:"rgba(52,211,153,0.1)",color:"#34D399",border:"1px solid rgba(52,211,153,0.2)"},
+  bG:{background:"rgba(22,163,74,0.1)",color:"#166534",border:"1px solid rgba(22,163,74,0.25)"},
   bW:{background:"rgba(251,191,36,0.1)",color:"#FBBF24",border:"1px solid rgba(251,191,36,0.2)"},
   bg:{display:"inline-flex",padding:"2px 8px",borderRadius:16,fontSize:10.5,fontWeight:600},
-  bgG:{background:"rgba(52,211,153,0.1)",color:"#34D399"},bgY:{background:"rgba(251,191,36,0.1)",color:"#FBBF24"},
-  bgR:{background:"rgba(248,113,113,0.1)",color:"#F87171"},bgB:{background:"rgba(79,140,255,0.15)",color:"#4F8CFF"},
+  bgG:{background:"rgba(22,163,74,0.12)",color:"#166534"},bgY:{background:"rgba(251,191,36,0.14)",color:"#92400E"},
+  bgR:{background:"rgba(248,113,113,0.12)",color:"#B91C1C"},bgB:{background:"rgba(34,197,94,0.12)",color:"#166534"},
   bgP:{background:"rgba(168,85,247,0.12)",color:"#A855F7"},
-  inp:{width:"100%",padding:"7px 10px",borderRadius:6,border:"1px solid #2A2E3B",background:"#1F2330",color:"#E8EAF0",fontSize:12.5,outline:"none",fontFamily:"inherit"},
-  ni:{width:70,padding:"5px 3px",textAlign:"center",fontFamily:"monospace",fontSize:12,borderRadius:6,border:"1px solid #2A2E3B",background:"#1F2330",color:"#E8EAF0",outline:"none"},
-  ie:{width:60,padding:"4px",textAlign:"center",fontFamily:"monospace",fontSize:11.5,borderRadius:4,border:"1.5px solid #4F8CFF",background:"#0F1117",color:"#E8EAF0",outline:"none"},
-  lb:{display:"block",fontSize:10.5,fontWeight:600,color:"#9BA1B5",marginBottom:3,textTransform:"uppercase",letterSpacing:.4},
+  inp:{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid rgba(148,163,184,.34)",background:"rgba(255,255,255,.82)",color:"#0F172A",fontSize:13,outline:"none",fontFamily:"inherit"},
+  ni:{width:70,padding:"5px 3px",textAlign:"center",fontFamily:"monospace",fontSize:12,borderRadius:8,border:"1px solid rgba(148,163,184,.34)",background:"rgba(255,255,255,.82)",color:"#0F172A",outline:"none"},
+  ie:{width:60,padding:"4px",textAlign:"center",fontFamily:"monospace",fontSize:11.5,borderRadius:4,border:"1.5px solid #16A34A",background:"#FFFFFF",color:"#0F172A",outline:"none"},
+  lb:{display:"block",fontSize:10.5,fontWeight:600,color:"#475569",marginBottom:3,textTransform:"uppercase",letterSpacing:.4},
   ov:{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16},
-  mo:{background:"#181B25",border:"1px solid #2A2E3B",borderRadius:14,padding:22,width:500,maxWidth:"95vw",maxHeight:"82vh",overflowY:"auto"},
+  mo:{background:"rgba(255,255,255,.86)",backdropFilter:"blur(12px)",WebkitBackdropFilter:"blur(12px)",border:"1px solid rgba(148,163,184,.28)",borderRadius:14,padding:22,width:500,maxWidth:"95vw",maxHeight:"82vh",overflowY:"auto",color:"#0F172A",boxShadow:"0 20px 40px rgba(15,23,42,.14)"},
   mW:{width:750},mA:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14},
   fg:{marginBottom:12},fr:{display:"flex",gap:10},
-  nI:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(79,140,255,0.1)",border:"1px solid rgba(79,140,255,0.2)",color:"#4F8CFF",fontSize:12.5},
-  nP:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(251,191,36,0.08)",border:"1px solid rgba(251,191,36,0.2)",color:"#FBBF24",fontSize:12.5},
-  nG:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(52,211,153,0.08)",border:"1px solid rgba(52,211,153,0.2)",color:"#34D399",fontSize:12.5},
-  tabs:{display:"flex",gap:2,marginBottom:14,padding:2,background:"#1F2330",borderRadius:6,width:"fit-content"},
+  nI:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(22,163,74,0.08)",border:"1px solid rgba(22,163,74,0.2)",color:"#166534",fontSize:12.5},
+  nP:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(251,191,36,0.1)",border:"1px solid rgba(251,191,36,0.25)",color:"#92400E",fontSize:12.5},
+  nG:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(22,163,74,0.08)",border:"1px solid rgba(22,163,74,0.22)",color:"#166534",fontSize:12.5},
+  tabs:{display:"flex",gap:2,marginBottom:14,padding:2,background:"rgba(241,245,249,.86)",borderRadius:8,width:"fit-content",border:"1px solid rgba(148,163,184,.28)",backdropFilter:"blur(6px)",WebkitBackdropFilter:"blur(6px)"},
   tab:{padding:"5px 12px",borderRadius:5,fontSize:11.5,fontWeight:600,cursor:"pointer",border:"none",fontFamily:"inherit"},
-  tA:{background:"#4F8CFF",color:"#fff"},tI:{background:"transparent",color:"#9BA1B5"},
-  eB:{background:"none",border:"none",cursor:"pointer",color:"#6B7186",padding:2,borderRadius:4,display:"inline-flex",alignItems:"center"},
-  cE:{background:"rgba(79,140,255,0.08)"},
+  tA:{background:"#16A34A",color:"#fff"},tI:{background:"transparent",color:"#475569"},
+  eB:{background:"none",border:"none",cursor:"pointer",color:"#64748B",padding:2,borderRadius:4,display:"inline-flex",alignItems:"center"},
+  cE:{background:"rgba(22,163,74,0.08)"},
   to:{position:"fixed",top:14,right:14,zIndex:2000,padding:"8px 16px",borderRadius:6,fontSize:12.5,fontWeight:500,color:"#34D399",background:"#065F46",border:"1px solid rgba(52,211,153,0.3)"},
   toE:{color:"#F87171",background:"#7F1D1D",border:"1px solid rgba(248,113,113,0.3)"},
-  lP:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0F1117"},
-  lC:{width:360,maxWidth:"90vw",background:"#181B25",border:"1px solid #2A2E3B",borderRadius:14,padding:"28px 24px"},
+  lP:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#ECEFF3"},
+  lC:{width:540,maxWidth:"94vw",background:"rgba(255,255,255,.74)",backdropFilter:"blur(14px)",WebkitBackdropFilter:"blur(14px)",border:"1px solid rgba(15,23,42,.12)",borderRadius:22,padding:"44px 42px",boxShadow:"0 24px 48px rgba(15,23,42,.14)"},
   lE:{padding:"6px 10px",borderRadius:6,fontSize:11.5,background:"rgba(248,113,113,0.1)",color:"#F87171",border:"1px solid rgba(248,113,113,0.2)",marginBottom:10,textAlign:"center"},
-  sB:{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",background:"#1F2330",border:"1px solid #2A2E3B",borderRadius:6},
-  sI:{border:"none",background:"none",padding:0,fontSize:12.5,color:"#E8EAF0",outline:"none",width:130,fontFamily:"inherit"},
-  ft:{padding:12,borderTop:"1px solid #2A2E3B"},
-  uC:{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:6,background:"#1F2330"},
+  sB:{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",background:"rgba(255,255,255,.8)",border:"1px solid rgba(148,163,184,.34)",borderRadius:8},
+  sI:{border:"none",background:"none",padding:0,fontSize:12.5,color:"#0F172A",outline:"none",width:130,fontFamily:"inherit"},
+  ft:{padding:12,borderTop:"1px solid rgba(148,163,184,.22)"},
+  uC:{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:8,background:"rgba(241,245,249,.72)"},
   av:{width:28,height:28,borderRadius:"50%",background:"linear-gradient(135deg,#34D399,#059669)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:11,color:"#fff",flexShrink:0},
-  loB:{display:"flex",alignItems:"center",gap:4,marginTop:5,width:"100%",padding:"6px 9px",borderRadius:6,border:"1px solid #2A2E3B",background:"transparent",color:"#9BA1B5",fontSize:10.5,cursor:"pointer",fontFamily:"inherit"},
+  loB:{display:"flex",alignItems:"center",gap:4,marginTop:5,width:"100%",padding:"6px 9px",borderRadius:8,border:"1px solid rgba(148,163,184,.32)",background:"rgba(255,255,255,.5)",color:"#475569",fontSize:10.5,cursor:"pointer",fontFamily:"inherit"},
   tbl:{width:"100%",borderCollapse:"collapse"},
 };
 
@@ -180,21 +180,24 @@ function Login({logo}){
       sE("Registration request submitted. You can sign in after admin approval.");
     }catch(e){sRErr(e.message);}finally{sL(false);}  };
   return(<div style={S.lP}><div style={S.lC}>
-    <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"center",marginBottom:20}}>{logo?<img src={logo} alt="Logo" style={{width:34,height:34,borderRadius:8,objectFit:"cover"}}/>:<div style={S.logo}>OM</div>}<div><div style={{fontWeight:700,fontSize:16}}>OrderManager</div><div style={{fontSize:10,color:"#6B7186"}}>Multi-Store Platform v3</div></div></div>
-    <div style={{textAlign:"center",fontSize:18,fontWeight:700,marginBottom:4}}>Welcome back</div>
-    <div style={{textAlign:"center",fontSize:12,color:"#9BA1B5",marginBottom:16}}>{isReg?"Register a new account":"Sign in to manage orders"}</div>
+    <div style={{display:"flex",alignItems:"center",gap:10,justifyContent:"center",marginBottom:28}}>
+      {logo?<img src={logo} alt="Logo" style={{width:44,height:44,borderRadius:10,objectFit:"cover"}}/>:<div style={Object.assign({},S.logo,{width:44,height:44,fontSize:15})}>OM</div>}
+      <div><div style={{fontWeight:800,fontSize:24,color:"#111827",lineHeight:1}}>OrderManager</div><div style={{fontSize:12,color:"#334155",marginTop:4}}>Multi-Store Ordering Platform</div></div>
+    </div>
+    <div style={{textAlign:"center",fontSize:34,fontWeight:800,letterSpacing:".01em",marginBottom:8,color:"#0B1220"}}>{isReg?"Create Account":"Welcome Back"}</div>
+    <div style={{textAlign:"center",fontSize:17,color:"#1F2937",marginBottom:24}}>{isReg?"Register a new account":"Sign in to manage orders"}</div>
     {err&&<div style={S.lE}>{err}</div>}
     {rErr&&<div style={S.lE}>{rErr}</div>}
     {auth.error&&<div style={S.lE}>{auth.error}</div>}
-    <div style={S.fg}><div style={S.lb}>Username</div><input style={S.inp} value={un} onChange={e=>sU(e.target.value)} placeholder="Enter username" onKeyDown={e=>{if(e.key==="Enter"&&!loading){isReg?register():go();}}} disabled={loading}/></div>
-    <div style={S.fg}><div style={S.lb}>Password</div><input style={S.inp} type="password" value={pw} onChange={e=>sP(e.target.value)} placeholder="Enter password" onKeyDown={e=>{if(e.key==="Enter"&&!loading){isReg?register():go();}}} disabled={loading}/></div>
+    <div style={S.fg}><div style={S.lb}>Username</div><input style={Object.assign({},S.inp,{padding:"12px 14px",fontSize:15,borderRadius:12})} value={un} onChange={e=>sU(e.target.value)} placeholder="Enter username" onKeyDown={e=>{if(e.key==="Enter"&&!loading){isReg?register():go();}}} disabled={loading}/></div>
+    <div style={S.fg}><div style={S.lb}>Password</div><input style={Object.assign({},S.inp,{padding:"12px 14px",fontSize:15,borderRadius:12})} type="password" value={pw} onChange={e=>sP(e.target.value)} placeholder="Enter password" onKeyDown={e=>{if(e.key==="Enter"&&!loading){isReg?register():go();}}} disabled={loading}/></div>
     {isReg&&(<>
-      <div style={S.fg}><div style={S.lb}>Name</div><input style={S.inp} value={name} onChange={function(e){sName(e.target.value);}} placeholder="Full name" disabled={loading}/></div>
-      <div style={S.fg}><div style={S.lb}>Phone</div><input style={S.inp} value={phone} onChange={function(e){sPhone(e.target.value);}} placeholder="Phone" disabled={loading}/></div>
-      <div style={S.fg}><div style={S.lb}>Store</div><select style={S.inp} value={storeId} onChange={function(e){sStore(e.target.value);}} disabled={loading}>{storesList.map(function(s){return <option key={s.id} value={s.id}>{s.name}</option>;})}</select></div>
+      <div style={S.fg}><div style={S.lb}>Name</div><input style={Object.assign({},S.inp,{padding:"12px 14px",fontSize:15,borderRadius:12})} value={name} onChange={function(e){sName(e.target.value);}} placeholder="Full name" disabled={loading}/></div>
+      <div style={S.fg}><div style={S.lb}>Phone</div><input style={Object.assign({},S.inp,{padding:"12px 14px",fontSize:15,borderRadius:12})} value={phone} onChange={function(e){sPhone(e.target.value);}} placeholder="Phone" disabled={loading}/></div>
+      <div style={S.fg}><div style={S.lb}>Store</div><select style={Object.assign({},S.inp,{padding:"12px 14px",fontSize:15,borderRadius:12})} value={storeId} onChange={function(e){sStore(e.target.value);}} disabled={loading}>{storesList.map(function(s){return <option key={s.id} value={s.id}>{s.name}</option>;})}</select></div>
     </>)}
-    <button style={Object.assign({},S.b,S.bP,{width:"100%",justifyContent:"center",padding:9,opacity:loading?0.6:1})} onClick={isReg?register:go} disabled={loading}>{loading?(isReg?"Registering...":"Signing in..."):(isReg?"Register":"Sign In")}</button>
-    <div style={{marginTop:14,color:"#9BA1B5",fontSize:11,cursor:"pointer",textAlign:"center"}} onClick={function(){sReg(!isReg);sE("");sRErr("");}}>{isReg?"Already have an account? Sign in":"Need an account? Register"}</div>
+    <button style={Object.assign({},S.b,S.bP,{width:"100%",justifyContent:"center",padding:"13px 18px",borderRadius:999,fontSize:20,fontWeight:700,opacity:loading?0.6:1,marginTop:8})} onClick={isReg?register:go} disabled={loading}>{loading?(isReg?"Registering...":"Signing in..."):(isReg?"Register":"Sign In")}</button>
+    <div style={{marginTop:18,color:"#334155",fontSize:14,cursor:"pointer",textAlign:"center",fontWeight:600}} onClick={function(){sReg(!isReg);sE("");sRErr("");}}>{isReg?"Already have an account? Sign in":"Need an account? Register"}</div>
   </div></div>);
 }
 
@@ -617,6 +620,7 @@ function OrderHistory({user,orders,items,setOrders,toast}){
 function OrderMonitor({orders,setOrders,items,stores,aot,toast,setPage,setConsolidatedType}){
   var _f=useState("all"),ft=_f[0],sFt=_f[1];
   var _cl=useState([]),completedLogs=_cl[0],setCompletedLogs=_cl[1];
+  var _sd=useState(null),selDone=_sd[0],setSelDone=_sd[1];
   var all=Object.entries(orders).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var f=(ft==="all"||ft==="completed")?all:all.filter(function(e){return e[1].type===ft;});
   var isReceived=function(st){return st==="submitted"||st==="draft_shared";};
@@ -626,18 +630,19 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast,setPage,setConsol
     var cancelled=false;
     apiClient.supplierOrders.getAll().then(function(list){
       if(cancelled) return;
-      var today=(new Date()).toDateString();
-      setCompletedLogs((list||[]).filter(function(l){return l.finished!==false && new Date(l.sentAt||0).toDateString()===today;}));
+      setCompletedLogs((list||[]).slice().sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);}));
     }).catch(function(){});
     return function(){cancelled=true;};
   },[]);
   var refreshCompletedLogs=async function(){
     try{
       const list=await apiClient.supplierOrders.getAll();
-      var today=(new Date()).toDateString();
-      setCompletedLogs((list||[]).filter(function(l){return l.finished!==false && new Date(l.sentAt||0).toDateString()===today;}));
+      setCompletedLogs((list||[]).slice().sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);}));
     }catch(e){}
   };
+  useEffect(function(){
+    if(ft==="completed") refreshCompletedLogs();
+  },[ft]);
   var reopenCompleted=async function(log){
     try{
       await apiClient.supplierOrders.reopen(log._id);
@@ -670,10 +675,22 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast,setPage,setConsol
       {ft!=="all"&&ft!=="completed"&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){processAll(ft);}}>Process Order {ft} (All Stores)</button>}
     </div>
     {ft==="completed" ? (
-      <div style={S.card}><div style={S.t}>Completed Orders (Today)</div>
+      <div style={S.card}><div style={S.t}>Completed Orders (All Sent Consolidated Orders)</div>
         {completedLogs.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No completed orders</div>:
-        <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Order</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th><th style={S.th}>Actions</th></tr></thead><tbody>
-          {completedLogs.map(function(l){return(<tr key={l._id||l.sentAt}><td style={S.tm}>{fmtDT(l.sentAt)}</td><td style={S.td}>Order {l.type}</td><td style={S.td}>{l.supplierName}</td><td style={S.tm}>{l.email}</td><td style={S.tm}>{l.week}</td><td style={S.td}><button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10})} onClick={function(){reopenCompleted(l);}}>Reopen / Resend</button></td></tr>);})}
+        <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Order</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th><th style={S.th}>Details</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>
+          {completedLogs.map(function(l){
+            var canReopen=true;
+            return(<tr key={l._id||l.sentAt}>
+              <td style={S.tm}>{fmtDT(l.sentAt)}</td>
+              <td style={S.td}>Order {l.type}</td>
+              <td style={S.td}>{l.supplierName}</td>
+              <td style={S.tm}>{l.email}</td>
+              <td style={S.tm}>{l.week}</td>
+              <td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelDone(l);}}>View Details</button></td>
+              <td style={S.td}><span style={Object.assign({},S.bg,l.finished===false?S.bgW:S.bgG)}>{l.finished===false?"reopened":"completed"}</span></td>
+              <td style={S.td}>{canReopen?<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10})} onClick={function(){reopenCompleted(l);}}>{l.finished===false?"Open / Resend":"Reopen / Resend"}</button>:null}</td>
+            </tr>);
+          })}
         </tbody></table></div>}
       </div>
     ) : (
@@ -693,11 +710,19 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast,setPage,setConsol
           </tr>);})}</tbody></table></div>}
       </div>
     )}
+    {selDone&&(<div style={S.ov} onClick={function(){setSelDone(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>Sent Consolidated Order {selDone.type} - {fmtDT(selDone.sentAt)}</div>
+      <div style={{fontSize:12,color:"#9BA1B5",marginBottom:8}}>Supplier: {selDone.supplierName} | {selDone.email} | Week: {selDone.week}</div>
+      {selDone.snapshotLines&&selDone.snapshotLines.length>0?
+        <div style={Object.assign({},S.tw,{maxHeight:420})}><pre style={{margin:0,padding:12,whiteSpace:"pre-wrap",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",fontSize:11.5,color:"#E8EAF0"}}>{selDone.snapshotLines.join("\n")}</pre></div>
+      :<div style={Object.assign({},S.nI,{marginBottom:0})}>No stored sent details for this record (older history entry).</div>}
+      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSelDone(null);}}>Close</button></div>
+    </div></div>)}
   </div>);
 }
 
 /* ═══ CONSOLIDATED ═══ */
-function Consolidated({orders,setOrders,items,aot,toast,stores,consolidatedType,setConsolidatedType}){
+function Consolidated({orders,setOrders,items,aot,manualOpenOrder,toast,stores,consolidatedType,setConsolidatedType}){
   var _v=useState(consolidatedType||aot||"A"),vt=_v[0],sVt=_v[1];
   var _e=useState(null),eSt=_e[0],sES=_e[1];var _eq=useState({}),eQ=_eq[0],sEQ=_eq[1];
   var _en=useState({}),eNotes=_en[0],sENotes=_en[1];
@@ -712,12 +737,27 @@ function Consolidated({orders,setOrders,items,aot,toast,stores,consolidatedType,
   
   // finished status map derived from stored history
   const finishedMap = useMemo(() => {
-    const m = {};
-    logs.forEach(l => { if (l.finished!==false && l.type && String(l.week||"").indexOf(weekPrefix)===0 && new Date(l.sentAt||0).toDateString()===todaySentKey) m[l.type] = true; });
+    const latestByType = {};
+    (logs||[]).forEach(function(l){
+      if(!l || !l.type) return;
+      if(String(l.week||"").indexOf(weekPrefix)!==0) return;
+      if(new Date(l.sentAt||0).toDateString()!==todaySentKey) return;
+      var prev = latestByType[l.type];
+      if(!prev || new Date(l.sentAt||0) > new Date(prev.sentAt||0)) latestByType[l.type] = l;
+    });
+    var m = {};
+    Object.keys(latestByType).forEach(function(t){ m[t] = latestByType[t].finished !== false; });
     return m;
   }, [logs, weekPrefix, todaySentKey]);
   const isFinished = !!finishedMap[vt];
   useEffect(function(){ if(consolidatedType&&consolidatedType!==vt) sVt(consolidatedType); },[consolidatedType]);
+  useEffect(function(){
+    var onlyOpen = consolidatedType||aot||null;
+    if(onlyOpen && vt!==onlyOpen){
+      sVt(onlyOpen);
+      cancelE();
+    }
+  },[consolidatedType,aot]);
 
   // load supplier order history when component mounts
   useEffect(function(){
@@ -751,40 +791,31 @@ function Consolidated({orders,setOrders,items,aot,toast,stores,consolidatedType,
     if (isFinished) return;
     sEMailing(true);
     try{
-      await apiClient.orders.emailConsolidated(vt,eEmail, eSupplier);
+      const emailResp = await apiClient.orders.emailConsolidated(vt,eEmail, eSupplier);
       toast("Email sent to " + eEmail);
-      // record history via supplierOrders API
-      const totalObj = {};
-      // recompute consolidated totals for email log (don't rely on `totals` variable)
-      items.forEach(function(it){
-        var sum=0;
-        stores.forEach(function(st){
-          var so=getStoreOrder(st.id);
-          sum += (so&&so.items?so.items[it.code]:0)||0;
-        });
-        if(sum>0) totalObj[it.code]=sum;
-      });
-      try{
-        await apiClient.supplierOrders.create({
-          supplierName: eSupplier,
-          email: eEmail,
-          type: vt,
-          week: dk,
-          items: totalObj,
-        });
-        // update local logs state
-        setLogs(l=>[{supplierName:eSupplier,email:eEmail,type:vt,week:dk,items:totalObj,sentAt:new Date().toISOString(),finished:true}].concat(l));
-      }catch(recErr){console.error('history log failed',recErr);}      
+      if(emailResp && emailResp.supplierOrder){
+        setLogs(function(l){ return [emailResp.supplierOrder].concat(l||[]).sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);}); });
+      } else {
+        // fallback UI record if backend history save fails; next refresh will show actual data
+        setLogs(function(l){ return [{supplierName:eSupplier,email:eEmail,type:vt,week:dk,sentAt:new Date().toISOString(),finished:true,hasPdf:false}].concat(l||[]).sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);}); });
+      }
       sEmail("");
       sSupplier("");
     }catch(e){toast(e.message,true);}finally{sEMailing(false);}  };
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
-      <div style={S.tabs}>{["A","B","C"].map(function(t){var done = !!finishedMap[t];return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);if(setConsolidatedType)setConsolidatedType(t);cancelE();}}>{done?`Order ${t} ✓`:`Order ${t}`}</button>;})}</div>
-      <div style={{display:"flex",gap:5}}>{eSt&&<Fragment><button style={Object.assign({},S.b,S.bG)} onClick={saveE}>Save</button><button style={Object.assign({},S.b,S.bS)} onClick={cancelE}>Cancel</button></Fragment>}</div>
+      <div style={S.tabs}>{["A","B","C"].map(function(t){
+        var done=!!finishedMap[t];
+        var onlyOpen=(consolidatedType||aot||vt);
+        var lockedBySchedule = !manualOpenOrder;
+        var locked=t!==onlyOpen || lockedBySchedule;
+        var tip = lockedBySchedule ? "Locked while using schedule. Use manual override (or reopen/resend flow) to open a consolidated order." : (t!==onlyOpen ? ("Locked. Only Order "+onlyOpen+" is open right now.") : "");
+        return <button key={t} disabled={locked} title={tip} style={Object.assign({},S.tab,vt===t?S.tA:S.tI,locked?{opacity:.45,cursor:"not-allowed"}:{})} onClick={function(){if(locked)return;sVt(t);if(setConsolidatedType)setConsolidatedType(t);cancelE();}}>{done?("Order "+t+" ✓"):("Order "+t)}</button>;
+      })}</div>
     </div>
+    {(consolidatedType||aot)&&<div style={S.nI}>{!manualOpenOrder?"Schedule mode active: consolidated tabs are locked.":("Only Order "+(consolidatedType||aot)+" is open right now. Other consolidated orders are locked until their scheduled day or manual override.")}</div>}
     {eSt&&<div style={S.nI}>Editing: {(stores.find(function(s){return s.id===eSt;})||{}).name}</div>}
-    {isFinished&&<div style={Object.assign({},S.nI,{color:'#34D399'})}>Order {vt} has been sent and is finished; no further edits allowed.</div>}
+    {isFinished&&<div style={Object.assign({},S.nI,{color:'#34D399'})}>Order {vt} has been sent and is finished; no further edits allowed for this order.</div>}
     <div style={Object.assign({},S.card,{padding:0})}>
       <div style={{padding:"12px 14px",borderBottom:"1px solid #2A2E3B",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div><div style={S.t}>Consolidated Order {vt}</div><div style={S.d}>Click edit icon on store column to modify</div></div>
@@ -811,11 +842,13 @@ function Consolidated({orders,setOrders,items,aot,toast,stores,consolidatedType,
           return rows.map(function(it){
           var qs=stores.map(function(st){if(eSt===st.id)return eQ[it.code]||0;var so=getStoreOrder(st.id);return so&&so.items?(so.items[it.code]||0):0;});
           var ns=stores.map(function(st){if(eSt===st.id)return eNotes[it.code]||"";var so=getStoreOrder(st.id);return so&&so.notes?(so.notes[it.code]||""):"";});
-          var tot=qs.reduce(function(a,b){return a+b;},0);
+          var dqs=isFinished?qs.map(function(){return 0;}):qs;
+          var dns=isFinished?ns.map(function(){return "";}):ns;
+          var tot=dqs.reduce(function(a,b){return a+b;},0);
           return(<tr key={it.code}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td>
             {stores.map(function(st,idx){var isE=eSt===st.id;return(<Fragment key={st.id}><td style={Object.assign({},S.td,{textAlign:"center"},isE?S.cE:{})}>
               {isE?<input style={S.ie} type="number" min="0" value={eQ[it.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);sEQ(function(p){var n=Object.assign({},p);n[it.code]=v;return n;});}}/>
-              :<span style={{fontFamily:"monospace",fontSize:11,color:qs[idx]>0?"#E8EAF0":"#6B7186"}}>{qs[idx]}</span>}</td><td style={Object.assign({},S.td,isE?S.cE:{})}>{isE?<input style={Object.assign({},S.inp,{padding:"4px 6px",fontSize:11})} value={eNotes[it.code]||""} onChange={function(e){var v=e.target.value;sENotes(function(p){var n=Object.assign({},p);n[it.code]=v;return n;});}} placeholder="note"/>:<span style={{color:ns[idx]?"#E8EAF0":"#6B7186",fontSize:11.5}}>{ns[idx]||"-"}</span>}</td></Fragment>);})}
+              :<span style={{fontFamily:"monospace",fontSize:11,color:dqs[idx]>0?"#E8EAF0":"#6B7186"}}>{dqs[idx]}</span>}</td><td style={Object.assign({},S.td,isE?S.cE:{})}>{isE?<input style={Object.assign({},S.inp,{padding:"4px 6px",fontSize:11})} value={eNotes[it.code]||""} onChange={function(e){var v=e.target.value;sENotes(function(p){var n=Object.assign({},p);n[it.code]=v;return n;});}} placeholder="note"/>:<span style={{color:dns[idx]?"#E8EAF0":"#6B7186",fontSize:11.5}}>{dns[idx]||"-"}</span>}</td></Fragment>);})}
             <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:tot>0?"#4F8CFF":"#6B7186"})}>{tot}</td></tr>);
         });})()}</tbody></table></div></div>
   </div>);
@@ -1005,6 +1038,8 @@ function UserMgmt({users,setUsers,registrationRequests,setRegistrationRequests,t
   var _a=useState(false),shA=_a[0],sA=_a[1];
   var _n=useState({username:"",password:"",name:"",phone:"",role:"manager",storeId:stores[0]?stores[0].id:"S1",active:true}),nu=_n[0],sN=_n[1];
   var _r=useState(null),rP=_r[0],sRP=_r[1];var _pw=useState(""),nPw=_pw[0],sNP=_pw[1];
+  var _eu=useState(null),editUserId=_eu[0],setEditUserId=_eu[1];
+  var _ef=useState({username:"",name:"",phone:"",role:"manager",storeId:"",active:true}),editF=_ef[0],setEditF=_ef[1];
   var add=async function(){
       if(!nu.username||!nu.password||!nu.name||!nu.phone){toast("All fields including phone required",true);return;}
       if(users.find(function(u){return u.username===nu.username;})){toast("Username exists",true);return;}
@@ -1047,6 +1082,28 @@ function UserMgmt({users,setUsers,registrationRequests,setRegistrationRequests,t
         setRegistrationRequests(reqs);
         toast("Registration rejected");
       }catch(e){toast(e.message,true);}    };
+  var openEdit=function(u){
+      setEditUserId(u.id||u.username);
+      setEditF({username:u.username||"",name:u.name||"",phone:u.phone||"",role:u.role||"manager",storeId:u.storeId||"",active:!!u.active});
+    };
+  var saveEdit=async function(){
+      if(!editUserId) return;
+      if(!editF.username||!editF.name||!editF.phone){toast("Name, username and phone are required",true);return;}
+      try{
+        await apiClient.users.update(editUserId, editF);
+        const all=await apiClient.users.getAll();
+        setUsers(all);
+        setEditUserId(null);
+        toast("User updated");
+      }catch(e){toast(e.message,true);}    };
+  var removeUser=async function(userId){
+      try{
+        if(!window.confirm("Delete this user?")) return;
+        await apiClient.users.delete(userId);
+        const all=await apiClient.users.getAll();
+        setUsers(all);
+        toast("User deleted");
+      }catch(e){toast(e.message,true);}    };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Registration Requests</div><div style={S.d}>{(registrationRequests||[]).length} pending approval</div></div></div>
       {!(registrationRequests||[]).length?<div style={{color:"#6B7186",fontSize:12}}>No pending requests</div>:
@@ -1061,8 +1118,10 @@ function UserMgmt({users,setUsers,registrationRequests,setRegistrationRequests,t
         <td style={S.td}><span style={Object.assign({},S.bg,u.role==="admin"?S.bgB:S.bgG)}>{u.role}</span></td><td style={S.td}>{sn}</td>
         <td style={S.td}><span style={Object.assign({},S.bg,u.active?S.bgG:S.bgR)}>{u.active?"Active":"Off"}</span></td>
         <td style={S.td}><div style={{display:"flex",gap:3}}>
-          <button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){toggle(u.username);}}>{u.active?"Disable":"Enable"}</button>
-          <button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){sRP(u.username);sNP("");}}>Reset PW</button></div></td></tr>);})}</tbody></table></div></div>
+          <button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){toggle(u.id||u.username);}}>{u.active?"Disable":"Enable"}</button>
+          <button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){openEdit(u);}}>Edit</button>
+          <button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){sRP(u.id||u.username);sNP("");}}>Reset PW</button>
+          <button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){removeUser(u.id||u.username);}}>Delete</button></div></td></tr>);})}</tbody></table></div></div>
     {shA&&(<div style={S.ov} onClick={function(){sA(false);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Create User</div>
       <div style={S.fg}><div style={S.lb}>Name *</div><input style={S.inp} value={nu.name} onChange={function(e){sN(Object.assign({},nu,{name:e.target.value}));}}/></div>
@@ -1076,6 +1135,15 @@ function UserMgmt({users,setUsers,registrationRequests,setRegistrationRequests,t
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Reset Password - {rP}</div>
       <div style={S.fg}><div style={S.lb}>New Password (min 6)</div><input style={S.inp} type="password" value={nPw} onChange={function(e){sNP(e.target.value);}}/></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sRP(null);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={doReset}>Reset</button></div></div></div>)}
+    {editUserId&&(<div style={S.ov} onClick={function(){setEditUserId(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Edit User</div>
+      <div style={S.fg}><div style={S.lb}>Name *</div><input style={S.inp} value={editF.name} onChange={function(e){setEditF(Object.assign({},editF,{name:e.target.value}));}}/></div>
+      <div style={S.fg}><div style={S.lb}>Username *</div><input style={S.inp} value={editF.username} onChange={function(e){setEditF(Object.assign({},editF,{username:e.target.value}));}}/></div>
+      <div style={S.fg}><div style={S.lb}>Phone *</div><input style={S.inp} value={editF.phone} onChange={function(e){setEditF(Object.assign({},editF,{phone:e.target.value}));}}/></div>
+      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Role</div><select style={S.inp} value={editF.role} onChange={function(e){setEditF(Object.assign({},editF,{role:e.target.value}));}}><option value="manager">Manager</option><option value="admin">Admin</option></select></div>
+      <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Store</div><select style={S.inp} value={editF.storeId||""} onChange={function(e){setEditF(Object.assign({},editF,{storeId:e.target.value}));}}><option value="">No Store</option>{stores.map(function(s){return <option key={s.id} value={s.id}>{s.name}</option>;})}</select></div></div>
+      <div style={S.fg}><label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}><input type="checkbox" checked={!!editF.active} onChange={function(e){setEditF(Object.assign({},editF,{active:e.target.checked}));}}/><span style={{fontSize:12}}>Active user</span></label></div>
+      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setEditUserId(null);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={saveEdit}>Save</button></div></div></div>)}
   </div>);
 }
 

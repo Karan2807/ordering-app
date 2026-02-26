@@ -6,6 +6,9 @@ const supplierOrderSchema = new mongoose.Schema({
   type: { type: String, required: true }, // A, B, C etc
   week: { type: String, required: true },
   items: { type: mongoose.Schema.Types.Mixed, default: {} },
+  snapshotLines: { type: [String], default: [] },
+  pdfBase64: { type: String, default: null },
+  pdfFilename: { type: String, default: null },
   sentAt: { type: Date, default: Date.now },
   finished: { type: Boolean, default: true },
 });

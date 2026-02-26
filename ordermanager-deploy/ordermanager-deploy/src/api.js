@@ -200,6 +200,17 @@ export const apiClient = {
         body: JSON.stringify(data),
       });
     },
+    update(userId, data) {
+      return apiClient.request(`/users/${userId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+    delete(userId) {
+      return apiClient.request(`/users/${userId}`, {
+        method: 'DELETE',
+      });
+    },
 
     toggle(userId) {
       return apiClient.request(`/users/${userId}/toggle`, { method: 'PATCH' });
@@ -224,6 +235,36 @@ export const apiClient = {
         method: 'POST',
       });
     },
+  },
+
+  async download(endpoint, filename) {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const headers = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(url, { headers });
+    if (response.status === 401) {
+      apiClient.setToken(null);
+      window.location.href = '/';
+      throw new Error('Session expired. Please login again.');
+    }
+    if (!response.ok) {
+      let msg = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const data = await response.json();
+        if (data && data.error) msg = data.error;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    const blob = await response.blob();
+    const urlObj = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = urlObj;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(urlObj), 1000);
+    return true;
   },
 
   // Suppliers
@@ -316,6 +357,9 @@ export const apiClient = {
       return apiClient.request(`/orders/supplier-orders/${id}/reopen`, {
         method: 'PATCH',
       });
+    },
+    downloadPdf(id, filename) {
+      return apiClient.download(`/orders/supplier-orders/${id}/pdf`, filename);
     },
   },
 

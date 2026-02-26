@@ -5,6 +5,8 @@ import User from '../models/user.js';
 import RegistrationRequest from '../models/registrationRequest.js';
 
 const router = express.Router();
+const findUserByIdOrUsername = (userId) =>
+  User.findOne({ $or: [{ id: userId }, { username: userId }] });
 
 // Get all users (admin only)
 router.get('/', authMiddleware, async (req, res) => {
@@ -58,6 +60,37 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
+// Update user (admin only)
+router.patch('/:userId', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+
+    const user = await findUserByIdOrUsername(req.params.userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const { username, name, phone, role, storeId, active } = req.body || {};
+
+    if (username && username !== user.username) {
+      const exists = await User.findOne({ username });
+      if (exists) return res.status(400).json({ error: 'Username already exists' });
+      user.username = username;
+    }
+    if (name != null) user.name = name;
+    if (phone != null) user.phone = phone;
+    if (role != null) user.role = role;
+    if (storeId !== undefined) user.storeId = storeId || null;
+    if (active !== undefined) user.active = !!active;
+
+    await user.save();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Update user error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Toggle user active (admin only)
 router.patch('/:userId/toggle', authMiddleware, async (req, res) => {
   try {
@@ -65,7 +98,7 @@ router.patch('/:userId/toggle', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
-    const user = await User.findOne({ id: req.params.userId });
+    const user = await findUserByIdOrUsername(req.params.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -90,7 +123,7 @@ router.post('/:userId/reset-password', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const user = await User.findOne({ id: req.params.userId });
+    const user = await findUserByIdOrUsername(req.params.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     user.password = password;
     await user.save();
@@ -98,6 +131,25 @@ router.post('/:userId/reset-password', authMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('Reset password error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete user (admin only)
+router.delete('/:userId', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const user = await findUserByIdOrUsername(req.params.userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.username === req.user.username) {
+      return res.status(400).json({ error: 'Cannot delete currently logged-in user' });
+    }
+    await User.deleteOne({ _id: user._id });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete user error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
