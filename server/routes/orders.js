@@ -358,7 +358,51 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     };
 
     await transporter.sendMail(mailOptions);
-    res.json({ success: true });
+
+    let supplierOrder = null;
+    try {
+      const totalObj = {};
+      for (const store of stores) {
+        const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey);
+        if (order && order.items) {
+          order.items.forEach((i) => {
+            totalObj[i.itemCode] = (totalObj[i.itemCode] || 0) + (i.quantity || 0);
+          });
+        }
+      }
+
+      supplierOrder = await SupplierOrder.create({
+        supplierName: supplierDisplayName,
+        email,
+        type: req.params.type,
+        week: weekKey,
+        items: totalObj,
+        snapshotLines: pdfLines,
+        pdfBase64: pdfBuffer.toString('base64'),
+        pdfFilename: `consolidated-order-${req.params.type}-${weekKey}.pdf`,
+        finished: true,
+      });
+    } catch (historyErr) {
+      console.error('Supplier email history save error:', historyErr);
+    }
+
+    res.json({
+      success: true,
+      supplierOrder: supplierOrder
+        ? {
+            _id: supplierOrder._id,
+            supplierName: supplierOrder.supplierName,
+            email: supplierOrder.email,
+            type: supplierOrder.type,
+            week: supplierOrder.week,
+            items: supplierOrder.items,
+            snapshotLines: supplierOrder.snapshotLines,
+            sentAt: supplierOrder.sentAt,
+            finished: supplierOrder.finished,
+            hasPdf: !!supplierOrder.pdfBase64,
+          }
+        : null,
+    });
   } catch (err) {
     console.error('Email consolidated error:', err);
     if (err.response) {
@@ -462,49 +506,7 @@ router.post('/email', authMiddleware, async (req, res) => {
     // use jsonTransport which only logs the message (development fallback).
     await transporter.sendMail(mailOptions);
 
-    let supplierOrder = null;
-    try {
-      const totalObj = {};
-      for (const store of stores) {
-        const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey);
-        if (order && order.items) {
-          order.items.forEach((i) => {
-            totalObj[i.itemCode] = (totalObj[i.itemCode] || 0) + (i.quantity || 0);
-          });
-        }
-      }
-      supplierOrder = await SupplierOrder.create({
-        supplierName: supplierDisplayName,
-        email,
-        type: req.params.type,
-        week: weekKey,
-        items: totalObj,
-        snapshotLines: pdfLines,
-        pdfBase64: pdfBuffer.toString('base64'),
-        pdfFilename: `consolidated-order-${req.params.type}-${weekKey}.pdf`,
-        finished: true,
-      });
-    } catch (historyErr) {
-      console.error('Supplier email history save error:', historyErr);
-    }
-
-    res.json({
-      success: true,
-      supplierOrder: supplierOrder
-        ? {
-            _id: supplierOrder._id,
-            supplierName: supplierOrder.supplierName,
-            email: supplierOrder.email,
-            type: supplierOrder.type,
-            week: supplierOrder.week,
-            items: supplierOrder.items,
-            snapshotLines: supplierOrder.snapshotLines,
-            sentAt: supplierOrder.sentAt,
-            finished: supplierOrder.finished,
-            hasPdf: !!supplierOrder.pdfBase64,
-          }
-        : null,
-    });
+    res.json({ success: true });
   } catch (err) {
     console.error('Generic email send error:', err);
     if (err.response) {
@@ -515,4 +517,3 @@ router.post('/email', authMiddleware, async (req, res) => {
 });
 
 export default router;
-
