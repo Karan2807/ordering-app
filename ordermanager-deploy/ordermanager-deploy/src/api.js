@@ -2,43 +2,26 @@
  * API Client - Centralized HTTP client with token management
  */
 
-// `VITE_API_URL` is injected at build time.  When omitted we
-// default to a sensible value so the frontend can talk to the
-// backend whether it's running locally or deployed to Render on
-// the same host.  (The previous hardcoded localhost value caused
-// "Failed to fetch" errors in production when VITE_API_URL was
-// not provided.)
-// Determine the backend URL.  Priority order:
-// 1. VITE_API_URL (build‑time environment - *always* set this for production)
-// 2. If the frontend is being served from the same host as the backend,
-//    talk to `origin + '/api'`.
-// 3. Otherwise fall back to the known Render backend address so that a
-//    custom frontend domain (e.g. apnabazarstoresordering.com) still works
-//    even if the env var was accidentally omitted.
+// API base URL resolution is intentionally strict to avoid accidentally
+// writing test data to production:
+// 1. Use explicit VITE_API_URL when provided.
+// 2. If frontend runs on localhost/127.0.0.1, default to local backend.
+// 3. For any non-localhost deployment, require VITE_API_URL.
 const API_BASE_URL = (() => {
-  // explicit override always takes precedence (used in preview/dev via env var)
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+  const configuredUrl = (import.meta.env.VITE_API_URL || '').trim();
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, '');
   }
 
   const origin = window.location.origin;
-  // when the app is running on localhost during development we want to
-  // talk to the local backend automatically.  This is the typical
-  // case for `npm run dev` so you don't have to remember to set
-  // VITE_API_URL every time.
-  if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+  const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+  if (isLocalOrigin) {
     return 'http://localhost:5000/api';
   }
 
-  // if the origin already points at the Render deployment, use it directly
-  if (origin.includes('ordering-app-uu24.onrender.com')) {
-    return `${origin}/api`;
-  }
-
-  // lastly, default to the Render URL; this ensures the app continues
-  // working when you deploy the frontend somewhere else and forget to set
-  // VITE_API_URL.
-  return 'https://ordering-app-uu24.onrender.com/api';
+  throw new Error(
+    'VITE_API_URL is required for non-localhost frontend deployments. Refusing to guess API URL.'
+  );
 })();
 
 let authToken = localStorage.getItem('authToken');
@@ -113,13 +96,6 @@ export const apiClient = {
         body: JSON.stringify({ token }),
       });
     },
-
-    register(data) {
-      return apiClient.request('/auth/register', {
-        method: 'POST',
-        body: JSON.stringify(data),
-      });
-    },
   },
 
   // Items
@@ -165,14 +141,24 @@ export const apiClient = {
     process(orderId) {
       return apiClient.request(`/orders/${orderId}/process`, { method: 'POST' });
     },
+    sendReminder(type, storeId) {
+      const body = {};
+      if (storeId) body.storeId = storeId;
+      return apiClient.request(`/orders/reminders/${type}/send`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
 
     getConsolidated(type) {
       return apiClient.request(`/orders/consolidated/${type}`);
     },
 
-    emailConsolidated(type, email, supplierName) {
+    emailConsolidated(type, email, supplierName, reopenedFromId, splitData) {
       const body = { email };
       if (supplierName) body.supplierName = supplierName;
+      if (reopenedFromId) body.reopenedFromId = reopenedFromId;
+      if (splitData) body.splitData = splitData;
       return apiClient.request(`/orders/consolidated/${type}/email`, {
         method: 'POST',
         body: JSON.stringify(body),
@@ -220,19 +206,6 @@ export const apiClient = {
       return apiClient.request(`/users/${userId}/reset-password`, {
         method: 'POST',
         body: JSON.stringify({ password }),
-      });
-    },
-    getRegistrationRequests() {
-      return apiClient.request('/users/registration-requests');
-    },
-    approveRegistrationRequest(requestId) {
-      return apiClient.request(`/users/registration-requests/${requestId}/approve`, {
-        method: 'POST',
-      });
-    },
-    rejectRegistrationRequest(requestId) {
-      return apiClient.request(`/users/registration-requests/${requestId}/reject`, {
-        method: 'POST',
       });
     },
   },
@@ -358,8 +331,8 @@ export const apiClient = {
         method: 'PATCH',
       });
     },
-    downloadPdf(id, filename) {
-      return apiClient.download(`/orders/supplier-orders/${id}/pdf`, filename);
+    downloadExcel(id, filename) {
+      return apiClient.download(`/orders/supplier-orders/${id}/excel`, filename);
     },
   },
 

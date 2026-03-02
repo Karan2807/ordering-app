@@ -12,6 +12,7 @@ router.get('/', async (req, res) => {
     const messages = {};
     let logoValue = null;
     let manualOpen = null;
+    let manualOpenSeq = null;
 
     docs.forEach((row) => {
       if (row.key.startsWith('schedule')) {
@@ -24,6 +25,9 @@ router.get('/', async (req, res) => {
         logoValue = row.value || null;
       } else if (row.key === 'manualOpenOrder') {
         manualOpen = row.value || null;
+      } else if (row.key === 'manualOpenSeq') {
+        const num = parseInt(row.value, 10);
+        manualOpenSeq = Number.isNaN(num) ? null : num;
       }
     });
 
@@ -40,7 +44,7 @@ router.get('/', async (req, res) => {
       }
     }
 
-    const result = { schedule: schedules, message: messages, logo: logoValue, manualOpenOrder: manualOpen };
+    const result = { schedule: schedules, message: messages, logo: logoValue, manualOpenOrder: manualOpen, manualOpenSeq };
     console.log('GET /settings returning', result);
     res.json(result);
   } catch (err) {
@@ -155,13 +159,19 @@ router.patch('/manual-open', authMiddleware, async (req, res) => {
     const { type } = req.body;
     if (type == null || type === '') {
       await Setting.deleteOne({ key: 'manualOpenOrder' });
-      return res.json({ success: true, manualOpenOrder: null });
+      const seqDoc = await Setting.findOne({ key: 'manualOpenSeq' }).lean();
+      const seqNum = seqDoc ? parseInt(seqDoc.value, 10) : null;
+      return res.json({ success: true, manualOpenOrder: null, manualOpenSeq: Number.isNaN(seqNum) ? null : seqNum });
     }
     if (!['A', 'B', 'C'].includes(type)) {
       return res.status(400).json({ error: 'Invalid order type' });
     }
+    const seqDoc = await Setting.findOne({ key: 'manualOpenSeq' }).lean();
+    const prev = seqDoc ? parseInt(seqDoc.value, 10) : 0;
+    const nextSeq = (Number.isNaN(prev) ? 0 : prev) + 1;
     await Setting.updateOne({ key: 'manualOpenOrder' }, { value: type }, { upsert: true });
-    res.json({ success: true, manualOpenOrder: type });
+    await Setting.updateOne({ key: 'manualOpenSeq' }, { value: String(nextSeq) }, { upsert: true });
+    res.json({ success: true, manualOpenOrder: type, manualOpenSeq: nextSeq });
   } catch (err) {
     console.error('Update manual open error:', err);
     res.status(500).json({ error: 'Server error' });

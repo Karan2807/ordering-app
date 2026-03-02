@@ -13,6 +13,7 @@ import supplierRoutes from './routes/suppliers.js';
 import storeRoutes from './routes/stores.js';
 import notificationRoutes from './routes/notifications.js';
 import settingsRoutes from './routes/settings.js';
+import { startReminderScheduler } from './services/reminderScheduler.js';
 
 // make sure required environment variables are present
 const requiredEnv = ['MONGODB_URI', 'JWT_SECRET'];
@@ -98,6 +99,7 @@ async function start(port = PORT) {
     const serverInstance = app.listen(listenPort, "0.0.0.0", () => {
       console.log(`Server running on port ${listenPort}`);
     });
+    startReminderScheduler();
 
     serverInstance.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
