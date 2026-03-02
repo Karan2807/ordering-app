@@ -428,6 +428,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     };
 
     await transporter.sendMail(mailOptions);
+
     let supplierOrder = null;
     try {
       const totalObj = {};
@@ -618,4 +619,3 @@ router.post('/email', authMiddleware, async (req, res) => {
 });
 
 export default router;
-
