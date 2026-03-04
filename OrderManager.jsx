@@ -51,6 +51,32 @@ function lastWeekKey(type){var n=new Date();return n.getFullYear()+"-W"+String(w
 function sortItems(a){return a.slice().sort(function(x,y){var c=(x.category||"").localeCompare(y.category||"");return c!==0?c:x.name.localeCompare(y.name);});}
 function fmtDT(iso){if(!iso)return"-";var d=new Date(iso);return d.toLocaleDateString()+" "+d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
 function parseCSV(text){var lines=text.split(/\r?\n/).filter(function(l){return l.trim();});if(lines.length<2)return[];var hdr=lines[0].split(",").map(function(h){return h.trim().toLowerCase().replace(/[^a-z0-9]/g,"");});var ci=hdr.findIndex(function(h){return h.indexOf("code")>=0||h==="sku";});var ni=hdr.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";});var cti=hdr.findIndex(function(h){return h.indexOf("cat")>=0||h==="group";});var ui=hdr.findIndex(function(h){return h.indexOf("unit")>=0||h==="uom";});if(ni===-1)return[];var r=[];for(var i=1;i<lines.length;i++){var cols=lines[i].split(",").map(function(c){return c.trim().replace(/"/g,"");});if(!cols[ni])continue;r.push({code:ci>=0&&cols[ci]?cols[ci]:"CSV"+String(i).padStart(4,"0"),name:cols[ni],category:cti>=0?(cols[cti]||""):"",unit:ui>=0?(cols[ui]||""):"",});}return r;}
+function parseItemSheetRows(rows){
+  if(!rows||rows.length<2)return[];
+  var hdrRow=-1,hdr=[];
+  for(var r=0;r<Math.min(rows.length,25);r++){
+    var cand=(rows[r]||[]).map(function(h){return String(h||"").trim().toLowerCase().replace(/[^a-z0-9]/g,"");});
+    var hasName=cand.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";})>=0;
+    if(hasName){hdrRow=r;hdr=cand;break;}
+  }
+  if(hdrRow===-1)return[];
+  var ci=hdr.findIndex(function(h){return h.indexOf("code")>=0||h==="sku";});
+  var ni=hdr.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";});
+  var cti=hdr.findIndex(function(h){return h.indexOf("cat")>=0||h==="group";});
+  var ui=hdr.findIndex(function(h){return h.indexOf("unit")>=0||h==="uom";});
+  if(ni===-1)return[];
+  var out=[];
+  for(var i=hdrRow+1;i<rows.length;i++){
+    var cols=rows[i]||[];
+    var name=ni>=0&&cols[ni]!=null?String(cols[ni]).trim():"";
+    if(!name) continue;
+    var code=ci>=0&&cols[ci]!=null&&String(cols[ci]).trim()?String(cols[ci]).trim():"CSV"+String(i).padStart(4,"0");
+    var category=cti>=0&&cols[cti]!=null?String(cols[cti]).trim():"";
+    var unit=ui>=0&&cols[ui]!=null?String(cols[ui]).trim():"";
+    out.push({code:code,name:name,category:category,unit:unit});
+  }
+  return out;
+}
 
 /* ═══ SEED DATA: Last week Order A submissions for all 5 stores ═══ */
 var SEED_ORDERS=(function(){
@@ -544,23 +570,7 @@ function ItemMaster({items,setItems,toast}){
           if(!ws){toast("No sheets found in Excel file",true);return;}
           var rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false});
           if(rows.length<2){toast("Excel file has no data",true);return;}
-          var hdr=rows[0].map(function(h){return String(h).trim().toLowerCase().replace(/[^a-z0-9]/g,"");});
-          var ci=hdr.findIndex(function(h){return h.includes("code")||h==="sku";});
-          var ni=hdr.findIndex(function(h){return h.includes("name")||h==="item"||h==="description";});
-          var cti=hdr.findIndex(function(h){return h.includes("cat")||h==="group";});
-          var ui=hdr.findIndex(function(h){return h.includes("unit")||h==="uom";});
-          if(ni===-1){toast("Excel file missing 'name' column",true);return;}
-          var parsed=[];
-          for(var i=1;i<rows.length;i++){
-            var cols=rows[i];
-            if(!cols||!cols[ni]) continue;
-            parsed.push({
-              code:ci>=0&&cols[ci]?cols[ci]:"CSV"+String(i).padStart(4,"0"),
-              name:cols[ni],
-              category:cti>=0?(cols[cti]||""):"",
-              unit:ui>=0?(cols[ui]||""):"",
-            });
-          }
+          var parsed=parseItemSheetRows(rows);
           if(parsed.length===0){toast("No valid item rows in Excel file",true);return;}
           sC(parsed);sU(true);
         }catch(err){console.error('Excel parse error',err);toast("Could not parse Excel file",true);}      };

@@ -94,6 +94,32 @@ function parseOrderCSV(text){
   var rows=lines.map(function(l){return l.split(",").map(function(c){return c.trim().replace(/^\"|\"$/g,"");});});
   return parseOrderSheetRows(rows);
 }
+function parseItemSheetRows(rows){
+  if(!rows||rows.length<2)return[];
+  var hdrRow=-1,hdr=[];
+  for(var r=0;r<Math.min(rows.length,25);r++){
+    var cand=(rows[r]||[]).map(function(h){return String(h||"").trim().toLowerCase().replace(/[^a-z0-9]/g,"");});
+    var hasName=cand.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";})>=0;
+    if(hasName){hdrRow=r;hdr=cand;break;}
+  }
+  if(hdrRow===-1)return[];
+  var ci=hdr.findIndex(function(h){return h.indexOf("code")>=0||h==="sku";});
+  var ni=hdr.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";});
+  var cti=hdr.findIndex(function(h){return h.indexOf("cat")>=0||h==="group";});
+  var ui=hdr.findIndex(function(h){return h.indexOf("unit")>=0||h==="uom";});
+  if(ni===-1)return[];
+  var out=[];
+  for(var i=hdrRow+1;i<rows.length;i++){
+    var cols=rows[i]||[];
+    var name=ni>=0&&cols[ni]!=null?String(cols[ni]).trim():"";
+    if(!name) continue;
+    var code=ci>=0&&cols[ci]!=null&&String(cols[ci]).trim()?String(cols[ci]).trim():"CSV"+String(i).padStart(4,"0");
+    var category=cti>=0&&cols[cti]!=null?String(cols[cti]).trim():"";
+    var unit=ui>=0&&cols[ui]!=null?String(cols[ui]).trim():"";
+    out.push({code:code,name:name,category:category,unit:unit});
+  }
+  return out;
+}
 function normLabel(v){return String(v||"").toLowerCase().replace(/[^a-z0-9]/g,"").trim();}
 function syntheticOrderKeyFromName(name){return "XLS::"+String(name||"").trim();}
 function displayNameForOrderKey(code, items){
@@ -101,6 +127,14 @@ function displayNameForOrderKey(code, items){
   if(found&&found.name)return found.name;
   if(String(code||"").indexOf("XLS::")===0)return String(code).slice(5);
   return String(code||"");
+}
+function supplierEmailsArray(supplier){
+  var arr=Array.isArray(supplier&&supplier.emails)?supplier.emails:[];
+  var email=typeof (supplier&&supplier.email)==="string"?supplier.email:"";
+  return Array.from(new Set(arr.concat(email?email.split(/[,\n;]/):[]).map(function(v){return String(v||"").trim();}).filter(function(v){return !!v;})));
+}
+function supplierEmailsText(supplier){
+  return supplierEmailsArray(supplier).join(", ");
 }
 function worksheetToRows(ws){
   if(!ws||!ws["!ref"]) return [];
@@ -565,12 +599,34 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   },[oKey,ex&&ex.status]);
   var setQ=function(c,v){if(ro)return;setQty(function(p){var n=Object.assign({},p);n[c]=Math.max(0,parseInt(v)||0);return n;});};
   var setN=function(c,v){if(ro)return;setNotes(function(p){var n=Object.assign({},p);n[c]=v;return n;});};
+  var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||"";
+  var downloadOrderExcel=async function(payload){
+    try{
+      var po=payload||{};
+      var resp=await apiClient.orders.storeOrderExcelPreview(sel,po.items||qty,po.notes||notes,user.storeId,po.date||new Date().toISOString());
+      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
+      var b64=resp.excelBase64;
+      var bin=atob(b64);
+      var bytes=new Uint8Array(bin.length);
+      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url;
+      a.download=resp.filename||("store-order-"+sel+"-"+user.storeId+".xlsx");
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){URL.revokeObjectURL(url);},1000);
+    }catch(e){toast(e.message||"Failed to generate Excel",true);}
+  };
   var save=async function(){
     try{
       // send to backend, status draft
       const resp = await apiClient.orders.create({type:sel,items:qty,notes:notes,status:"draft",storeId:user.storeId});
       var id = resp.orderId;
-      setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:Object.assign({},qty),notes:Object.assign({},notes),status:"draft",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});
+      var savedAt=new Date().toISOString();
+      setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:Object.assign({},qty),notes:Object.assign({},notes),status:"draft",store:user.storeId,type:sel,date:savedAt};return n;});
       setDraftLockByKey(function(prev){var n=Object.assign({},prev);n[oKey]=true;return n;});
       setIsEditingDraft(false);
       toast("Draft saved");
@@ -580,16 +636,17 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
     try{
       const resp = await apiClient.orders.create({type:sel,items:qty,notes:notes,status:"submitted",storeId:user.storeId});
       var id = resp.orderId;
-      setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:Object.assign({},qty),notes:Object.assign({},notes),status:"submitted",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});
+      var submittedAt=new Date().toISOString();
+      setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:Object.assign({},qty),notes:Object.assign({},notes),status:"submitted",store:user.storeId,type:sel,date:submittedAt};return n;});
       setDraftLockByKey(function(prev){if(!prev[oKey]) return prev;var n=Object.assign({},prev);delete n[oKey];return n;});
       setIsEditingDraft(false);
       setShowConfirm(false);
       toast("Order submitted!");
     }catch(e){toast(e.message,true);setShowConfirm(false);}
   };
-  var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||"";
   var filled=Object.values(qty).filter(function(v){return v>0;}).length;
   var totalCases=Object.values(qty).reduce(function(a,b){return a+(parseInt(b,10)||0);},0);
+  var hasLines=Object.keys(Object.assign({},qty,notes)).some(function(code){return (Number(qty[code])||0)>0 || String(notes[code]||"").trim();});
   var sorted=useMemo(function(){
     var known=items.slice();
     var knownCodes={};known.forEach(function(it){knownCodes[it.code]=true;});
@@ -607,6 +664,7 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
     <div style={S.card}><div style={S.cH}>
       <div><div style={S.t}>Order {sel} - {sName}</div><div style={S.d}>{filled} items | {ex?ex.status:"New"}</div></div>
       <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
+        <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadOrderExcel({items:qty,notes:notes,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Download Excel</button>
         {done?null:(isDraftOrder&&!isEditingDraft?<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={function(){setIsEditingDraft(true);}}>Edit Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}}>Submit</button></Fragment>:<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={save}>Save Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}}>Submit</button></Fragment>)}
       </div>
     </div>
@@ -632,12 +690,44 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
 }
 
 /* ═══ ORDER HISTORY ═══ */
-function OrderHistory({user,orders,items,setOrders,toast,setPage,manualOpenOrder,manualOpenSeq,setEntryType}){
+function OrderHistory({user,orders,items,setOrders,toast,setPage,aot,manualOpenOrder,manualOpenSeq,setEntryType}){
   var my=Object.entries(orders).filter(function(e){return e[0].indexOf(user.storeId)===0;}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var _s=useState(null),sel=_s[0],setSel=_s[1];
   var statusBg=function(st){return st==="processed"?S.bgP:st==="submitted"?S.bgG:S.bgY;};
+  var openType=manualOpenOrder||aot||null;
+  var openKey=openType?(user.storeId+"_"+dateKey(openType,manualOpenOrder,manualOpenSeq)):null;
+  var canReopenAsDraft=function(k,o){
+    if(!o||o.status!=="submitted") return false;
+    if(!openType) return false;
+    if(o.type!==openType) return false;
+    if(!openKey||k!==openKey) return false;
+    return true;
+  };
+  var downloadHistoryExcel=async function(o){
+    try{
+      if(!o){toast("Order not found",true);return;}
+      var resp=await apiClient.orders.storeOrderExcelPreview(o.type||"A",o.items||{},o.notes||{},o.store||user.storeId,o.date||new Date().toISOString());
+      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
+      var b64=resp.excelBase64;
+      var bin=atob(b64);
+      var bytes=new Uint8Array(bin.length);
+      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url;
+      a.download=resp.filename||("order-history-"+String(o.type||"X")+"-"+user.storeId+".xlsx");
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){URL.revokeObjectURL(url);},1000);
+      toast("Excel downloaded");
+    }catch(e){toast(e.message||"Failed to generate Excel",true);}
+  };
   var reopenAsDraft=async function(o){
     try{
+      if(!openType){toast("No order is open right now",true);return;}
+      if(!o||o.type!==openType){toast("Only currently open Order "+openType+" can be reopened as draft",true);return;}
       var resp=await apiClient.orders.create({type:o.type,items:o.items||{},notes:o.notes||{},status:"draft",storeId:user.storeId});
       var key=user.storeId+"_"+dateKey(o.type,manualOpenOrder,manualOpenSeq);
       setOrders(function(p){
@@ -663,9 +753,10 @@ function OrderHistory({user,orders,items,setOrders,toast,setPage,manualOpenOrder
     }catch(e){toast(e.message,true);}
   };
   return(<div><div style={S.card}><div style={S.t}>Past Orders</div>
+    <div style={S.d}>Reopen as Draft is only enabled for currently open Order {openType||"-"} and only once.</div>
     {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:
     <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-      {my.map(function(e){var k=e[0],o=e[1];return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button>{o.status==="submitted"&&<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5})} onClick={function(){reopenAsDraft(o);}}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeDraft(o,k);}}>Close Draft</button>}</div></td></tr>);})}</tbody></table></div>}</div>
+      {my.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((!openKey||k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download Excel</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeDraft(o,k);}}>Close Draft</button>}</div></td></tr>);})}</tbody></table></div>}</div>
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Order {orders[sel].type} - {fmtDT(orders[sel].date)}</div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Qty</th><th style={S.th}>Note</th></tr></thead><tbody>
@@ -796,10 +887,12 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast,setPage,setConsol
 /* ═══ CONSOLIDATED ═══ */
 function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,toast,stores,suppliers,consolidatedType,setConsolidatedType,reopenedFromId,setReopenedFromId}){
   var _v=useState(consolidatedType||aot||"A"),vt=_v[0],sVt=_v[1];
-  var _e=useState(null),eSt=_e[0],sES=_e[1];var _eq=useState({}),eQ=_eq[0],sEQ=_eq[1];
-  var _en=useState({}),eNotes=_en[0],sENotes=_en[1];
+  var _ea=useState(false),editingAll=_ea[0],setEditingAll=_ea[1];
+  var _eb=useState({}),editQtyByStore=_eb[0],setEditQtyByStore=_eb[1];
+  var _ec=useState({}),editNotesByStore=_ec[0],setEditNotesByStore=_ec[1];
+  var _sa=useState(false),savingAll=_sa[0],setSavingAll=_sa[1];
   var _emg=useState(false),eMailing=_emg[0],sEMailing=_emg[1];
-  var _as=useState(false),autoSaving=_as[0],setAutoSaving=_as[1];
+  var _dls=useState({}),downloadingSplit=_dls[0],setDownloadingSplit=_dls[1];
   var _st=useState(1),step=_st[0],setStep=_st[1];
   var _sv=useState([]),savedRows=_sv[0],setSavedRows=_sv[1];
   var _sp=useState([]),splitSupplierIds=_sp[0],setSplitSupplierIds=_sp[1];
@@ -807,7 +900,6 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var _ov=useState({}),itemOverrides=_ov[0],setItemOverrides=_ov[1];
   var _ss=useState({}),sentSplitBySupplier=_ss[0],setSentSplitBySupplier=_ss[1];
   var _logs=useState([]),logs=_logs[0],setLogs=_logs[1];
-  var autoSaveTimerRef=useRef(null);
   var dk=dateKey(vt,manualOpenOrder,manualOpenSeq);
   var logWeekKey=dk.endsWith("-"+vt)?dk.slice(0,dk.length-(vt.length+1)):dk;
   var weekPrefix=dk.slice(0,8);
@@ -820,12 +912,13 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     var onlyOpen = consolidatedType||aot||null;
     if(onlyOpen && vt!==onlyOpen){
       sVt(onlyOpen);
-      sES(null);sEQ({});sENotes({});
+      setEditingAll(false);setEditQtyByStore({});setEditNotesByStore({});
       if(setReopenedFromId) setReopenedFromId(null);
     }
   },[consolidatedType,aot]);
   useEffect(function(){
     setStep(1);setSavedRows([]);setSplitSupplierIds([]);setGlobalSplit({});setItemOverrides({});setSentSplitBySupplier({});
+    setEditingAll(false);setEditQtyByStore({});setEditNotesByStore({});
     if(setReopenedFromId) setReopenedFromId(null);
   },[dk]);
   useEffect(function(){
@@ -848,42 +941,70 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     });
     rows.sort(function(a,b){return String(a.name||"").localeCompare(String(b.name||""));});
     return rows.map(function(it){
-      var qtyByStoreId={};var total=0;
+      var qtyByStoreId={};var total=0;var noteParts=[];
       slots.forEach(function(sl){
         if(!sl.store) return;
         var so=getStoreOrder(sl.store.id);var q=so&&so.items?(so.items[it.code]||0):0;
+        var noteTxt=so&&so.notes?String(so.notes[it.code]||"").trim():"";
+        if(noteTxt&&noteParts.indexOf(noteTxt)===-1) noteParts.push(noteTxt);
         qtyByStoreId[sl.store.id]=q;total+=q;
       });
-      return {code:it.code,name:it.name,qtyByStoreId:qtyByStoreId,total:total};
+      return {code:it.code,name:it.name,qtyByStoreId:qtyByStoreId,total:total,note:noteParts.join(" | ")};
     });
   },[items,orders,slots,vt,manualOpenOrder,manualOpenSeq]);
 
-  var startE=function(sid){
-    var exOrder=getStoreOrder(sid)||{};
-    var exItems=exOrder.items||{};var exNotes=exOrder.notes||{};
-    var q={};var n={};items.forEach(function(it){q[it.code]=exItems[it.code]||0;n[it.code]=exNotes[it.code]||"";});
-    sEQ(q);sENotes(n);sES(sid);
+  var startEditAll=function(){
+    if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
+    var next={};var nextNotes={};
+    slots.forEach(function(sl){
+      if(!sl.store) return;
+      var sid=sl.store.id;
+      var rowMap={};var noteMap={};
+      baseRows.forEach(function(r){rowMap[r.code]=Number(r.qtyByStoreId&&r.qtyByStoreId[sid])||0;});
+      var current=getStoreOrder(sid)||{};
+      var currentNotes=current.notes||{};
+      baseRows.forEach(function(r){noteMap[r.code]=String(currentNotes[r.code]||"");});
+      next[sid]=rowMap;
+      nextNotes[sid]=noteMap;
+    });
+    setEditQtyByStore(next);
+    setEditNotesByStore(nextNotes);
+    setEditingAll(true);
   };
-  var persistEdit=async function(sid,nextQ,nextNotes,silent){
-    if(!sid) return;
+  var saveAllEdits=async function(){
+    if(!editingAll) return;
     try{
-      setAutoSaving(true);
-      var resp=await apiClient.orders.create({type:vt,items:nextQ,notes:nextNotes,status:"submitted",storeId:sid});
-      var id=resp.orderId;var k=sid+"_"+dk;
-      setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},p[k]||{},{id:id,items:Object.assign({},nextQ),notes:Object.assign({},nextNotes),status:(p[k]||{}).status||"submitted",store:sid,type:vt,date:(p[k]||{}).date||new Date().toISOString()});return n;});
-      if(!silent) toast("Updated");
-    }catch(e){toast(e.message,true);}finally{setAutoSaving(false);}
+      setSavingAll(true);
+      var targets=slots.filter(function(sl){return !!sl.store;}).map(function(sl){return sl.store.id;});
+      var results=await Promise.all(targets.map(async function(sid){
+        var qty=Object.assign({},editQtyByStore[sid]||{});
+        var notes=Object.assign({},editNotesByStore[sid]||{});
+        var resp=await apiClient.orders.create({type:vt,items:qty,notes:notes,status:"submitted",storeId:sid});
+        return {sid:sid,orderId:resp&&resp.orderId,qty:qty,notes:notes};
+      }));
+      setOrders(function(prev){
+        var n=Object.assign({},prev);
+        results.forEach(function(r){
+          var k=r.sid+"_"+dk;
+          n[k]=Object.assign({},prev[k]||{},{
+            id:r.orderId||(prev[k]||{}).id,
+            items:Object.assign({},r.qty),
+            notes:Object.assign({},r.notes),
+            status:(prev[k]||{}).status||"submitted",
+            store:r.sid,
+            type:vt,
+            date:(prev[k]||{}).date||new Date().toISOString()
+          });
+        });
+        return n;
+      });
+      setEditingAll(false);
+      setEditQtyByStore({});
+      setEditNotesByStore({});
+      toast("Consolidated quantities saved");
+    }catch(e){toast(e.message,true);}
+    finally{setSavingAll(false);}
   };
-  var scheduleAutoSave=function(nextQ,nextNotes){
-    if(!eSt) return;
-    if(autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current=setTimeout(function(){autoSaveTimerRef.current=null;persistEdit(eSt,nextQ,nextNotes,true);},450);
-  };
-  var cancelE=function(){
-    if(autoSaveTimerRef.current){clearTimeout(autoSaveTimerRef.current);autoSaveTimerRef.current=null;if(eSt) persistEdit(eSt,eQ,eNotes,true);}
-    sES(null);sEQ({});sENotes({});
-  };
-  useEffect(function(){return function(){if(autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);};},[]);
 
   var latestTypeLog=useMemo(function(){
     var filtered=(logs||[]).filter(function(l){return l&&l.type===vt&&String(l.week||"")===String(logWeekKey||"");});
@@ -919,8 +1040,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   };
   var beginSplit=function(){
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
-    if(eSt){toast("Finish current store edit first",true);return;}
-    var snap=baseRows.map(function(r){return {code:r.code,name:r.name,total:r.total,qtyByStoreId:Object.assign({},r.qtyByStoreId)};});
+    if(editingAll){toast("Save edited quantities before continuing",true);return;}
+    var snap=baseRows.map(function(r){return {code:r.code,name:r.name,note:r.note||"",total:r.total,qtyByStoreId:Object.assign({},r.qtyByStoreId)};});
     var ids=supplierList.slice(0,2).map(function(s){return s.id;});
     if(ids.length<2){toast("Add at least two suppliers first",true);return;}
     setSavedRows(snap);
@@ -961,7 +1082,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       });
       splitSupplierIds.forEach(function(sid){
         var total=0;Object.values(perSupplier[sid]).forEach(function(v){total+=Number(v)||0;});
-        out[sid].push({code:r.code,name:r.name,qtyByStoreId:perSupplier[sid],total:total});
+        out[sid].push({code:r.code,name:r.name,note:r.note||"",qtyByStoreId:perSupplier[sid],total:total});
       });
     });
     return out;
@@ -969,16 +1090,17 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
 
   var sendSplitEmail=async function(sid){
     var supplier=supplierById[sid]||null;
+    var recipientEmails=supplierEmailsArray(supplier);
     var rows=splitRowsBySupplier[sid]||[];
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
-    if(!supplier||!supplier.email){toast("Supplier email missing",true);return;}
+    if(!supplier||recipientEmails.length===0){toast("Supplier email missing",true);return;}
     sEMailing(true);
     try{
-      var payloadRows=rows.map(function(r){return {itemCode:r.code,itemName:r.name,qtyByStoreId:r.qtyByStoreId};});
+      var payloadRows=rows.map(function(r){return {itemCode:r.code,itemName:r.name,note:r.note||"",total:r.total||0,qtyByStoreId:r.qtyByStoreId};});
       var nextSent=Object.assign({},sentSplitBySupplier);nextSent[sid]=true;
       var isFinal=splitSupplierIds.length>0 && splitSupplierIds.every(function(id){return nextSent[id];});
-      var emailResp=await apiClient.orders.emailConsolidated(vt,supplier.email,supplier.name,reopenedFromId,{rows:payloadRows,finished:isFinal});
-      toast("Email sent to "+supplier.email);
+      var emailResp=await apiClient.orders.emailConsolidated(vt,recipientEmails,supplier.name,reopenedFromId,{rows:payloadRows,finished:isFinal});
+      toast("Email sent to "+recipientEmails.join(", "));
       if(emailResp&&emailResp.supplierOrder){
         setLogs(function(l){return [emailResp.supplierOrder].concat(l||[]).sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);});});
       }
@@ -986,11 +1108,39 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       if(setReopenedFromId) setReopenedFromId(null);
     }catch(e){toast(e.message,true);}finally{sEMailing(false);}
   };
+  var downloadSplitExcel=async function(sid){
+    var rows=splitRowsBySupplier[sid]||[];
+    if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
+    if(!rows.length){toast("No split rows available for download",true);return;}
+    try{
+      setDownloadingSplit(function(prev){var n=Object.assign({},prev);n[sid]=true;return n;});
+      var payloadRows=rows.map(function(r){return {itemCode:r.code,itemName:r.name,note:r.note||"",total:r.total||0,qtyByStoreId:r.qtyByStoreId};});
+      var resp=await apiClient.orders.consolidatedExcelPreview(vt,{rows:payloadRows});
+      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
+      var b64=resp.excelBase64;
+      var bin=atob(b64);
+      var bytes=new Uint8Array(bin.length);
+      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url;
+      a.download=resp.filename||("consolidated-order-"+vt+".xlsx");
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){URL.revokeObjectURL(url);},1000);
+      toast("Excel downloaded");
+    }catch(e){toast(e.message||"Failed to download Excel",true);}
+    finally{
+      setDownloadingSplit(function(prev){var n=Object.assign({},prev);delete n[sid];return n;});
+    }
+  };
 
   var tCellBase={border:"1px solid #B9BEC9",padding:"6px 8px",fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:"#111827",lineHeight:1.2,height:26};
-  var tHeadTop=Object.assign({},tCellBase,{fontWeight:700,background:"#FFFFFF",textAlign:"left"});
+  var tHeadTop=Object.assign({},tCellBase,{fontWeight:700,background:"#FFFFFF",textAlign:"left",position:"sticky",top:0,zIndex:8});
   var tHeadTopCenter=Object.assign({},tHeadTop,{textAlign:"center"});
-  var tHeadSub=Object.assign({},tCellBase,{fontWeight:700,background:"#D9D9D9",textAlign:"center",textTransform:"uppercase"});
+  var tHeadSub=Object.assign({},tCellBase,{fontWeight:700,background:"#D9D9D9",textAlign:"center",textTransform:"uppercase",position:"sticky",top:26,zIndex:9});
   var tProductCell=Object.assign({},tCellBase,{fontWeight:600,background:"#FFFFFF",textAlign:"left"});
   var tQtyCell=Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"center"});
   var onlyOpen=(consolidatedType||aot||vt);
@@ -1000,30 +1150,29 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       <div style={S.tabs}>{["A","B","C"].map(function(t){
         var lockedBySchedule=!manualOpenOrder;var locked=t!==onlyOpen||lockedBySchedule;
         var tip=lockedBySchedule?"Locked while using schedule. Use manual override (or reopen/resend flow) to open a consolidated order.":(t!==onlyOpen?("Locked. Only Order "+onlyOpen+" is open right now."):"");
-        return <button key={t} disabled={locked} title={tip} style={Object.assign({},S.tab,vt===t?S.tA:S.tI,locked?{opacity:.45,cursor:"not-allowed"}:{})} onClick={function(){if(locked)return;sVt(t);if(setConsolidatedType)setConsolidatedType(t);cancelE();}}>{"Order "+t}</button>;
+        return <button key={t} disabled={locked} title={tip} style={Object.assign({},S.tab,vt===t?S.tA:S.tI,locked?{opacity:.45,cursor:"not-allowed"}:{})} onClick={function(){if(locked)return;if(editingAll){toast("Save quantities before switching order type",true);return;}sVt(t);if(setConsolidatedType)setConsolidatedType(t);}}>{"Order "+t}</button>;
       })}</div>
       <div style={{display:"flex",gap:6}}><span style={Object.assign({},S.bg,step===1?S.bgG:S.bgY)}>1. Consolidated</span><span style={Object.assign({},S.bg,step===2?S.bgG:S.bgY)}>2. Split</span><span style={Object.assign({},S.bg,step===3?S.bgG:S.bgY)}>3. Preview/Send</span></div>
     </div>
     {(consolidatedType||aot)&&<div style={S.nI}>{!manualOpenOrder?"Schedule mode active: consolidated tabs are locked.":("Only Order "+(consolidatedType||aot)+" is open right now. Other consolidated orders are locked until their scheduled day or manual override.")}</div>}
     {isCompletedLocked&&<div style={S.nG}>Consolidated Order {vt} is completed and locked. Reopen from Order Monitor to edit/send again.</div>}
     {reopenedFromId&&<div style={S.nP}>Resend mode active. This send will be stored as a reopened resend history entry.</div>}
-    {eSt&&<div style={S.nI}>Editing: {(stores.find(function(s){return s.id===eSt;})||{}).name}</div>}
+    {editingAll&&<div style={S.nI}>Editing quantities and notes for all stores. Click Save when finished.</div>}
 
     {step===1&&(<div style={Object.assign({},S.card,{padding:0})}>
       <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(148,163,184,.24)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div><div style={S.t}>Consolidated Order {vt}</div><div style={S.d}>Review store quantities, then save and continue to supplier split.</div></div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
-          {eSt&&<button style={Object.assign({},S.b,S.bS)} onClick={cancelE}>Cancel</button>}
-          {eSt&&autoSaving&&<span style={Object.assign({},S.bg,S.bgY)}>Auto-saving...</span>}
-          <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked}>Save & Continue</button>
+          {!editingAll&&<button style={Object.assign({},S.b,S.bS)} onClick={startEditAll} disabled={isCompletedLocked}>Edit All Stores</button>}
+          {editingAll&&<button style={Object.assign({},S.b,S.bP)} onClick={saveAllEdits} disabled={savingAll||isCompletedLocked}>{savingAll?"Saving...":"Save"}</button>}
+          <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked||editingAll||savingAll}>Next</button>
         </div>
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-        <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{("Date: "+new Date().toLocaleDateString())}</th>{slots.map(function(sl){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:120})}>{sl.apna+vt}</th>;})}</tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>PRODUCT</th>{slots.map(function(sl){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:120})}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><span>QUANTITY (case qty)</span>{sl.store&&<button disabled={isCompletedLocked} style={Object.assign({},S.eB,eSt===sl.store.id?{color:"#16A34A"}:{},isCompletedLocked?{opacity:.45,cursor:"not-allowed"}:{})} onClick={function(){if(isCompletedLocked)return;eSt===sl.store.id?cancelE():startE(sl.store.id);}}><Ic type="edit" size={11}/></button>}</div></th>;})}</tr>
+        <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th>{slots.map(function(sl){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:120})}>{sl.apna+vt}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:360})}></th></tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>PRODUCT</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>TOTAL QTY</th>{slots.map(function(sl){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:120})}>QUANTITY (case qty)</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>NOTE</th></tr>
       </thead><tbody>{baseRows.map(function(it){
-        var qs=slots.map(function(sl){if(!sl.store)return 0;if(eSt===sl.store.id)return eQ[it.code]||0;return (it.qtyByStoreId&&it.qtyByStoreId[sl.store.id])||0;});
-        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td>{slots.map(function(sl,idx){var sid=sl.store&&sl.store.id;var isE=sid&&eSt===sid;return(<td key={sl.apna} style={Object.assign({},tQtyCell,isE?S.cE:{})}>{isE?<input style={S.ie} type="number" min="0" value={eQ[it.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);sEQ(function(p){var n=Object.assign({},p);n[it.code]=v;scheduleAutoSave(n,eNotes);return n;});}} disabled={isCompletedLocked}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:qs[idx]>0?"#0F172A":"#64748B"}}>{qs[idx]||""}</span>}</td>);})}</tr>);
+        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{it.total||""}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var editQ=sid&&editingAll?Number((editQtyByStore[sid]||{})[it.code])||0:baseQ;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?<input style={S.ie} type="number" min="0" value={editQ} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:baseQ>0?"#0F172A":"#64748B"}}>{baseQ||""}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{slots.filter(function(sl){return !!sl.store;}).map(function(sl){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"6px 8px",fontSize:12.5,minHeight:32})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
       })}</tbody></table></div>
     </div>)}
 
@@ -1032,7 +1181,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8,marginBottom:12}}>
         {supplierList.map(function(s){
           var checked=splitSupplierIds.indexOf(s.id)>=0;
-          return <label key={s.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",border:"1px solid rgba(148,163,184,.3)",borderRadius:8,background:checked?"rgba(22,163,74,.08)":"rgba(255,255,255,.7)"}}><input type="checkbox" checked={checked} onChange={function(e){toggleSplitSupplier(s.id,e.target.checked);}}/><span style={{fontSize:12.5,fontWeight:600}}>{s.name}</span><span style={{fontSize:11,color:"#64748B"}}>{s.email}</span></label>;
+          return <label key={s.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",border:"1px solid rgba(148,163,184,.3)",borderRadius:8,background:checked?"rgba(22,163,74,.08)":"rgba(255,255,255,.7)"}}><input type="checkbox" checked={checked} onChange={function(e){toggleSplitSupplier(s.id,e.target.checked);}}/><span style={{fontSize:12.5,fontWeight:600}}>{s.name}</span><span style={{fontSize:11,color:"#64748B"}}>{supplierEmailsText(s)||"No email"}</span></label>;
         })}
       </div>
       {splitSupplierIds.length<2&&<div style={S.nP}>Select at least 2 suppliers to split this order.</div>}
@@ -1069,19 +1218,24 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(480px,1fr))",gap:10}}>
         {splitSupplierIds.map(function(sid){
-          var s=supplierById[sid]||{id:sid,name:sid,email:""};
+          var s=supplierById[sid]||{id:sid,name:sid,email:"",emails:[]};
+          var sEmailText=supplierEmailsText(s);
           var rows=splitRowsBySupplier[sid]||[];
           var sent=!!sentSplitBySupplier[sid];
+          var isDownloading=!!downloadingSplit[sid];
           return <div key={sid} style={Object.assign({},S.card,{marginBottom:0,padding:10})}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
-              <div><div style={S.t}>{s.name}</div><div style={S.d}>{s.email||"No email"}</div></div>
-              <button style={Object.assign({},S.b,sent?S.bG:S.bP)} onClick={function(){sendSplitEmail(sid);}} disabled={eMailing||!s.email||isCompletedLocked||sent}>{sent?"Sent":"Send Supplier Order"}</button>
+              <div><div style={S.t}>{s.name}</div><div style={S.d}>{sEmailText||"No email"}</div></div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadSplitExcel(sid);}} disabled={isDownloading||isCompletedLocked}>{isDownloading?"Downloading...":"Download Excel"}</button>
+                <button style={Object.assign({},S.b,sent?S.bG:S.bP)} onClick={function(){sendSplitEmail(sid);}} disabled={eMailing||supplierEmailsArray(s).length===0||isCompletedLocked||sent}>{sent?"Sent":"Send Supplier Order"}</button>
+              </div>
             </div>
             <div style={Object.assign({},S.tw,{maxHeight:"40vh",border:"1px solid rgba(148,163,184,.25)"})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-              <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{s.name}</th>{slots.map(function(sl){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:120})}>{sl.apna+vt}</th>;})}</tr>
-              <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>PRODUCT</th>{slots.map(function(sl){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:120})}>QUANTITY (case qty)</th>;})}</tr>
+              <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th>{slots.map(function(sl){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:120})}>{sl.apna+vt}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:360})}></th></tr>
+              <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>PRODUCT</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>TOTAL QTY</th>{slots.map(function(sl){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:120})}>QUANTITY (case qty)</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>NOTE</th></tr>
             </thead><tbody>
-              {rows.map(function(r){return <tr key={r.code}><td style={tProductCell}>{r.name}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}</tr>;})}
+              {rows.map(function(r){return <tr key={r.code}><td style={tProductCell}>{r.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{r.note||""}</td></tr>;})}
             </tbody></table></div>
           </div>;
         })}
@@ -1094,6 +1248,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   var _v=useState(aot||"A"),vt=_v[0],sVt=_v[1];
   var _sent=useState({}),sent=_sent[0],sSent=_sent[1];
   var _sending=useState({}),sending=_sending[0],sSending=_sending[1];
+  var _downloading=useState({}),downloading=_downloading[0],setDownloading=_downloading[1];
   var _hist=useState([]),history=_hist[0],setHistory=_hist[1];
   var dk=dateKey(vt,manualOpenOrder,manualOpenSeq);
 
@@ -1113,14 +1268,16 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   var unassigned=itemList.filter(function(it){return totals[it.code]>0&&!assigned[it.code];});
 
   var sendEmail=function(sup,supItems){
+    var recipients=supplierEmailsArray(sup);
+    if(!recipients.length){toast("Supplier email missing",true);return;}
     var subject="Purchase Order - Order "+vt+" - "+new Date().toLocaleDateString();
     var body="Dear "+sup.name+",\n\nPlease find our order details below:\n\n";
     supItems.forEach(function(it){body+=it.name+" ("+it.code+") - Qty: "+totals[it.code]+"\n";});
     body+="\nThank you.";
-    var mailto="mailto:"+encodeURIComponent(sup.email)+"?subject="+encodeURIComponent(subject)+"&body="+encodeURIComponent(body);
+    var mailto="mailto:"+encodeURIComponent(recipients.join(","))+"?subject="+encodeURIComponent(subject)+"&body="+encodeURIComponent(body);
     var a=document.createElement("a");a.href=mailto;a.click();
     sSent(function(p){var n=Object.assign({},p);n[sup.id+"_"+vt]=true;return n;});
-    toast("Opening email for "+sup.name+" ("+sup.email+")");
+    toast("Opening email for "+sup.name+" ("+recipients.join(", ")+")");
   };
   var processOrder=async function(){
     try{
@@ -1135,12 +1292,30 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       toast("Order "+vt+" marked processed for all stores");
     }catch(e){toast(e.message,true);}  };
   var allSent=supplierGroups.every(function(g){return sent[g.supplier.id+"_"+vt];});
+  var downloadExcelForHistory=async function(r){
+    if(!r||!r._id){toast("Missing supplier order record id",true);return;}
+    if(!r.hasExcel){toast("Excel file not available for this record",true);return;}
+    var key=String(r._id);
+    var fallbackName="consolidated-order-"+String(r.type||"X")+"-"+String(r.week||"").replace(/[^A-Za-z0-9_-]/g,"_")+".xlsx";
+    try{
+      setDownloading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
+      await apiClient.supplierOrders.downloadExcel(r._id, r.excelFilename || fallbackName);
+      toast("Downloaded Excel for "+(r.supplierName||"supplier"));
+    }catch(e){toast(e.message||"Failed to download Excel",true);}
+    finally{
+      setDownloading(function(prev){var n=Object.assign({},prev);delete n[key];return n;});
+    }
+  };
 
   return(<div>
     {history.length>0&&(<div style={Object.assign({},S.card,{marginBottom:12})}>
       <div style={S.cH}><div><div style={S.t}>Sent Supplier Orders</div><div style={S.d}>{history.length} records</div></div></div>
-      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Type</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th></tr></thead><tbody>
-        {history.map(function(r){return(<tr key={r._id||r.sentAt}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td></tr>);})}
+      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Type</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th><th style={S.th}>Excel</th><th style={S.th}>Action</th></tr></thead><tbody>
+        {history.map(function(r){
+          var key=String((r&&r._id)||r.sentAt||"");
+          var isDownloading=!!downloading[key];
+          return(<tr key={key}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td><td style={S.td}>{r.hasExcel?<span style={Object.assign({},S.bg,S.bgG)}>Available</span>:<span style={Object.assign({},S.bg,S.bgY)}>Not stored</span>}</td><td style={S.td}>{r.hasExcel?<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadExcelForHistory(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Excel"}</button>:null}</td></tr>);
+        })}
       </tbody></table></div></div>)}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
       <div style={S.tabs}>{["A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,vt===t?S.tA:S.tI)} onClick={function(){sVt(t);}}>Order {t}</button>;})}</div>
@@ -1152,7 +1327,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       var isSent=sent[g.supplier.id+"_"+vt];
       return(<div key={g.supplier.id} style={Object.assign({},S.card,{border:isSent?"1px solid rgba(52,211,153,0.3)":"1px solid rgba(148,163,184,.24)"})}>
         <div style={S.cH}>
-          <div><div style={S.t}>{g.supplier.name}</div><div style={S.d}>{g.supplier.email} | {g.supplier.phone}</div></div>
+          <div><div style={S.t}>{g.supplier.name}</div><div style={S.d}>{supplierEmailsText(g.supplier)} | {g.supplier.phone}</div></div>
           <div style={{display:"flex",gap:5,alignItems:"center"}}>
             {isSent?<span style={Object.assign({},S.bg,S.bgG)}>Email Sent</span>
             :<button style={Object.assign({},S.b,S.bP)} onClick={function(){sendEmail(g.supplier,g.items);}}><Ic type="mail" size={13}/>Send Email</button>}
@@ -1209,25 +1384,9 @@ function ItemMaster({items,setItems,toast}){
           var wb=XLSX.read(data,{type:'array'});
           var ws=wb.Sheets[wb.SheetNames[0]];
           if(!ws){toast("No sheets found in Excel file",true);return;}
-          var rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false});
+          var rows=worksheetToRows(ws);
           if(rows.length<2){toast("Excel file has no data",true);return;}
-          var hdr=rows[0].map(function(h){return String(h).trim().toLowerCase().replace(/[^a-z0-9]/g,"");});
-          var ci=hdr.findIndex(function(h){return h.includes("code")||h==="sku";});
-          var ni=hdr.findIndex(function(h){return h.includes("name")||h==="item"||h==="description";});
-          var cti=hdr.findIndex(function(h){return h.includes("cat")||h==="group";});
-          var ui=hdr.findIndex(function(h){return h.includes("unit")||h==="uom";});
-          if(ni===-1){toast("Excel file missing 'name' column",true);return;}
-          var parsed=[];
-          for(var i=1;i<rows.length;i++){
-            var cols=rows[i];
-            if(!cols||!cols[ni]) continue;
-            parsed.push({
-              code:ci>=0&&cols[ci]?cols[ci]:"CSV"+String(i).padStart(4,"0"),
-              name:cols[ni],
-              category:cti>=0?(cols[cti]||""):"",
-              unit:ui>=0?(cols[ui]||""):"",
-            });
-          }
+          var parsed=parseItemSheetRows(rows);
           if(parsed.length===0){toast("No valid item rows in Excel file",true);return;}
           sC(parsed);sU(true);
         }catch(err){console.error('Excel parse error',err);toast("Could not parse Excel file",true);}      };
@@ -1390,16 +1549,16 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
   const supList = Array.isArray(suppliers) ? suppliers : [];
   var _a=useState(false),shA=_a[0],sA=_a[1];
   var _ed=useState(null),edSup=_ed[0],sEdSup=_ed[1];
-  var _ef=useState({name:"",email:"",phone:""}),edF=_ef[0],sEdF=_ef[1];
-  var _n=useState({id:"",name:"",email:"",phone:"",items:[]}),nS=_n[0],sNS=_n[1];
+  var _ef=useState({name:"",emails:"",phone:""}),edF=_ef[0],sEdF=_ef[1];
+  var _n=useState({id:"",name:"",emails:"",phone:"",items:[]}),nS=_n[0],sNS=_n[1];
   var add=async function(){
-      if(!nS.id||!nS.name||!nS.email){toast("ID, Name, Email required",true);return;}
+      if(!nS.id||!nS.name||!nS.emails){toast("ID, Name, and at least one Email required",true);return;}
       if(supList.find(function(s){return s.id===nS.id;})){toast("ID exists",true);return;}
       try{
-        await apiClient.suppliers.create(nS);
+        await apiClient.suppliers.create({id:nS.id,name:nS.name,emails:supplierEmailsArray({email:nS.emails}),phone:nS.phone,items:nS.items||[]});
         const all=await apiClient.suppliers.getAll();
         setSuppliers(all);
-        sNS({id:"",name:"",email:"",phone:"",items:[]});
+        sNS({id:"",name:"",emails:"",phone:"",items:[]});
         sA(false);
         toast("Supplier added");
       }catch(e){toast(e.message,true);}    };
@@ -1410,11 +1569,11 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
         setSuppliers(all);
         toast("Removed");
       }catch(e){toast(e.message,true);}    };
-  var startEdit=function(s){sEdSup(s.id);sEdF({name:s.name,email:s.email,phone:s.phone||""});};
+  var startEdit=function(s){sEdSup(s.id);sEdF({name:s.name,emails:supplierEmailsText(s),phone:s.phone||""});};
   var saveEdit=async function(){
-      if(!edF.name||!edF.email){toast("Name and Email required",true);return;}
+      if(!edF.name||!edF.emails){toast("Name and at least one Email required",true);return;}
       try{
-        await apiClient.suppliers.update(edSup,{name:edF.name,email:edF.email,phone:edF.phone});
+        await apiClient.suppliers.update(edSup,{name:edF.name,emails:supplierEmailsArray({email:edF.emails}),phone:edF.phone});
         const all=await apiClient.suppliers.getAll();
         setSuppliers(all);
         sEdSup(null);
@@ -1422,20 +1581,20 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
       }catch(e){toast(e.message,true);}    };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Suppliers</div><div style={S.d}>{supList.length} suppliers</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
-      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>ID</th><th style={S.th}>Name</th><th style={S.th}>Email</th><th style={S.th}>Phone</th><th style={S.th}>Items</th><th style={Object.assign({},S.th,{width:200})}>Actions</th></tr></thead><tbody>
-        {supList.map(function(s){return(<tr key={s.id}><td style={S.tm}>{s.id}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{s.name}</td><td style={S.tm}>{s.email}</td><td style={S.tm}>{s.phone}</td><td style={S.td}><span style={Object.assign({},S.bg,S.bgB)}>{(s.items||[]).length} items</span></td>
+      <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>ID</th><th style={S.th}>Name</th><th style={S.th}>Emails</th><th style={S.th}>Phone</th><th style={S.th}>Items</th><th style={Object.assign({},S.th,{width:200})}>Actions</th></tr></thead><tbody>
+        {supList.map(function(s){return(<tr key={s.id}><td style={S.tm}>{s.id}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{s.name}</td><td style={S.tm}>{supplierEmailsText(s)}</td><td style={S.tm}>{s.phone}</td><td style={S.td}><span style={Object.assign({},S.bg,S.bgB)}>{(s.items||[]).length} items</span></td>
           <td style={S.td}><div style={{display:"flex",gap:3}}><button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){startEdit(s);}}>Edit</button><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(s.id);}}>Del</button></div></td></tr>);})}</tbody></table></div></div>
     {shA&&(<div style={S.ov} onClick={function(){sA(false);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Add Supplier</div>
       <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>ID *</div><input style={S.inp} value={nS.id} onChange={function(e){sNS(Object.assign({},nS,{id:e.target.value}));}} placeholder="SUP4"/></div>
         <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Name *</div><input style={S.inp} value={nS.name} onChange={function(e){sNS(Object.assign({},nS,{name:e.target.value}));}}/></div></div>
-      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Email *</div><input style={S.inp} value={nS.email} onChange={function(e){sNS(Object.assign({},nS,{email:e.target.value}));}}/></div>
+      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Emails * (comma separated)</div><input style={S.inp} value={nS.emails} onChange={function(e){sNS(Object.assign({},nS,{emails:e.target.value}));}} placeholder="a@x.com, b@y.com"/></div>
         <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Phone</div><input style={S.inp} value={nS.phone} onChange={function(e){sNS(Object.assign({},nS,{phone:e.target.value}));}}/></div></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sA(false);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={add}>Add</button></div></div></div>)}
     {edSup&&(<div style={S.ov} onClick={function(){sEdSup(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Edit Supplier - {edSup}</div>
       <div style={S.fg}><div style={S.lb}>Name *</div><input style={S.inp} value={edF.name} onChange={function(e){sEdF(Object.assign({},edF,{name:e.target.value}));}}/></div>
-      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Email *</div><input style={S.inp} value={edF.email} onChange={function(e){sEdF(Object.assign({},edF,{email:e.target.value}));}}/></div>
+      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Emails * (comma separated)</div><input style={S.inp} value={edF.emails} onChange={function(e){sEdF(Object.assign({},edF,{emails:e.target.value}));}}/></div>
         <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Phone</div><input style={S.inp} value={edF.phone} onChange={function(e){sEdF(Object.assign({},edF,{phone:e.target.value}));}}/></div></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sEdSup(null);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={saveEdit}>Save</button></div></div></div>)}
   </div>);

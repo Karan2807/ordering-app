@@ -52,6 +52,12 @@ JWT_SECRET=your_jwt_secret_key_change_in_production
 # SMTP URL for any provider:
 #   SMTP_URL=smtp://user:pass@smtp.example.com
 #   SMTP_URL=smtp://user:pass@smtp.gmail.com:587
+# Optional: Outlook-specific SMTP settings (takes priority when set):
+#   OUTLOOK_HOST=smtp.office365.com
+#   OUTLOOK_PORT=587
+#   OUTLOOK_SECURE=false
+#   OUTLOOK_USER=your@outlook.com
+#   OUTLOOK_PASS=your-password
 # Or use Gmail-specific vars (recommended if you're using a Gmail
 # account with an app-password):
 #   GMAIL_USER=your@gmail.com

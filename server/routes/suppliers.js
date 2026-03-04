@@ -3,6 +3,16 @@ import { authMiddleware } from '../auth.js';
 import Supplier from '../models/supplier.js';
 
 const router = express.Router();
+function normalizeEmails(inputEmail, inputEmails) {
+  const fromArray = Array.isArray(inputEmails) ? inputEmails : [];
+  const fromString = typeof inputEmails === 'string' ? inputEmails.split(/[,\n;]/) : [];
+  const fromEmail = typeof inputEmail === 'string' ? inputEmail.split(/[,\n;]/) : [];
+  const merged = [...fromArray, ...fromString, ...fromEmail]
+    .map((v) => String(v || '').trim().toLowerCase())
+    .filter(Boolean);
+  const unique = [...new Set(merged)];
+  return unique;
+}
 
 // Get all suppliers (admin only)
 router.get('/', authMiddleware, async (req, res) => {
@@ -12,7 +22,12 @@ router.get('/', authMiddleware, async (req, res) => {
     }
 
     const suppliers = await Supplier.find().sort({ name: 1 }).lean();
-    res.json(suppliers);
+    res.json(
+      suppliers.map((s) => {
+        const emails = normalizeEmails(s.email, s.emails);
+        return { ...s, email: emails[0] || '', emails };
+      })
+    );
   } catch (err) {
     console.error('Get suppliers error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -26,10 +41,11 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
-    const { id, name, email, phone } = req.body;
+    const { id, name, email, emails, phone } = req.body;
+    const emailList = normalizeEmails(email, emails);
 
-    if (!id || !name || !email) {
-      return res.status(400).json({ error: 'ID, name, and email required' });
+    if (!id || !name || emailList.length === 0) {
+      return res.status(400).json({ error: 'ID, name, and at least one email required' });
     }
 
     const existing = await Supplier.findOne({ id });
@@ -37,7 +53,7 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'ID already exists' });
     }
 
-    await Supplier.create({ id, name, email, phone });
+    await Supplier.create({ id, name, email: emailList[0], emails: emailList, phone });
     res.json({ success: true });
   } catch (err) {
     console.error('Create supplier error:', err);
@@ -52,13 +68,14 @@ router.patch('/:supplierId', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
-    const { name, email, phone } = req.body;
+    const { name, email, emails, phone } = req.body;
+    const emailList = normalizeEmails(email, emails);
 
-    if (!name || !email) {
-      return res.status(400).json({ error: 'Name and email required' });
+    if (!name || emailList.length === 0) {
+      return res.status(400).json({ error: 'Name and at least one email required' });
     }
 
-    await Supplier.updateOne({ id: req.params.supplierId }, { name, email, phone });
+    await Supplier.updateOne({ id: req.params.supplierId }, { name, email: emailList[0], emails: emailList, phone });
 
     res.json({ success: true });
   } catch (err) {

@@ -18,12 +18,19 @@ export async function initializeDatabase() {
 
     // Connect only if not already connected
     if (mongoose.connection.readyState !== 1) {
-      await mongoose.connect(uri);
-      console.log('✓ MongoDB connected');
+      await mongoose.connect(uri, {
+        serverSelectionTimeoutMS: 12000,
+        socketTimeoutMS: 45000,
+        family: 4,
+      });
+      console.log('MongoDB connected');
     }
 
     console.log('✓ Database initialized (MongoDB)');
   } catch (err) {
+    if (err && (err.code === 'ENOTFOUND' || String(err.message || '').includes('ENOTFOUND'))) {
+      console.error('MongoDB DNS resolution failed. Check MONGODB_URI host and local DNS/network access.');
+    }
     console.error('Error initializing database:', err);
     throw err;
   }
@@ -104,3 +111,4 @@ export async function seedDatabase() {
     throw err;
   }
 }
+

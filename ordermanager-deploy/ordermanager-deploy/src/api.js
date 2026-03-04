@@ -154,12 +154,29 @@ export const apiClient = {
       return apiClient.request(`/orders/consolidated/${type}`);
     },
 
-    emailConsolidated(type, email, supplierName, reopenedFromId, splitData) {
-      const body = { email };
+    emailConsolidated(type, emailOrEmails, supplierName, reopenedFromId, splitData) {
+      const body = Array.isArray(emailOrEmails) ? { emails: emailOrEmails } : { email: emailOrEmails };
       if (supplierName) body.supplierName = supplierName;
       if (reopenedFromId) body.reopenedFromId = reopenedFromId;
       if (splitData) body.splitData = splitData;
       return apiClient.request(`/orders/consolidated/${type}/email`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+    consolidatedExcelPreview(type, splitData) {
+      const body = {};
+      if (splitData) body.splitData = splitData;
+      return apiClient.request(`/orders/consolidated/${type}/excel-preview`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+    storeOrderExcelPreview(type, items, notes, storeId, date) {
+      const body = { type, items: items || {}, notes: notes || {} };
+      if (storeId) body.storeId = storeId;
+      if (date) body.date = date;
+      return apiClient.request('/orders/store-order/excel-preview', {
         method: 'POST',
         body: JSON.stringify(body),
       });
