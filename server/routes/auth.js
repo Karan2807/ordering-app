@@ -3,6 +3,8 @@ import User from '../models/user.js';
 import { generateToken, verifyToken } from '../auth.js';
 
 const router = express.Router();
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const usernameRegex = (value) => new RegExp(`^${escapeRegex(String(value || '').trim())}$`, 'i');
 
 router.post('/login', async (req, res) => {
   try {
@@ -12,7 +14,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Username and password required' });
     }
 
-    const user = await User.findOne({ username, active: true }).lean();
+    const user = await User.findOne({ username: usernameRegex(username), active: true }).lean();
     if (!user || user.password !== password) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }

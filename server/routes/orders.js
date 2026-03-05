@@ -201,8 +201,8 @@ function normalizeOrderItems(itemsInput, notesInput = {}) {
 
 function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNameByCode }) {
   const rows = [];
-  rows.push([`Date: ${dateText}`, ...slots.map((slot) => `${slot.apna}${type}`), '', '']);
-  rows.push(['PRODUCT', ...slots.map(() => 'QUANTITY (case qty)'), 'TOTAL QTY', 'NOTE']);
+  rows.push([`Date: ${dateText}`, '', ...slots.map((slot) => `${slot.apna}${type}`), '']);
+  rows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QUANTITY (case qty)'), 'NOTE']);
 
   const itemCodes = new Set();
   slots.forEach((slot) => {
@@ -236,7 +236,7 @@ function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNam
       })
       .filter(Boolean);
     const total = qtyCols.reduce((acc, v) => acc + (Number(v) || 0), 0);
-    rows.push([it.name, ...qtyCols, total > 0 ? total : '', noteCols.join(' | ')]);
+    rows.push([it.name, total > 0 ? total : '', ...qtyCols, noteCols.join(' | ')]);
   });
 
   return rows;
@@ -259,6 +259,12 @@ async function rowsToExcelBuffer(rows) {
   await workbook.xlsx.readFile(CONSOLIDATED_TEMPLATE_PATH);
   const ws = workbook.getWorksheet(1);
   if (!ws) throw new Error('Consolidated template worksheet not found');
+
+  // Global title line on top of sheet
+  const titleCell = ws.getCell(1, 2); // B1
+  titleCell.value = 'Apna Bazar - Stores Order';
+  titleCell.font = { name: 'Calibri', size: 18, bold: true };
+  titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
 
   const startRow = 3;
   const startCol = 2; // B
@@ -314,8 +320,8 @@ async function buildConsolidatedExcelPayload(type, splitData) {
   const dateText = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
   let excelRows = [];
   if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
-    excelRows.push([`Date: ${dateText}`, ...slots.map((slot) => `${slot.apna}${type}`), '', '']);
-    excelRows.push(['PRODUCT', ...slots.map(() => 'QUANTITY (case qty)'), 'TOTAL QTY', 'NOTE']);
+    excelRows.push([`Date: ${dateText}`, '', ...slots.map((slot) => `${slot.apna}${type}`), '']);
+    excelRows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QUANTITY (case qty)'), 'NOTE']);
     splitData.rows.forEach((r) => {
       const itemName = r.itemName || itemNameByCode[r.itemCode] || displayOrderItemCode(r.itemCode);
       const note = typeof r.note === 'string' ? r.note.trim() : '';
@@ -326,7 +332,7 @@ async function buildConsolidatedExcelPayload(type, splitData) {
       });
       const totalFromPayload = Number(r.total) || 0;
       const total = totalFromPayload > 0 ? totalFromPayload : qtyCols.reduce((acc, v) => acc + (Number(v) || 0), 0);
-      excelRows.push([itemName, ...qtyCols, total > 0 ? total : '', note]);
+      excelRows.push([itemName, total > 0 ? total : '', ...qtyCols, note]);
     });
   } else {
     excelRows = buildConsolidatedExcelRows({
@@ -536,7 +542,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     const { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename } =
       await buildConsolidatedExcelPayload(req.params.type, splitData);
     const supplierDisplayName = (supplierName || 'Supplier').trim();
-    let body = `Dear ${supplierDisplayName},\n\nPlease find attached the consolidated order in Excel format for all five stores for Order ${req.params.type} (Week ${weekKey}).\n\nStores included: ${stores.map((s) => s.name).join(', ')}.\n\nRegards,\nApna Bazar Team`;
+    let body = 'Please find attached the consolidated order';
 
     const mailOptions = {
       from: process.env.EMAIL_FROM || 'noreply@ordermanager.local',

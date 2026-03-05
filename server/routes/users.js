@@ -4,8 +4,11 @@ import { v4 as uuidv4 } from 'uuid';
 import User from '../models/user.js';
 
 const router = express.Router();
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const usernameRegex = (value) => new RegExp(`^${escapeRegex(String(value || '').trim())}$`, 'i');
+const normalizeUsername = (value) => String(value || '').trim();
 const findUserByIdOrUsername = (userId) =>
-  User.findOne({ $or: [{ id: userId }, { username: userId }] });
+  User.findOne({ $or: [{ id: userId }, { username: usernameRegex(userId) }] });
 
 // Get all users (admin only)
 router.get('/', authMiddleware, async (req, res) => {
@@ -45,13 +48,13 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'All fields required' });
     }
 
-    const existing = await User.findOne({ username });
+    const existing = await User.findOne({ username: usernameRegex(username) });
     if (existing) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
     const id = uuidv4();
-    await User.create({ id, username, password, name, phone, role, storeId, active: true });
+    await User.create({ id, username: normalizeUsername(username), password, name, phone, role, storeId, active: true });
     res.json({ success: true });
   } catch (err) {
     console.error('Create user error:', err);
@@ -71,10 +74,10 @@ router.patch('/:userId', authMiddleware, async (req, res) => {
 
     const { username, name, phone, role, storeId, active } = req.body || {};
 
-    if (username && username !== user.username) {
-      const exists = await User.findOne({ username });
+    if (username && String(username).trim().toLowerCase() !== String(user.username || '').trim().toLowerCase()) {
+      const exists = await User.findOne({ username: usernameRegex(username) });
       if (exists) return res.status(400).json({ error: 'Username already exists' });
-      user.username = username;
+      user.username = normalizeUsername(username);
     }
     if (name != null) user.name = name;
     if (phone != null) user.phone = phone;
@@ -142,7 +145,7 @@ router.delete('/:userId', authMiddleware, async (req, res) => {
     }
     const user = await findUserByIdOrUsername(req.params.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.username === req.user.username) {
+    if (String(user.username || '').trim().toLowerCase() === String(req.user.username || '').trim().toLowerCase()) {
       return res.status(400).json({ error: 'Cannot delete currently logged-in user' });
     }
     await User.deleteOne({ _id: user._id });
