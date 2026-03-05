@@ -13,6 +13,7 @@ import supplierRoutes from './routes/suppliers.js';
 import storeRoutes from './routes/stores.js';
 import notificationRoutes from './routes/notifications.js';
 import settingsRoutes from './routes/settings.js';
+import testEmailRoutes from './routes/testEmail.js';
 import { startReminderScheduler } from './services/reminderScheduler.js';
 
 // make sure required environment variables are present
@@ -79,6 +80,7 @@ app.use('/api/suppliers', supplierRoutes);
 app.use('/api/stores', storeRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/test-email', testEmailRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

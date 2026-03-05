@@ -249,6 +249,8 @@ export default function App(){
   var auth=useContext(AuthContext);
   var user=auth.user;
   var userKey=user?(String(user.username||"")+"|"+String(user.role||"")+"|"+String(user.storeId||"")):"anon";
+  var _mw=useState(typeof window!=="undefined"?window.innerWidth<=900:false),isMobile=_mw[0],setIsMobile=_mw[1];
+  var _mn=useState(false),showMobileNav=_mn[0],setShowMobileNav=_mn[1];
   var _p=useState("dashboard"),page=_p[0],setPage=_p[1];
   var _t=useState(""),tM=_t[0],sTM=_t[1];var _te=useState(false),tE=_te[0],sTE=_te[1];
   var _i=useState([]),items=_i[0],setItems=_i[1];
@@ -280,6 +282,14 @@ export default function App(){
   };
 
   var toast=useCallback(function(m,e){sTM(m);sTE(!!e);if(tR.current)clearTimeout(tR.current);tR.current=setTimeout(function(){sTM("");},2500);},[]);
+  useEffect(function(){
+    if(typeof window==="undefined") return;
+    var onResize=function(){setIsMobile(window.innerWidth<=900);};
+    onResize();
+    window.addEventListener("resize",onResize);
+    return function(){window.removeEventListener("resize",onResize);};
+  },[]);
+  useEffect(function(){if(!isMobile)setShowMobileNav(false);},[isMobile]);
   
   // Reset UI/data immediately when auth user changes to avoid showing previous user's screen/state.
   useEffect(function(){
@@ -436,6 +446,9 @@ export default function App(){
     {id:"history",label:"Order History",ico:"eye"},
   ];
   var PP={aot:aot,manualOpenOrder:manualOpenOrder,setManualOpenOrder:setManualOpenOrder,manualOpenSeq:manualOpenSeq,setManualOpenSeq:setManualOpenSeq,entryType:entryType,setEntryType:setEntryType,consolidatedType:consolidatedType,setConsolidatedType:setConsolidatedType,reopenedFromId:reopenedFromId,setReopenedFromId:setReopenedFromId,orders:orders,setOrders:setOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
+  var sidebarStyle=isMobile?Object.assign({},S.sidebar,{position:"fixed",top:0,left:0,bottom:0,height:"100vh",zIndex:1200,transform:showMobileNav?"translateX(0)":"translateX(-110%)",transition:"transform 0.2s ease",boxShadow:"0 20px 40px rgba(15,23,42,.22)"}):S.sidebar;
+  var topbarStyle=isMobile?Object.assign({},S.topbar,{padding:"0 12px",gap:8}):S.topbar;
+  var contentStyle=isMobile?Object.assign({},S.content,{padding:12}):S.content;
   var rP=function(){
     if(page==="dashboard"&&isA)return <AdminDash {...PP}/>;if(page==="dashboard")return <MgrDash {...PP}/>;
     if(page==="order-entry")return <OrderEntry {...PP}/>;if(page==="history")return <OrderHistory {...PP}/>;
@@ -448,18 +461,24 @@ export default function App(){
     return null;
   };
   return(<div key={userKey} style={S.page}><Toast msg={tM} isErr={tE}/>
-    <input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");saveLogoToServer(ev.target.result);};r.readAsDataURL(f);e.target.value="";}}/><aside style={S.sidebar}>
+    {isMobile&&showMobileNav&&<div style={Object.assign({},S.ov,{background:"rgba(15,23,42,0.35)",zIndex:1150,padding:0})} onClick={function(){setShowMobileNav(false);}}/>}
+    <input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={function(e){var f=e.target.files&&e.target.files[0];if(!f)return;if(f.size>500000){toast("Logo must be under 500KB",true);return;}var r=new FileReader();r.onload=function(ev){setLogo(ev.target.result);toast("Logo updated");saveLogoToServer(ev.target.result);};r.readAsDataURL(f);e.target.value="";}}/><aside style={sidebarStyle}>
       <div style={S.sideHdr}>{logo?<img src={logo} alt="Logo" style={{width:34,height:34,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<div style={S.logo}>OM</div>}<div><div style={{fontWeight:700,fontSize:13}}>OrderManager</div><div style={{fontSize:10,color:"#6B7186"}}>{sN}</div></div></div>
       <nav style={{flex:1,padding:"8px 6px",overflowY:"auto"}}>
         <div style={{fontSize:9,fontWeight:600,color:"#6B7186",textTransform:"uppercase",letterSpacing:1,padding:"8px 10px 3px"}}>Navigation</div>
-        {navs.map(function(n){return(<div key={n.id} style={Object.assign({},S.navItem,page===n.id?S.navA:S.navI)} onClick={function(){setPage(n.id);}}><Ic type={n.ico} size={15}/><span>{n.label}</span></div>);})}
+        {navs.map(function(n){return(<div key={n.id} style={Object.assign({},S.navItem,page===n.id?S.navA:S.navI)} onClick={function(){setPage(n.id);if(isMobile)setShowMobileNav(false);}}><Ic type={n.ico} size={15}/><span>{n.label}</span></div>);})}
       </nav>
       <div style={S.ft}><div style={S.uC}><div style={S.av}>{(user?.name || user?.username || "?").charAt(0)}</div><div><div style={{fontSize:11,fontWeight:600}}>{user.name}</div><div style={{fontSize:9,color:"#6B7186"}}>{isA?"Admin":"Manager"}</div></div></div>
         <button style={S.loB} onClick={function(){auth.logout();}}><Ic type="out" size={13}/><span>Sign Out</span></button></div>
     </aside>
     <div style={S.main}>
-      <header style={S.topbar}><div style={{fontSize:15,fontWeight:700}}>{(navs.find(function(n){return n.id===page;})||{}).label||"Dashboard"}</div></header>
-      <div style={S.content}>{rP()}</div>
+      <header style={topbarStyle}>
+        <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+          {isMobile&&<button style={Object.assign({},S.b,S.bS,{padding:"6px 8px"})} onClick={function(){setShowMobileNav(true);}}><Ic type="menu" size={15}/></button>}
+          <div style={{fontSize:isMobile?14:15,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{(navs.find(function(n){return n.id===page;})||{}).label||"Dashboard"}</div>
+        </div>
+      </header>
+      <div style={contentStyle}>{rP()}</div>
     </div></div>);
 }
 

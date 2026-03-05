@@ -11,6 +11,7 @@ import ExcelJS from 'exceljs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendManualReminders } from '../services/reminderScheduler.js';
+import { sendGraphMail } from '../services/msSendMail.js';
 
 // create a simple transporter; prefer Outlook settings, then generic SMTP URL,
 // then Gmail credentials. Otherwise fall back to a console logger (jsonTransport).
@@ -109,6 +110,25 @@ const TEMPLATE_STORE_SLOTS = [
   { apna: 'Apna 4', city: 'Kent' },
   { apna: 'Apna 5', city: 'Redmond' },
 ];
+async function sendEmailWithFallback({ to, subject, text, html, attachments = [] }) {
+  try {
+    // Prefer Microsoft Graph when Graph credentials are present.
+    if (process.env.TENANT_ID && process.env.CLIENT_ID && process.env.CLIENT_SECRET && process.env.SENDER_EMAIL) {
+      return await sendGraphMail({ to, subject, text, html, attachments });
+    }
+  } catch (graphErr) {
+    console.error('Graph send failed, falling back to SMTP:', graphErr.message || graphErr);
+  }
+
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || 'noreply@ordermanager.local',
+    to,
+    subject,
+    text,
+  };
+  if (attachments && attachments.length) mailOptions.attachments = attachments;
+  return transporter.sendMail(mailOptions);
+}
 function normalizeRecipientEmails(email, emails) {
   const fromArray = Array.isArray(emails) ? emails : [];
   const fromString = typeof emails === 'string' ? emails.split(/[,\n;]/) : [];
@@ -544,8 +564,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     const supplierDisplayName = (supplierName || 'Supplier').trim();
     let body = 'Please find attached the consolidated order';
 
-    const mailOptions = {
-      from: process.env.EMAIL_FROM || 'noreply@ordermanager.local',
+    await sendEmailWithFallback({
       to: recipients,
       subject: `Consolidated Order ${req.params.type} (Week ${weekKey})`,
       text: body,
@@ -556,9 +575,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
           contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         },
       ],
-    };
-
-    await transporter.sendMail(mailOptions);
+    });
 
     let supplierOrder = null;
     try {
@@ -811,16 +828,7 @@ router.post('/email', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'to, subject and text are required' });
     }
 
-    const mailOptions = {
-      from: process.env.EMAIL_FROM || 'noreply@ordermanager.local',
-      to,
-      subject,
-      text,
-    };
-
-    // transporter may be configured with an SMTP_URL; if not it will 
-    // use jsonTransport which only logs the message (development fallback).
-    await transporter.sendMail(mailOptions);
+    await sendEmailWithFallback({ to, subject, text });
 
     res.json({ success: true });
   } catch (err) {
