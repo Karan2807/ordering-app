@@ -478,12 +478,18 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   return { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename };
 }
 
-async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride }) {
+async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride, itemNamesObj }) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const stores = await Store.find().sort({ id: 1 }).lean();
   const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
   const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [it.code, it.name]));
+  const providedItemNames = itemNamesObj && typeof itemNamesObj === 'object' ? itemNamesObj : {};
+  Object.entries(providedItemNames).forEach(([code, name]) => {
+    const trimmedCode = String(code || '').trim();
+    const trimmedName = String(name || '').trim();
+    if (trimmedCode && trimmedName) itemNameByCode[trimmedCode] = trimmedName;
+  });
   const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
   const slots = mapStoresToTemplateSlots(stores);
   const now = dateOverride ? new Date(dateOverride) : new Date();
@@ -823,7 +829,7 @@ router.post('/consolidated/:type/excel-preview', authMiddleware, async (req, res
 // build single-store order Excel preview (manager/admin)
 router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
   try {
-    const { type, category, vendorKey, items = {}, notes = {}, storeId, date } = req.body || {};
+    const { type, category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {} } = req.body || {};
     if (!type) return res.status(400).json({ error: 'type is required' });
     const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
@@ -836,6 +842,7 @@ router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
       itemsObj: items,
       notesObj: notes,
       dateOverride: date,
+      itemNamesObj: itemNames,
     });
 
     res.json({
@@ -854,7 +861,7 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
   try {
     const body = req.body || {};
     const type = body.type || req.params.type;
-    const { category, vendorKey, items = {}, notes = {}, storeId, date } = body;
+    const { category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {} } = body;
     if (!type) return res.status(400).json({ error: 'type is required' });
     const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
@@ -867,6 +874,7 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
       itemsObj: items,
       notesObj: notes,
       dateOverride: date,
+      itemNamesObj: itemNames,
     });
 
     res.json({

@@ -816,6 +816,7 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   var _cf=useState(false),showConfirm=_cf[0],setShowConfirm=_cf[1];
   var _ed=useState(false),isEditingDraft=_ed[0],setIsEditingDraft=_ed[1];
   var _dl=useState({}),draftLockByKey=_dl[0],setDraftLockByKey=_dl[1];
+  var unsavedByOrderKeyRef=useRef({});
   var vendorOptions=Array.isArray(suppliers)?suppliers:[];
   var visibleVendorOptions=user&&user.role==="admin"?vendorOptions:vendorOptions.filter(function(v){return !vendorOrdersOpenVendor||v.id===vendorOrdersOpenVendor;});
   useEffect(function(){
@@ -851,17 +852,27 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   var _q=useState(function(){return ex&&ex.items?Object.assign({},ex.items):itemList.reduce(function(a,it){a[it.code]=0;return a;},{});}),qty=_q[0],setQty=_q[1];
   var _n=useState(function(){return ex&&ex.notes?Object.assign({},ex.notes):itemList.reduce(function(a,it){a[it.code]="";return a;},{});}),notes=_n[0],setNotes=_n[1];
   useEffect(function(){
+    var cached=unsavedByOrderKeyRef.current[oKey]||null;
+    var sourceItems=(ex&&ex.items)?ex.items:((cached&&cached.items)||{});
+    var sourceNotes=(ex&&ex.notes)?ex.notes:((cached&&cached.notes)||{});
+    var known={};
+    itemList.forEach(function(it){known[it.code]=true;});
+    var extraCodes=Object.keys(Object.assign({},sourceItems,sourceNotes)).filter(function(code){
+      if(known[code]) return false;
+      return (Number(sourceItems[code])||0)>0 || String(sourceNotes[code]||"").trim();
+    });
+    var allCodes=itemList.map(function(it){return it.code;}).concat(extraCodes);
     setQty(function(prev){
-      return itemList.reduce(function(a,it){
-        if(ex&&ex.items&&ex.items[it.code]!=null){a[it.code]=ex.items[it.code];}
-        else{a[it.code]=0;}
+      return allCodes.reduce(function(a,code){
+        if(sourceItems&&sourceItems[code]!=null){a[code]=Math.max(0,parseInt(sourceItems[code],10)||0);}
+        else{a[code]=0;}
         return a;
       },{});
     });
     setNotes(function(prev){
-      return itemList.reduce(function(a,it){
-        if(ex&&ex.notes&&ex.notes[it.code]){a[it.code]=ex.notes[it.code];}
-        else{a[it.code]="";}
+      return allCodes.reduce(function(a,code){
+        if(sourceNotes&&sourceNotes[code]){a[code]=String(sourceNotes[code]);}
+        else{a[code]="";}
         return a;
       },{});
     });
@@ -869,6 +880,9 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   useEffect(function(){
     setIsEditingDraft(false);
   },[oKey]);
+  useEffect(function(){
+    unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
+  },[oKey,qty,notes]);
   useEffect(function(){
     if(entryType==="VENDOR"){
       setSelCategory("vendor_orders");
@@ -886,14 +900,38 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
       });
     }
   },[oKey,ex&&ex.status]);
-  var setQ=function(c,v){if(ro)return;setQty(function(p){var n=Object.assign({},p);n[c]=Math.max(0,parseInt(v)||0);return n;});};
-  var setN=function(c,v){if(ro)return;setNotes(function(p){var n=Object.assign({},p);n[c]=v;return n;});};
+  var setQ=function(c,v){
+    if(ro)return;
+    setQty(function(p){
+      var n=Object.assign({},p);
+      n[c]=Math.max(0,parseInt(v,10)||0);
+      unsavedByOrderKeyRef.current[oKey]=Object.assign({},unsavedByOrderKeyRef.current[oKey]||{},{
+        items:n,
+        notes:Object.assign({},notes),
+      });
+      return n;
+    });
+  };
+  var setN=function(c,v){
+    if(ro)return;
+    setNotes(function(p){
+      var n=Object.assign({},p);
+      n[c]=v;
+      unsavedByOrderKeyRef.current[oKey]=Object.assign({},unsavedByOrderKeyRef.current[oKey]||{},{
+        items:Object.assign({},qty),
+        notes:n,
+      });
+      return n;
+    });
+  };
   var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||"";
   var activeVendorName=((visibleVendorOptions||[]).find(function(v){return v.id===resolvedVendorKey;})||{}).name||resolvedVendorKey||"Vendor";
   var downloadOrderExcel=async function(payload){
     try{
       var po=payload||{};
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,po.items||qty,po.notes||notes,user.storeId,po.date||new Date().toISOString());
+      var itemNamesByCode={};
+      sorted.forEach(function(it){itemNamesByCode[it.code]=it.name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,po.items||qty,po.notes||notes,user.storeId,po.date||new Date().toISOString(),itemNamesByCode);
       if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
       var b64=resp.excelBase64;
       var bin=atob(b64);
@@ -917,6 +955,7 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
       var id = resp.orderId;
       var savedAt=new Date().toISOString();
       setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:Object.assign({},qty),notes:Object.assign({},notes),status:"draft",store:user.storeId,type:currentType,category:selCategory,vendorKey:resolvedVendorKey,date:savedAt};return n;});
+      unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
       setDraftLockByKey(function(prev){var n=Object.assign({},prev);n[oKey]=true;return n;});
       setIsEditingDraft(false);
       toast("Draft saved");
@@ -928,6 +967,7 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
       var id = resp.orderId;
       var submittedAt=new Date().toISOString();
       setOrders(function(p){var n=Object.assign({},p);n[oKey]={id:id,items:Object.assign({},qty),notes:Object.assign({},notes),status:"submitted",store:user.storeId,type:currentType,category:selCategory,vendorKey:resolvedVendorKey,date:submittedAt};return n;});
+      unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
       setDraftLockByKey(function(prev){if(!prev[oKey]) return prev;var n=Object.assign({},prev);delete n[oKey];return n;});
       setIsEditingDraft(false);
       setShowConfirm(false);
@@ -1007,7 +1047,9 @@ function OrderHistory({user,orders,items,setOrders,toast,setPage,aot,manualOpenO
   var downloadHistoryExcel=async function(o){
     try{
       if(!o){toast("Order not found",true);return;}
-      var resp=await apiClient.orders.storeOrderExcelPreview(o.type||"A",o.category||"vegetables",o.vendorKey||null,o.items||{},o.notes||{},o.store||user.storeId,o.date||new Date().toISOString());
+      var historyItemNames={};
+      Object.keys(Object.assign({},o.items||{},o.notes||{})).forEach(function(code){historyItemNames[code]=displayNameForOrderKey(code,items);});
+      var resp=await apiClient.orders.storeOrderExcelPreview(o.type||"A",o.category||"vegetables",o.vendorKey||null,o.items||{},o.notes||{},o.store||user.storeId,o.date||new Date().toISOString(),historyItemNames);
       if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
       var b64=resp.excelBase64;
       var bin=atob(b64);
@@ -1059,7 +1101,7 @@ function OrderHistory({user,orders,items,setOrders,toast,setPage,aot,manualOpenO
     <div style={S.d}>Reopen as Draft is only enabled for currently open Order {openType||"-"} and only once.</div>
     {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:
     <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-      {my.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((!openKey||k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download Excel</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeDraft(o,k);}}>Close Draft</button>}</div></td></tr>);})}</tbody></table></div>}</div>
+      {my.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq);var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download Excel</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeDraft(o,k);}}>Close Draft</button>}</div></td></tr>);})}</tbody></table></div>}</div>
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>{CATEGORY_LABELS[orders[sel].category||"vegetables"]} Order {orders[sel].type} - {fmtDT(orders[sel].date)}</div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Qty</th><th style={S.th}>Note</th></tr></thead><tbody>
