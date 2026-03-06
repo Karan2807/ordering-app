@@ -318,6 +318,10 @@ function getTemplateForCategory(categoryTemplates, category, vendorKey){
 function isVendorOrderType(type){
   return String(type||"").toUpperCase()==="VENDOR";
 }
+function stopNumberWheelChange(e){
+  e.preventDefault();
+  if(e.currentTarget&&typeof e.currentTarget.blur==="function") e.currentTarget.blur();
+}
 
 
 
@@ -814,10 +818,6 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   var _dl=useState({}),draftLockByKey=_dl[0],setDraftLockByKey=_dl[1];
   var vendorOptions=Array.isArray(suppliers)?suppliers:[];
   var visibleVendorOptions=user&&user.role==="admin"?vendorOptions:vendorOptions.filter(function(v){return !vendorOrdersOpenVendor||v.id===vendorOrdersOpenVendor;});
-  var openCategories=ORDER_CATEGORIES.filter(function(cat){
-    if(cat.id==="vendor_orders") return !!vendorOrdersOpenVendor||!!(user&&user.role==="admin");
-    return isCategoryOpenForType(cat.id,sel,aot);
-  });
   useEffect(function(){
     if(selCategory==="vendor_orders"){
       if(vendorOrdersOpenVendor&&selectedVendorKey!==vendorOrdersOpenVendor) setSelectedVendorKey(vendorOrdersOpenVendor);
@@ -826,6 +826,12 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
       setSelectedVendorKey(null);
     }
   },[selCategory,visibleVendorOptions.length,vendorOrdersOpenVendor]);
+  useEffect(function(){
+    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"&&(!user||user.role!=="admin")){
+      setSelCategory("vegetables");
+      setSelectedVendorKey(null);
+    }
+  },[vendorOrdersOpenVendor,selCategory,user&&user.role]);
   var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
   var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
@@ -842,11 +848,6 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   var hasServerDraft=!!(ex&&(ex.status==="draft"||ex.status==="draft_shared"));
   var isDraftOrder=hasServerDraft||!!draftLockByKey[oKey];
   var ro=locked||done||(isDraftOrder&&!isEditingDraft)||(selCategory==="vendor_orders"&&!resolvedVendorKey);
-  useEffect(function(){
-    if(selCategory!=="vendor_orders"&&!isCategoryOpenForType(selCategory,sel,aot)){
-      setSelCategory(openCategories[0]?openCategories[0].id:"vegetables");
-    }
-  },[sel,aot,selCategory]);
   var _q=useState(function(){return ex&&ex.items?Object.assign({},ex.items):itemList.reduce(function(a,it){a[it.code]=0;return a;},{});}),qty=_q[0],setQty=_q[1];
   var _n=useState(function(){return ex&&ex.notes?Object.assign({},ex.notes):itemList.reduce(function(a,it){a[it.code]="";return a;},{});}),notes=_n[0],setNotes=_n[1];
   useEffect(function(){
@@ -946,7 +947,11 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   return(<div>
     {(notifs||[]).map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-      <div style={S.tabs}>{selCategory==="vendor_orders"?<button style={Object.assign({},S.tab,S.tA)} disabled>Vendor Orders</button>:["A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,sel===t?S.tA:S.tI)} onClick={function(){setSel(t);}}>Order {t}{t===aot?" *":""}</button>;})}</div>
+      <div style={S.tabs}>
+        {selCategory==="vegetables"
+          ? ["A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,sel===t?S.tA:S.tI)} onClick={function(){setSel(t);}}>Order {t}{t===aot?" *":""}</button>;})
+          : <button style={Object.assign({},S.tab,S.tA)} disabled>{CATEGORY_LABELS[selCategory]}</button>}
+      </div>
       <div style={S.tabs}>{ORDER_CATEGORIES.map(function(cat){var disabled=cat.id==="vendor_orders"?(!vendorOrdersOpenVendor&&!(user&&user.role==="admin")):!isCategoryOpenForType(cat.id,sel,aot);return <button key={cat.id} disabled={disabled} style={Object.assign({},S.tab,selCategory===cat.id?S.tA:S.tI,disabled?{opacity:.4,cursor:"not-allowed"}:{})} onClick={function(){if(!disabled)setSelCategory(cat.id);}}>{cat.label}</button>;})}</div>
     </div>
     {selCategory==="vendor_orders"&&<div style={S.card}><div style={S.lb}>Vendor</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}} disabled={!!vendorOrdersOpenVendor&&!(user&&user.role==="admin")}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select></div>}
@@ -969,7 +974,7 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
     </div>
     <div style={S.tw}><table style={S.tbl}>
       <thead><tr><th style={S.th}>{itemHeader}</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader}</th><th style={S.th}>{noteHeader}</th></tr></thead>
-      <tbody>{sorted.map(function(it){return(<tr key={it.code}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="number" min="0" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} disabled={ro}/></td><td style={S.td}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:11.5})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} placeholder="note" disabled={ro}/></td></tr>);})}
+      <tbody>{sorted.map(function(it){return(<tr key={it.code}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="number" min="0" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} onWheel={stopNumberWheelChange} disabled={ro}/></td><td style={S.td}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:11.5})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} placeholder="note" disabled={ro}/></td></tr>);})}
       {sorted.length===0&&<tr><td colSpan={3} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items in {CATEGORY_LABELS[selCategory]}.</td></tr>}</tbody>
     </table></div></div>
     {showConfirm&&(<div style={S.ov} onClick={function(){setShowConfirm(false);}}><div style={Object.assign({},S.mo,{width:420,textAlign:"center"})} onClick={function(e){e.stopPropagation();}}>
@@ -1228,6 +1233,13 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setSelectedVendorKey(null);
     }
   },[selCategory,supplierList.length,vendorOrdersOpenVendor]);
+  useEffect(function(){
+    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"){
+      setSelCategory("vegetables");
+      setSelectedVendorKey(null);
+      setStep(1);
+    }
+  },[vendorOrdersOpenVendor,selCategory]);
   var getStoreOrder=function(storeId){return getCurrentOrderForStoreType(orders,storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);};
   var supplierById=useMemo(function(){var m={};supplierList.forEach(function(s){m[s.id]=s;});return m;},[supplierList]);
   useEffect(function(){ if(consolidatedType&&consolidatedType!==vt) sVt(consolidatedType); },[consolidatedType]);
@@ -1617,6 +1629,12 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       setSelectedVendorKey(null);
     }
   },[selCategory,supList.length,vendorOrdersOpenVendor]);
+  useEffect(function(){
+    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"){
+      setSelCategory("vegetables");
+      setSelectedVendorKey(null);
+    }
+  },[vendorOrdersOpenVendor,selCategory]);
   const itemList = Array.isArray(items) ? items.filter(function(it){return normalizeCategory(it.category)===normalizeCategory(selCategory)&&normalizeVendorKey(selCategory,it.vendorKey)===resolvedVendorKey;}) : [];
   var totals=useMemo(function(){var t={};itemList.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;});if(sum>0)t[it.code]=sum;});return t;},[itemList,stores,orders,dk]);
   // Group by supplier
