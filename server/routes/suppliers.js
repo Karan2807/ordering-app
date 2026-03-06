@@ -14,13 +14,9 @@ function normalizeEmails(inputEmail, inputEmails) {
   return unique;
 }
 
-// Get all suppliers (admin only)
+// Get all suppliers (authenticated users)
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
-    }
-
     const suppliers = await Supplier.find().sort({ name: 1 }).lean();
     res.json(
       suppliers.map((s) => {

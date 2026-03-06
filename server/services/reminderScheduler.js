@@ -27,9 +27,9 @@ async function getSettingsMap(keys) {
   return map;
 }
 
-async function getPendingManagersForType(type, weekKey) {
+async function getPendingManagersForOrder(type, weekKey, category = 'vegetables', vendorKey = null) {
   const stores = await Store.find().lean();
-  const orders = await Order.find({ type, week: weekKey }).lean();
+  const orders = await Order.find({ type, week: weekKey, category, vendorKey: vendorKey || null }).lean();
   const users = await User.find({ role: 'manager', active: true }).lean();
   const orderByStore = {};
   orders.forEach((o) => {
@@ -46,7 +46,10 @@ async function getPendingManagersForType(type, weekKey) {
     .filter(Boolean);
 }
 
-function reminderMessage(type, storeName) {
+function reminderMessage(type, storeName, category = 'vegetables', vendorKey = null) {
+  if (category === 'vendor_orders') {
+    return `Reminder: Vendor order${vendorKey ? ` for ${vendorKey}` : ''} for ${storeName} is still pending. Please submit before close time.`;
+  }
   return `Reminder: Order ${type} for ${storeName} is still pending. Please submit before close time.`;
 }
 
@@ -57,7 +60,7 @@ function composeWeekKeyForType(baseWeekKey, type, manualOpenOrder, manualOpenSeq
   return `${baseWeekKey}-${type}`;
 }
 
-export async function sendManualReminders({ type, storeId = null }) {
+export async function sendManualReminders({ type, storeId = null, category = 'vegetables', vendorKey = null }) {
   const map = await getSettingsMap(['manualOpenOrder', 'manualOpenSeq']);
   const seq = parseInt(map.manualOpenSeq, 10);
   const weekKey = composeWeekKeyForType(
@@ -66,20 +69,22 @@ export async function sendManualReminders({ type, storeId = null }) {
     map.manualOpenOrder || null,
     Number.isNaN(seq) ? null : seq
   );
-  const pending = await getPendingManagersForType(type, weekKey);
+  const pending = await getPendingManagersForOrder(type, weekKey, category, vendorKey);
   const targets = storeId ? pending.filter((x) => x.store.id === storeId) : pending;
   let sent = 0;
   let failed = 0;
   let skipped = 0;
   const errors = [];
   for (const t of targets) {
-    const msg = reminderMessage(type, t.store.name);
+    const msg = reminderMessage(type, t.store.name, category, vendorKey);
     const res = await sendSms({ to: t.manager.phone, body: msg });
     if (res.ok) {
       sent += 1;
       await SmsReminderLog.create({
         week: weekKey,
         type,
+        category,
+        vendorKey: vendorKey || null,
         storeId: t.store.id,
         slot: -1,
         mode: 'manual',
@@ -130,7 +135,7 @@ async function runAutoReminderTick() {
   const manualType = map.manualOpenOrder || null;
   const seq = parseInt(map.manualOpenSeq, 10);
   const weekKey = composeWeekKeyForType(weekBase, type, manualType, Number.isNaN(seq) ? null : seq);
-  const pending = await getPendingManagersForType(type, weekKey);
+  const pending = await getPendingManagersForOrder(type, weekKey, 'vegetables', null);
   for (const t of pending) {
     const exists = await SmsReminderLog.findOne({ week: weekKey, type, storeId: t.store.id, slot, mode: 'auto' }).lean();
     if (exists) continue;

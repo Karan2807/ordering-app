@@ -5,6 +5,8 @@ const supplierOrderSchema = new mongoose.Schema({
   email: { type: String, required: true },
   emails: { type: [String], default: [] },
   type: { type: String, required: true }, // A, B, C etc
+  category: { type: String, default: 'vegetables' },
+  vendorKey: { type: String, default: null },
   week: { type: String, required: true },
   items: { type: mongoose.Schema.Types.Mixed, default: {} },
   reopenedFromId: { type: String, default: null },

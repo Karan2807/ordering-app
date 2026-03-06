@@ -10,6 +10,8 @@ const orderSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   storeId: { type: String, ref: 'Store' },
   type: { type: String, required: true },
+  category: { type: String, default: 'vegetables' },
+  vendorKey: { type: String, default: null },
   status: { type: String, default: 'draft' },
   week: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
@@ -17,6 +19,6 @@ const orderSchema = new mongoose.Schema({
   items: [orderItemSchema],
 });
 
-orderSchema.index({ storeId: 1, type: 1, week: 1 }, { unique: true });
+orderSchema.index({ storeId: 1, type: 1, category: 1, vendorKey: 1, week: 1 }, { unique: true });
 
 export default mongoose.model('Order', orderSchema);

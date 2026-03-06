@@ -115,10 +115,10 @@ export const apiClient = {
       return apiClient.request(`/items/${code}`, { method: 'DELETE' });
     },
 
-    bulkImport(items, mode = 'merge') {
+    bulkImport(items, mode = 'merge', category = 'vegetables', template = null, vendorKey = null) {
       return apiClient.request('/items/bulk/import', {
         method: 'POST',
-        body: JSON.stringify({ items, mode }),
+        body: JSON.stringify({ items, mode, category, template, vendorKey }),
       });
     },
   },
@@ -141,9 +141,11 @@ export const apiClient = {
     process(orderId) {
       return apiClient.request(`/orders/${orderId}/process`, { method: 'POST' });
     },
-    sendReminder(type, storeId) {
+    sendReminder(type, storeId, category, vendorKey) {
       const body = {};
       if (storeId) body.storeId = storeId;
+      if (category) body.category = category;
+      if (vendorKey) body.vendorKey = vendorKey;
       return apiClient.request(`/orders/reminders/${type}/send`, {
         method: 'POST',
         body: JSON.stringify(body),
@@ -154,8 +156,10 @@ export const apiClient = {
       return apiClient.request(`/orders/consolidated/${type}`);
     },
 
-    emailConsolidated(type, emailOrEmails, supplierName, reopenedFromId, splitData) {
+    emailConsolidated(type, category, vendorKey, emailOrEmails, supplierName, reopenedFromId, splitData) {
       const body = Array.isArray(emailOrEmails) ? { emails: emailOrEmails } : { email: emailOrEmails };
+      body.category = category || 'vegetables';
+      if (vendorKey) body.vendorKey = vendorKey;
       if (supplierName) body.supplierName = supplierName;
       if (reopenedFromId) body.reopenedFromId = reopenedFromId;
       if (splitData) body.splitData = splitData;
@@ -164,16 +168,18 @@ export const apiClient = {
         body: JSON.stringify(body),
       });
     },
-    consolidatedExcelPreview(type, splitData) {
-      const body = {};
+    consolidatedExcelPreview(type, category, vendorKey, splitData) {
+      const body = { category: category || 'vegetables' };
+      if (vendorKey) body.vendorKey = vendorKey;
       if (splitData) body.splitData = splitData;
       return apiClient.request(`/orders/consolidated/${type}/excel-preview`, {
         method: 'POST',
         body: JSON.stringify(body),
       });
     },
-    storeOrderExcelPreview(type, items, notes, storeId, date) {
-      const body = { type, items: items || {}, notes: notes || {} };
+    storeOrderExcelPreview(type, category, vendorKey, items, notes, storeId, date) {
+      const body = { type, category: category || 'vegetables', items: items || {}, notes: notes || {} };
+      if (vendorKey) body.vendorKey = vendorKey;
       if (storeId) body.storeId = storeId;
       if (date) body.date = date;
       return apiClient.request('/orders/store-order/excel-preview', {
@@ -384,6 +390,12 @@ export const apiClient = {
       return apiClient.request('/settings/manual-open', {
         method: 'PATCH',
         body: JSON.stringify({ type }),
+      });
+    },
+    updateVendorOrdersOpen(vendorKey) {
+      return apiClient.request('/settings/vendor-orders-open', {
+        method: 'PATCH',
+        body: JSON.stringify({ vendorKey }),
       });
     },
   },

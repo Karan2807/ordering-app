@@ -10,9 +10,11 @@ router.get('/', async (req, res) => {
     const docs = await Setting.find().lean();
     const schedules = {};
     const messages = {};
+    const categoryTemplates = {};
     let logoValue = null;
     let manualOpen = null;
     let manualOpenSeq = null;
+    let vendorOrdersOpenVendor = null;
 
     docs.forEach((row) => {
       if (row.key.startsWith('schedule')) {
@@ -23,11 +25,15 @@ router.get('/', async (req, res) => {
       } else if (row.key === 'logo') {
         // store raw base64 string (or empty) for client
         logoValue = row.value || null;
+      } else if (row.key.startsWith('orderTemplate:')) {
+        categoryTemplates[row.key.replace('orderTemplate:', '')] = row.value;
       } else if (row.key === 'manualOpenOrder') {
         manualOpen = row.value || null;
       } else if (row.key === 'manualOpenSeq') {
         const num = parseInt(row.value, 10);
         manualOpenSeq = Number.isNaN(num) ? null : num;
+      } else if (row.key === 'vendorOrdersOpenVendor') {
+        vendorOrdersOpenVendor = row.value || null;
       }
     });
 
@@ -44,8 +50,24 @@ router.get('/', async (req, res) => {
       }
     }
 
-    const result = { schedule: schedules, message: messages, logo: logoValue, manualOpenOrder: manualOpen, manualOpenSeq };
-    console.log('GET /settings returning', result);
+    const result = {
+      schedule: schedules,
+      message: messages,
+      logo: logoValue,
+      manualOpenOrder: manualOpen,
+      manualOpenSeq,
+      vendorOrdersOpenVendor,
+      categoryTemplates,
+    };
+    console.log('GET /settings returning', {
+      schedule: result.schedule,
+      messageKeys: Object.keys(result.message),
+      hasLogo: Boolean(result.logo),
+      manualOpenOrder: result.manualOpenOrder,
+      manualOpenSeq: result.manualOpenSeq,
+      vendorOrdersOpenVendor: result.vendorOrdersOpenVendor,
+      categoryTemplateKeys: Object.keys(result.categoryTemplates),
+    });
     res.json(result);
   } catch (err) {
     console.error('Get settings error:', err);
@@ -174,6 +196,28 @@ router.patch('/manual-open', authMiddleware, async (req, res) => {
     res.json({ success: true, manualOpenOrder: type, manualOpenSeq: nextSeq });
   } catch (err) {
     console.error('Update manual open error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const vendorKey = String((req.body && req.body.vendorKey) || '').trim();
+    if (!vendorKey) {
+      await Setting.deleteOne({ key: 'vendorOrdersOpenVendor' });
+      return res.json({ success: true, vendorOrdersOpenVendor: null });
+    }
+    await Setting.updateOne(
+      { key: 'vendorOrdersOpenVendor' },
+      { value: vendorKey },
+      { upsert: true }
+    );
+    res.json({ success: true, vendorOrdersOpenVendor: vendorKey });
+  } catch (err) {
+    console.error('Update vendor orders open error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

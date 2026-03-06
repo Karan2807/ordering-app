@@ -101,6 +101,7 @@ const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONSOLIDATED_TEMPLATE_PATH = path.resolve(__dirname, '..', 'templates', 'consolidated-template.xlsx');
+const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders'];
 const displayOrderItemCode = (code) =>
   String(code || '').startsWith('XLS::') ? String(code).slice(5) : String(code || '');
 const TEMPLATE_STORE_SLOTS = [
@@ -110,6 +111,67 @@ const TEMPLATE_STORE_SLOTS = [
   { apna: 'Apna 4', city: 'Kent' },
   { apna: 'Apna 5', city: 'Redmond' },
 ];
+
+function normalizeCategory(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return VALID_CATEGORIES.includes(raw) ? raw : 'vegetables';
+}
+function normalizeVendorKey(category, vendorKey) {
+  return normalizeCategory(category) === 'vendor_orders'
+    ? String(vendorKey || '').trim() || null
+    : null;
+}
+
+function makeTemplateSettingKey(category, vendorKey = null) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  return `orderTemplate:${resolvedCategory}${resolvedVendorKey ? `:${resolvedVendorKey}` : ''}`;
+}
+
+async function getCategoryTemplate(category, vendorKey = null) {
+  const doc = await Setting.findOne({ key: makeTemplateSettingKey(category, vendorKey) }).lean();
+  return doc && doc.value ? doc.value : null;
+}
+
+function ensureRowCell(rows, rowIndex, colIndex) {
+  while (rows.length <= rowIndex) rows.push([]);
+  while (rows[rowIndex].length <= colIndex) rows[rowIndex].push('');
+}
+
+function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeStoreId, noteByCode, itemNameByCode }) {
+  const rows = Array.isArray(template && template.rows) ? template.rows.map((row) => (Array.isArray(row) ? row.slice() : [])) : [];
+  if (template && template.dateCell && template.dateCell.rowIndex != null && template.dateCell.colIndex != null) {
+    ensureRowCell(rows, template.dateCell.rowIndex, template.dateCell.colIndex);
+    rows[template.dateCell.rowIndex][template.dateCell.colIndex] = `${template.dateCell.prefix || ''}${dateText}`;
+  }
+  const slotByKey = Object.fromEntries((slots || []).map((slot) => [slot.apna, slot]));
+  (template && Array.isArray(template.itemRows) ? template.itemRows : []).forEach((itemRow) => {
+    ensureRowCell(rows, itemRow.rowIndex, itemRow.colIndex || 0);
+    const code = String(itemRow.code || '').trim();
+    const name = itemNameByCode[code] || itemRow.name || displayOrderItemCode(code);
+    rows[itemRow.rowIndex][itemRow.colIndex || 0] = name;
+    if (template.kind === 'tabular') {
+      const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+      if (template.quantityColumn && template.quantityColumn.colIndex != null) {
+        ensureRowCell(rows, itemRow.rowIndex, template.quantityColumn.colIndex);
+        rows[itemRow.rowIndex][template.quantityColumn.colIndex] = qtyTotal > 0 ? String(qtyTotal) : '';
+      }
+      if (template.noteColumn && template.noteColumn.colIndex != null) {
+        ensureRowCell(rows, itemRow.rowIndex, template.noteColumn.colIndex);
+        rows[itemRow.rowIndex][template.noteColumn.colIndex] = noteByCode[code] || '';
+      }
+      return;
+    }
+    (template.storeColumns || []).forEach((col) => {
+      ensureRowCell(rows, itemRow.rowIndex, col.colIndex);
+      const slot = slotByKey[col.slotKey];
+      const storeId = slot && slot.store ? slot.store.id : null;
+      const qty = storeId && qtyByCodeStoreId[code] ? Number(qtyByCodeStoreId[code][storeId]) || 0 : 0;
+      rows[itemRow.rowIndex][col.colIndex] = qty > 0 ? String(qty) : '';
+    });
+  });
+  return rows;
+}
 async function sendEmailWithFallback({ to, subject, text, html, attachments = [] }) {
   try {
     // Prefer Microsoft Graph when Graph credentials are present.
@@ -197,10 +259,12 @@ function mapStoresToTemplateSlots(stores = []) {
   });
 }
 
-async function findCurrentWeekOrder(storeId, type, weekKey) {
-  const exact = await Order.findOne({ storeId, type, week: weekKey }).lean();
+async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetables', vendorKey = null) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const exact = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey }).lean();
   if (exact) return exact;
-  const latest = await Order.findOne({ storeId, type }).sort({ createdAt: -1 }).lean();
+  const latest = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey }).sort({ createdAt: -1 }).lean();
   if (!latest) return null;
   const latestWeek = getIsoWeekKeyForDate(latest.createdAt || latest.submittedAt || new Date());
   return latestWeek === weekKey ? latest : null;
@@ -319,13 +383,26 @@ async function rowsToExcelBuffer(rows) {
   return Buffer.from(out);
 }
 
-async function buildConsolidatedExcelPayload(type, splitData) {
+async function rowsToPlainExcelBuffer(rows) {
+  const workbook = new ExcelJS.Workbook();
+  const ws = workbook.addWorksheet('Order');
+  (rows || []).forEach((row) => {
+    ws.addRow(Array.isArray(row) ? row : []);
+  });
+  const out = await workbook.xlsx.writeBuffer();
+  return Buffer.from(out);
+}
+
+async function buildConsolidatedExcelPayload(type, category, vendorKey, splitData) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const weekBase = getWeekKey();
   const mo = await getManualOpenState();
   const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
   const stores = await Store.find().sort({ id: 1 }).lean();
-  const itemDocs = await Item.find().lean();
+  const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
   const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [it.code, it.name]));
+  const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
   const slots = mapStoresToTemplateSlots(stores);
   const slotOrders = {};
   for (const slot of slots) {
@@ -333,13 +410,44 @@ async function buildConsolidatedExcelPayload(type, splitData) {
       slotOrders[slot.apna] = null;
       continue;
     }
-    slotOrders[slot.apna] = await findCurrentWeekOrder(slot.store.id, type, weekKey);
+    slotOrders[slot.apna] = await findCurrentWeekOrder(slot.store.id, type, weekKey, resolvedCategory, resolvedVendorKey);
   }
 
   const now = new Date();
   const dateText = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
   let excelRows = [];
+  let usePlainWorkbook = false;
+  const qtyByCodeStoreId = {};
+  const noteByCode = {};
   if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
+    splitData.rows.forEach((r) => {
+      const code = r.itemCode || `XLS::${String(r.itemName || '').trim()}`;
+      qtyByCodeStoreId[code] = r.qtyByStoreId || {};
+      noteByCode[code] = typeof r.note === 'string' ? r.note.trim() : '';
+    });
+  } else {
+    slots.forEach((slot) => {
+      const order = slotOrders[slot.apna];
+      if (!order || !order.items || !slot.store) return;
+      order.items.forEach((item) => {
+        if (!qtyByCodeStoreId[item.itemCode]) qtyByCodeStoreId[item.itemCode] = {};
+        qtyByCodeStoreId[item.itemCode][slot.store.id] = Number(item.quantity) || 0;
+        if (item.note) noteByCode[item.itemCode] = item.note;
+      });
+    });
+  }
+
+  if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
+    excelRows = buildRowsFromCategoryTemplate({
+      template,
+      dateText,
+      slots,
+      qtyByCodeStoreId,
+      noteByCode,
+      itemNameByCode,
+    });
+    usePlainWorkbook = true;
+  } else if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
     excelRows.push([`Date: ${dateText}`, '', ...slots.map((slot) => `${slot.apna}${type}`), '']);
     excelRows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QUANTITY (case qty)'), 'NOTE']);
     splitData.rows.forEach((r) => {
@@ -365,15 +473,18 @@ async function buildConsolidatedExcelPayload(type, splitData) {
   }
 
   const snapshotLines = excelRows.map((row) => row.join(' | '));
-  const excelBuffer = await rowsToExcelBuffer(excelRows);
-  const excelFilename = `consolidated-order-${type}-${weekKey}.xlsx`;
+  const excelBuffer = usePlainWorkbook ? await rowsToPlainExcelBuffer(excelRows) : await rowsToExcelBuffer(excelRows);
+  const excelFilename = `consolidated-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${weekKey}.xlsx`;
   return { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename };
 }
 
-async function buildStoreOrderExcelPayload({ type, storeId, itemsObj, notesObj, dateOverride }) {
+async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride }) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const stores = await Store.find().sort({ id: 1 }).lean();
-  const itemDocs = await Item.find().lean();
+  const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
   const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [it.code, it.name]));
+  const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
   const slots = mapStoresToTemplateSlots(stores);
   const now = dateOverride ? new Date(dateOverride) : new Date();
   const dateText = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
@@ -393,23 +504,44 @@ async function buildStoreOrderExcelPayload({ type, storeId, itemsObj, notesObj, 
     )
   );
 
-  const rows = [];
-  rows.push([`Date: ${dateText}`, ...slots.map((slot) => `${slot.apna}${type}`), '', '']);
-  rows.push(['PRODUCT', ...slots.map(() => 'QUANTITY (case qty)'), 'TOTAL QTY', 'NOTE']);
+  const qtyByCodeStoreId = {};
+  const noteByCode = {};
   codes.forEach((code) => {
-    const itemName = itemNameByCode[code] || displayOrderItemCode(code);
-    const qty = Math.max(0, Number(normalizedItems[code]) || 0);
-    const note = String(normalizedNotes[code] || '').trim();
-    const qtyCols = slots.map((slot) => {
-      if (!slot.store) return '';
-      return slot.store.id === storeId && qty > 0 ? qty : '';
-    });
-    rows.push([itemName, ...qtyCols, qty > 0 ? qty : '', note]);
+    qtyByCodeStoreId[code] = { [storeId]: Math.max(0, Number(normalizedItems[code]) || 0) };
+    noteByCode[code] = String(normalizedNotes[code] || '').trim();
   });
 
-  const excelBuffer = await rowsToExcelBuffer(rows);
+  let rows;
+  let usePlainWorkbook = false;
+  if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
+    rows = buildRowsFromCategoryTemplate({
+      template,
+      dateText,
+      slots,
+      qtyByCodeStoreId,
+      noteByCode,
+      itemNameByCode,
+    });
+    usePlainWorkbook = true;
+  } else {
+    rows = [];
+    rows.push([`Date: ${dateText}`, ...slots.map((slot) => `${slot.apna}${type}`), '', '']);
+    rows.push(['PRODUCT', ...slots.map(() => 'QUANTITY (case qty)'), 'TOTAL QTY', 'NOTE']);
+    codes.forEach((code) => {
+      const itemName = itemNameByCode[code] || displayOrderItemCode(code);
+      const qty = Math.max(0, Number(normalizedItems[code]) || 0);
+      const note = String(normalizedNotes[code] || '').trim();
+      const qtyCols = slots.map((slot) => {
+        if (!slot.store) return '';
+        return slot.store.id === storeId && qty > 0 ? qty : '';
+      });
+      rows.push([itemName, ...qtyCols, qty > 0 ? qty : '', note]);
+    });
+  }
+
+  const excelBuffer = usePlainWorkbook ? await rowsToPlainExcelBuffer(rows) : await rowsToExcelBuffer(rows);
   const stamp = now.toISOString().replace(/[:.]/g, '-');
-  const excelFilename = `store-order-${type}-${storeId}-${stamp}.xlsx`;
+  const excelFilename = `store-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${storeId}-${stamp}.xlsx`;
   return { excelBuffer, excelFilename };
 }
 
@@ -426,6 +558,8 @@ router.get('/', authMiddleware, async (req, res) => {
       id: order.id,
       storeId: order.storeId,
       type: order.type,
+      category: normalizeCategory(order.category),
+      vendorKey: order.vendorKey || null,
       status: order.status,
       week: order.week,
       items: (order.items || []).reduce((acc, i) => {
@@ -450,9 +584,14 @@ router.get('/', authMiddleware, async (req, res) => {
 // Create or update order
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { type, items = {}, notes = {}, status, storeId: bodyStoreId } = req.body;
+    const { type, category, vendorKey, items = {}, notes = {}, status, storeId: bodyStoreId } = req.body;
     // allow admin to specify a different store when creating/updating
     const storeId = req.user.role === 'admin' && bodyStoreId ? bodyStoreId : req.user.storeId;
+    const resolvedCategory = normalizeCategory(category);
+    const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+    if (resolvedCategory === 'vendor_orders' && !resolvedVendorKey) {
+      return res.status(400).json({ error: 'vendorKey is required for vendor orders' });
+    }
     if (!type || !storeId) {
       return res.status(400).json({ error: 'Type and store required' });
     }
@@ -461,11 +600,13 @@ router.post('/', authMiddleware, async (req, res) => {
     const mo = await getManualOpenState();
     const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
 
-    let order = await Order.findOne({ storeId, type, week: weekKey });
+    let order = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey });
     if (order) {
       order.status = status;
       if (status === 'submitted') order.submittedAt = new Date();
       order.items = normalizeOrderItems(items, notes);
+      order.category = resolvedCategory;
+      order.vendorKey = resolvedVendorKey;
       await order.save();
     } else {
       const orderId = uuidv4();
@@ -473,6 +614,8 @@ router.post('/', authMiddleware, async (req, res) => {
         id: orderId,
         storeId,
         type,
+        category: resolvedCategory,
+        vendorKey: resolvedVendorKey,
         status,
         week: weekKey,
         submittedAt: status === 'submitted' ? new Date() : null,
@@ -511,6 +654,8 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
+    const category = normalizeCategory(req.query.category);
+    const vendorKey = normalizeVendorKey(category, req.query.vendorKey);
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
     const weekKey = composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
@@ -518,7 +663,7 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     const response = [];
 
     for (const store of stores) {
-      const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey);
+      const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey, category, vendorKey);
       const itemsObj = {};
       if (order && order.items) {
         order.items.forEach((i) => {
@@ -554,13 +699,15 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const { email, emails, supplierName, reopenedFromId, splitData } = req.body;
+    const { email, emails, supplierName, reopenedFromId, splitData, category, vendorKey } = req.body;
+    const resolvedCategory = normalizeCategory(category);
+    const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
     const recipients = normalizeRecipientEmails(email, emails);
     if (recipients.length === 0) return res.status(400).json({ error: 'At least one recipient email is required' });
     // supplierName is optional here; frontend will send when available
 
     const { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename } =
-      await buildConsolidatedExcelPayload(req.params.type, splitData);
+      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, splitData);
     const supplierDisplayName = (supplierName || 'Supplier').trim();
     let body = 'Please find attached the consolidated order';
 
@@ -605,6 +752,8 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
         email: recipients.join(', '),
         emails: recipients,
         type: req.params.type,
+        category: resolvedCategory,
+        vendorKey: resolvedVendorKey,
         week: weekKey,
         items: totalObj,
         reopenedFromId: reopenedFromId ? String(reopenedFromId) : null,
@@ -626,6 +775,8 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
             email: supplierOrder.email,
             emails: supplierOrder.emails || [],
             type: supplierOrder.type,
+            category: normalizeCategory(supplierOrder.category),
+            vendorKey: supplierOrder.vendorKey || null,
             week: supplierOrder.week,
             items: supplierOrder.items,
             reopenedFromId: supplierOrder.reopenedFromId || null,
@@ -651,8 +802,13 @@ router.post('/consolidated/:type/excel-preview', authMiddleware, async (req, res
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const { splitData } = req.body || {};
-    const { excelBuffer, excelFilename } = await buildConsolidatedExcelPayload(req.params.type, splitData);
+    const { splitData, category, vendorKey } = req.body || {};
+    const { excelBuffer, excelFilename } = await buildConsolidatedExcelPayload(
+      req.params.type,
+      normalizeCategory(category),
+      normalizeVendorKey(category, vendorKey),
+      splitData
+    );
     res.json({
       success: true,
       filename: excelFilename,
@@ -667,13 +823,15 @@ router.post('/consolidated/:type/excel-preview', authMiddleware, async (req, res
 // build single-store order Excel preview (manager/admin)
 router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
   try {
-    const { type, items = {}, notes = {}, storeId, date } = req.body || {};
+    const { type, category, vendorKey, items = {}, notes = {}, storeId, date } = req.body || {};
     if (!type) return res.status(400).json({ error: 'type is required' });
     const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
 
     const { excelBuffer, excelFilename } = await buildStoreOrderExcelPayload({
       type: String(type),
+      category: normalizeCategory(category),
+      vendorKey: normalizeVendorKey(category, vendorKey),
       storeId: resolvedStoreId,
       itemsObj: items,
       notesObj: notes,
@@ -696,13 +854,15 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
   try {
     const body = req.body || {};
     const type = body.type || req.params.type;
-    const { items = {}, notes = {}, storeId, date } = body;
+    const { category, vendorKey, items = {}, notes = {}, storeId, date } = body;
     if (!type) return res.status(400).json({ error: 'type is required' });
     const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
 
     const { excelBuffer, excelFilename } = await buildStoreOrderExcelPayload({
       type: String(type),
+      category: normalizeCategory(category),
+      vendorKey: normalizeVendorKey(category, vendorKey),
       storeId: resolvedStoreId,
       itemsObj: items,
       notesObj: notes,
@@ -734,6 +894,8 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
           ...row,
           email: emails.join(', '),
           emails,
+          category: normalizeCategory(row.category),
+          vendorKey: row.vendorKey || null,
           hasExcel: !!excelBase64,
         };
       })
@@ -749,12 +911,21 @@ router.post('/supplier-orders', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const { supplierName, email, emails, type, week, items } = req.body;
+    const { supplierName, email, emails, type, category, vendorKey, week, items } = req.body;
     const recipients = normalizeRecipientEmails(email, emails);
     if (!supplierName || recipients.length === 0 || !type || !week) {
       return res.status(400).json({ error: 'Missing fields' });
     }
-    const so = new SupplierOrder({ supplierName, email: recipients.join(', '), emails: recipients, type, week, items });
+    const so = new SupplierOrder({
+      supplierName,
+      email: recipients.join(', '),
+      emails: recipients,
+      type,
+      category: normalizeCategory(category),
+      vendorKey: normalizeVendorKey(category, vendorKey),
+      week,
+      items,
+    });
     await so.save();
     res.json({ success: true, supplierOrder: so });
   } catch (err) {
@@ -770,11 +941,16 @@ router.post('/reminders/:type/send', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
     const type = String(req.params.type || '').toUpperCase();
-    if (!['A', 'B', 'C'].includes(type)) {
+    if (!['A', 'B', 'C', 'VENDOR'].includes(type)) {
       return res.status(400).json({ error: 'Invalid order type' });
     }
     const storeId = req.body && req.body.storeId ? String(req.body.storeId) : null;
-    const result = await sendManualReminders({ type, storeId });
+    const category = normalizeCategory(req.body && req.body.category);
+    const vendorKey = normalizeVendorKey(category, req.body && req.body.vendorKey);
+    if (type === 'VENDOR' && (!vendorKey || category !== 'vendor_orders')) {
+      return res.status(400).json({ error: 'vendorKey is required for vendor reminders' });
+    }
+    const result = await sendManualReminders({ type, storeId, category, vendorKey });
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('Manual reminder send error:', err);
