@@ -854,14 +854,14 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
     setQty(function(prev){
       return itemList.reduce(function(a,it){
         if(ex&&ex.items&&ex.items[it.code]!=null){a[it.code]=ex.items[it.code];}
-        else{a[it.code]=prev&&prev[it.code]!=null?prev[it.code]:0;}
+        else{a[it.code]=0;}
         return a;
       },{});
     });
     setNotes(function(prev){
       return itemList.reduce(function(a,it){
         if(ex&&ex.notes&&ex.notes[it.code]){a[it.code]=ex.notes[it.code];}
-        else{a[it.code]=prev&&prev[it.code]!=null?prev[it.code]:"";}
+        else{a[it.code]="";}
         return a;
       },{});
     });
