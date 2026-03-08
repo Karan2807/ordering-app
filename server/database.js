@@ -6,15 +6,12 @@ import Supplier from './models/supplier.js';
 import Order from './models/order.js';
 import Notification from './models/notification.js';
 import Setting from './models/setting.js';
+import { getMongoUri } from './config/databaseConfig.js';
 
 // In mongo version we don't need explicit table creation; Mongoose handles it
 export async function initializeDatabase() {
   try {
-    const uri = process.env.MONGODB_URI;
-
-    if (!uri) {
-      throw new Error('MONGODB_URI is missing. Create server/.env and set MONGODB_URI=...');
-    }
+    const uri = getMongoUri();
 
     // Connect only if not already connected
     if (mongoose.connection.readyState !== 1) {

@@ -437,7 +437,32 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     });
   }
 
-  if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
+  // Leaves supplier exports should include only product + total qty (no store-wise columns).
+  if (resolvedCategory === 'leaves') {
+    excelRows.push([`Date: ${dateText}`, '', '', '', '', '', '']);
+    excelRows.push(['PRODUCT', 'TOTAL QTY', '', '', '', '', '']);
+    const leavesRows = splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0
+      ? splitData.rows
+      : Object.entries(qtyByCodeStoreId).map(([itemCode, qtyByStore]) => ({
+          itemCode,
+          itemName: itemNameByCode[itemCode] || displayOrderItemCode(itemCode),
+          total: Object.values(qtyByStore || {}).reduce((acc, v) => acc + (Number(v) || 0), 0),
+        }));
+    leavesRows.forEach((r) => {
+      const itemName = r.itemName || itemNameByCode[r.itemCode] || displayOrderItemCode(r.itemCode);
+      const totalFromPayload = Number(r.total) || 0;
+      const total =
+        totalFromPayload > 0
+          ? totalFromPayload
+          : slots.reduce((acc, slot) => {
+              if (!slot.store) return acc;
+              return acc + (Number(r.qtyByStoreId && r.qtyByStoreId[slot.store.id]) || 0);
+            }, 0);
+      excelRows.push([itemName, total > 0 ? total : '', '', '', '', '', '']);
+    });
+    // Keep the template-based workbook so styling/format matches other consolidated files.
+    usePlainWorkbook = false;
+  } else if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
     excelRows = buildRowsFromCategoryTemplate({
       template,
       dateText,

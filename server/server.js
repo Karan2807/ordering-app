@@ -5,6 +5,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { initializeDatabase, seedDatabase } from './database.js';
+import { getMongoUri, isProduction } from './config/databaseConfig.js';
 import authRoutes from './routes/auth.js';
 import itemRoutes from './routes/items.js';
 import orderRoutes from './routes/orders.js';
@@ -17,13 +18,22 @@ import testEmailRoutes from './routes/testEmail.js';
 import { startReminderScheduler } from './services/reminderScheduler.js';
 
 // make sure required environment variables are present
-const requiredEnv = ['MONGODB_URI', 'JWT_SECRET'];
+const requiredEnv = ['JWT_SECRET'];
 requiredEnv.forEach((key) => {
   if (!process.env[key]) {
-    console.error(`❌ Required environment variable ${key} is not set. Aborting.`);
+    console.error(`Required environment variable ${key} is not set. Aborting.`);
     process.exit(1);
   }
 });
+
+try {
+  getMongoUri();
+  const mode = isProduction() ? 'production/deployed' : 'non-production/local';
+  console.log(`Database mode: ${mode}`);
+} catch (err) {
+  console.error(`Database configuration error: ${err.message}`);
+  process.exit(1);
+}
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -120,3 +130,4 @@ async function start(port = PORT) {
 }
 
 start();
+

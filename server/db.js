@@ -1,11 +1,19 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import { getMongoUri } from './config/databaseConfig.js';
 
 dotenv.config();
 
-const mongoUri = process.env.MONGODB_URI;
+let mongoUri;
+try {
+  mongoUri = getMongoUri();
+} catch (err) {
+  console.error(`Database configuration error: ${err.message}`);
+  process.exit(1);
+}
+
 if (!mongoUri) {
-  console.error('❌ MONGODB_URI is not set. Cannot connect to database.');
+  console.error('Database URI is not set. Cannot connect to database.');
   process.exit(1);
 }
 
@@ -23,7 +31,7 @@ db.on('error', (err) => {
 });
 
 db.once('open', () => {
-  console.log('✓ MongoDB connected');
+  console.log('MongoDB connected');
 });
 
 export default mongoose;
