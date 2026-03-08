@@ -102,6 +102,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONSOLIDATED_TEMPLATE_PATH = path.resolve(__dirname, '..', 'templates', 'consolidated-template.xlsx');
 const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders'];
+const VALID_ORDER_STATUSES = new Set(['draft', 'draft_shared', 'submitted', 'processed']);
 const displayOrderItemCode = (code) =>
   String(code || '').startsWith('XLS::') ? String(code).slice(5) : String(code || '');
 const TEMPLATE_STORE_SLOTS = [
@@ -283,6 +284,29 @@ function normalizeOrderItems(itemsInput, notesInput = {}) {
     .filter(({ quantity, note }) => quantity > 0 || note);
 }
 
+function orderItemsToList(rawItems) {
+  if (Array.isArray(rawItems)) return rawItems;
+  if (!rawItems || typeof rawItems !== 'object') return [];
+  return Object.entries(rawItems).map(([itemCode, value]) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return {
+        itemCode,
+        quantity: Number(value.quantity) || 0,
+        note: typeof value.note === 'string' ? value.note : '',
+      };
+    }
+    return {
+      itemCode,
+      quantity: Number(value) || 0,
+      note: '',
+    };
+  });
+}
+
+function isStoreOrderVisibleInConsolidated(status) {
+  return status === 'submitted' || status === 'processed' || status === 'draft_shared';
+}
+
 function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNameByCode }) {
   const rows = [];
   rows.push([`Date: ${dateText}`, '', ...slots.map((slot) => `${slot.apna}${type}`), '']);
@@ -291,8 +315,8 @@ function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNam
   const itemCodes = new Set();
   slots.forEach((slot) => {
     const order = slotOrders[slot.apna];
-    if (order && order.items) {
-      order.items.forEach((i) => itemCodes.add(i.itemCode));
+    if (order) {
+      orderItemsToList(order.items).forEach((i) => itemCodes.add(i.itemCode));
     }
   });
 
@@ -306,15 +330,15 @@ function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNam
   itemRows.forEach((it) => {
     const qtyCols = slots.map((slot) => {
       const order = slotOrders[slot.apna];
-      if (!order || !order.items) return '';
-      const found = order.items.find((i) => i.itemCode === it.code);
+      if (!order) return '';
+      const found = orderItemsToList(order.items).find((i) => i.itemCode === it.code);
       return found && (Number(found.quantity) || 0) > 0 ? Number(found.quantity) : '';
     });
     const noteCols = slots
       .map((slot) => {
         const order = slotOrders[slot.apna];
-        if (!order || !order.items) return '';
-        const found = order.items.find((i) => i.itemCode === it.code);
+        if (!order) return '';
+        const found = orderItemsToList(order.items).find((i) => i.itemCode === it.code);
         const note = found && typeof found.note === 'string' ? found.note.trim() : '';
         return note ? `${slot.apna}: ${note}` : '';
       })
@@ -428,8 +452,8 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   } else {
     slots.forEach((slot) => {
       const order = slotOrders[slot.apna];
-      if (!order || !order.items || !slot.store) return;
-      order.items.forEach((item) => {
+      if (!order || !slot.store) return;
+      orderItemsToList(order.items).forEach((item) => {
         if (!qtyByCodeStoreId[item.itemCode]) qtyByCodeStoreId[item.itemCode] = {};
         qtyByCodeStoreId[item.itemCode][slot.store.id] = Number(item.quantity) || 0;
         if (item.note) noteByCode[item.itemCode] = item.note;
@@ -593,11 +617,11 @@ router.get('/', authMiddleware, async (req, res) => {
       vendorKey: order.vendorKey || null,
       status: order.status,
       week: order.week,
-      items: (order.items || []).reduce((acc, i) => {
+      items: orderItemsToList(order.items).reduce((acc, i) => {
         acc[i.itemCode] = i.quantity;
         return acc;
       }, {}),
-      notes: (order.items || []).reduce((acc, i) => {
+      notes: orderItemsToList(order.items).reduce((acc, i) => {
         if (i.note) acc[i.itemCode] = i.note;
         return acc;
       }, {}),
@@ -625,6 +649,9 @@ router.post('/', authMiddleware, async (req, res) => {
     }
     if (!type || !storeId) {
       return res.status(400).json({ error: 'Type and store required' });
+    }
+    if (!VALID_ORDER_STATUSES.has(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
     }
 
     const weekBase = getWeekKey();
@@ -717,23 +744,25 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
 
     for (const store of stores) {
       const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey, category, vendorKey);
+      const visibleOrder = order && isStoreOrderVisibleInConsolidated(order.status) ? order : null;
+      const visibleItems = visibleOrder ? orderItemsToList(visibleOrder.items) : [];
       const itemsObj = {};
-      if (order && order.items) {
-        order.items.forEach((i) => {
+      if (visibleOrder && visibleItems.length > 0) {
+        visibleItems.forEach((i) => {
           itemsObj[i.itemCode] = i.quantity;
         });
       }
       const notesObj = {};
-      if (order && order.items) {
-        order.items.forEach((i) => {
+      if (visibleOrder && visibleItems.length > 0) {
+        visibleItems.forEach((i) => {
           if (i.note) notesObj[i.itemCode] = i.note;
         });
       }
       response.push({
         id: store.id,
         name: store.name,
-        order_id: order ? order.id : null,
-        status: order ? order.status : null,
+        order_id: visibleOrder ? visibleOrder.id : null,
+        status: visibleOrder ? visibleOrder.status : null,
         items: itemsObj,
         notes: notesObj,
       });
@@ -792,8 +821,8 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
       } else {
         slots.forEach((slot) => {
           const order = slotOrders[slot.apna];
-          if (order && order.items) {
-            order.items.forEach((i) => {
+          if (order) {
+            orderItemsToList(order.items).forEach((i) => {
               totalObj[i.itemCode] = (totalObj[i.itemCode] || 0) + (i.quantity || 0);
             });
           }

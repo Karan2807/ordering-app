@@ -623,7 +623,7 @@ export default function App(){
     };
     if(auth.loading)return;
     fetchData({initial:true});
-    var pullMs=3000;
+    var pullMs=10000;
     var timer=setInterval(function(){
       if(document.visibilityState==="visible"){fetchData({initial:false});}
     },pullMs);

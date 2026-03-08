@@ -23,6 +23,10 @@ export async function initializeDatabase() {
       console.log('MongoDB connected');
     }
 
+    // Keep deployment indexes aligned with current schemas.
+    // This prevents stale legacy unique indexes from breaking category/vendor-aware order keys.
+    await Order.syncIndexes();
+
     console.log('✓ Database initialized (MongoDB)');
   } catch (err) {
     if (err && (err.code === 'ENOTFOUND' || String(err.message || '').includes('ENOTFOUND'))) {
