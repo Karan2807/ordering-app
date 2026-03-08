@@ -630,32 +630,54 @@ router.post('/', authMiddleware, async (req, res) => {
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
     const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
-
-    let order = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey });
-    if (order) {
-      order.status = status;
-      if (status === 'submitted') order.submittedAt = new Date();
-      order.items = normalizeOrderItems(items, notes);
-      order.category = resolvedCategory;
-      order.vendorKey = resolvedVendorKey;
-      await order.save();
-    } else {
-      const orderId = uuidv4();
-      order = new Order({
-        id: orderId,
-        storeId,
-        type,
+    const normalizedItems = normalizeOrderItems(items, notes);
+    const now = new Date();
+    const orderId = uuidv4();
+    const query = { storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey };
+    const update = {
+      $set: {
         category: resolvedCategory,
         vendorKey: resolvedVendorKey,
         status,
+        items: normalizedItems,
+      },
+      $setOnInsert: {
+        id: orderId,
+        storeId,
+        type,
         week: weekKey,
-        submittedAt: status === 'submitted' ? new Date() : null,
-        items: normalizeOrderItems(items, notes),
-      });
-      await order.save();
+        createdAt: now,
+      },
+    };
+    if (status === 'submitted') {
+      update.$set.submittedAt = now;
     }
 
-    res.json({ success: true, orderId: order.id });
+    let order;
+    try {
+      order = await Order.findOneAndUpdate(query, update, { upsert: true, new: true });
+    } catch (err) {
+      // Rare race on first insert under high concurrency; retry as plain update.
+      if (err && err.code === 11000) {
+        order = await Order.findOneAndUpdate(
+          query,
+          {
+            $set: {
+              category: resolvedCategory,
+              vendorKey: resolvedVendorKey,
+              status,
+              items: normalizedItems,
+              ...(status === 'submitted' ? { submittedAt: now } : {}),
+            },
+          },
+          { new: true }
+        );
+      } else {
+        throw err;
+      }
+    }
+
+    res.json({ success: true, orderId: order && order.id ? order.id : orderId });
   } catch (err) {
     console.error('Create order error:', err);
     res.status(500).json({ error: 'Server error' });

@@ -589,7 +589,6 @@ export default function App(){
             schedMap[t] = today;
           }
         });
-        console.log('fetched schedule',schedMap);
         setSchedule(function(prev){return sameJson(prev,schedMap)?prev:schedMap;});
         if(data.orders&&Array.isArray(data.orders)){
           // key orders by store_week-type-category so category flows stay isolated
@@ -2337,7 +2336,6 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       var conflict=Object.keys(schedule).find(function(k){return k!==ed&&schedule[k]===eV;});
       if(conflict){toast("Day already used by Order "+conflict,true);return;}    
       try{
-        console.log('saving schedule', ed, eV, 'via apiClient');
         const resp = await apiClient.settings.updateSchedule(ed,eV);
         if (resp.settings && resp.settings.schedule) {
           setSchedule(resp.settings.schedule);
