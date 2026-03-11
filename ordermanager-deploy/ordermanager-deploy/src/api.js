@@ -177,6 +177,21 @@ export const apiClient = {
         body: JSON.stringify(body),
       });
     },
+    getConsolidatedHistory(days = 7) {
+      return apiClient.request(`/orders/consolidated-history?days=${encodeURIComponent(days)}`);
+    },
+    consolidatedHistoryExcel(week, type, category, vendorKey) {
+      const body = {
+        week,
+        type,
+        category: category || 'vegetables',
+      };
+      if (vendorKey) body.vendorKey = vendorKey;
+      return apiClient.request('/orders/consolidated-history/excel', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
     storeOrderExcelPreview(type, category, vendorKey, items, notes, storeId, date, itemNames) {
       const body = { type, category: category || 'vegetables', items: items || {}, notes: notes || {} };
       if (vendorKey) body.vendorKey = vendorKey;
@@ -391,6 +406,12 @@ export const apiClient = {
       return apiClient.request('/settings/manual-open', {
         method: 'PATCH',
         body: JSON.stringify({ type }),
+      });
+    },
+    updateManualOpenLeaves(enabled) {
+      return apiClient.request('/settings/manual-open-leaves', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: !!enabled }),
       });
     },
     updateVendorOrdersOpen(vendorKey) {

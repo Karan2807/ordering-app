@@ -14,6 +14,7 @@ router.get('/', async (req, res) => {
     let logoValue = null;
     let manualOpen = null;
     let manualOpenSeq = null;
+    let manualOpenLeaves = false;
     let vendorOrdersOpenVendor = null;
 
     docs.forEach((row) => {
@@ -32,6 +33,8 @@ router.get('/', async (req, res) => {
       } else if (row.key === 'manualOpenSeq') {
         const num = parseInt(row.value, 10);
         manualOpenSeq = Number.isNaN(num) ? null : num;
+      } else if (row.key === 'manualOpenLeaves') {
+        manualOpenLeaves = String(row.value || '').toLowerCase() === 'true' || String(row.value || '') === '1';
       } else if (row.key === 'vendorOrdersOpenVendor') {
         vendorOrdersOpenVendor = row.value || null;
       }
@@ -56,6 +59,7 @@ router.get('/', async (req, res) => {
       logo: logoValue,
       manualOpenOrder: manualOpen,
       manualOpenSeq,
+      manualOpenLeaves,
       vendorOrdersOpenVendor,
       categoryTemplates,
     };
@@ -65,6 +69,7 @@ router.get('/', async (req, res) => {
       hasLogo: Boolean(result.logo),
       manualOpenOrder: result.manualOpenOrder,
       manualOpenSeq: result.manualOpenSeq,
+      manualOpenLeaves: result.manualOpenLeaves,
       vendorOrdersOpenVendor: result.vendorOrdersOpenVendor,
       categoryTemplateKeys: Object.keys(result.categoryTemplates),
     });
@@ -196,6 +201,29 @@ router.patch('/manual-open', authMiddleware, async (req, res) => {
     res.json({ success: true, manualOpenOrder: type, manualOpenSeq: nextSeq });
   } catch (err) {
     console.error('Update manual open error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Leaves manual open override (admin only): controls Leaves availability independent of A/B/C override.
+router.patch('/manual-open-leaves', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const enabled = !!(req.body && req.body.enabled);
+    if (!enabled) {
+      await Setting.deleteOne({ key: 'manualOpenLeaves' });
+      return res.json({ success: true, manualOpenLeaves: false });
+    }
+    await Setting.updateOne(
+      { key: 'manualOpenLeaves' },
+      { value: '1' },
+      { upsert: true }
+    );
+    res.json({ success: true, manualOpenLeaves: true });
+  } catch (err) {
+    console.error('Update leaves manual open error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

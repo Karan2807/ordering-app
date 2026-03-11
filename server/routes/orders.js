@@ -240,6 +240,53 @@ function composeWeekKeyForType(baseWeekKey, type, manualOpenOrder, manualOpenSeq
   return baseWeekKey;
 }
 
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function weekWindowFilter(weekKey, weekBase) {
+  if (!weekBase) {
+    return { week: weekKey };
+  }
+  return {
+    week: {
+      $regex: new RegExp(`^${escapeRegex(weekBase)}(?:-M\\d+)?$`),
+    },
+  };
+}
+
+async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase = null) {
+  const [stores, extraOrders] = await Promise.all([
+    Store.find().sort({ id: 1 }).lean(),
+    Order.find({
+      type,
+      category,
+      vendorKey,
+      ...weekWindowFilter(weekKey, weekBase),
+    })
+      .select({ storeId: 1, _id: 0 })
+      .lean(),
+  ]);
+
+  const known = {};
+  const list = [];
+  stores.forEach((store) => {
+    const id = String(store.id || '').trim();
+    if (!id || known[id]) return;
+    known[id] = true;
+    list.push(store);
+  });
+
+  extraOrders.forEach((order) => {
+    const storeId = String(order.storeId || '').trim();
+    if (!storeId || known[storeId]) return;
+    known[storeId] = true;
+    list.push({ id: storeId, name: storeId });
+  });
+
+  return list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || ''), undefined, { sensitivity: 'base' }));
+}
+
 function mapStoresToTemplateSlots(stores = []) {
   const list = Array.isArray(stores) ? stores : [];
   const used = new Set();
@@ -260,11 +307,23 @@ function mapStoresToTemplateSlots(stores = []) {
   });
 }
 
-async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetables', vendorKey = null) {
+async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetables', vendorKey = null, weekBase = null) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const exact = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey }).lean();
   if (exact) return exact;
+  if (weekBase) {
+    const windowOrder = await Order.findOne({
+      storeId,
+      type,
+      category: resolvedCategory,
+      vendorKey: resolvedVendorKey,
+      ...weekWindowFilter(weekKey, weekBase),
+    })
+      .sort({ submittedAt: -1, createdAt: -1 })
+      .lean();
+    if (windowOrder) return windowOrder;
+  }
   const latest = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey }).sort({ createdAt: -1 }).lean();
   if (!latest) return null;
   const latestWeek = getIsoWeekKeyForDate(latest.createdAt || latest.submittedAt || new Date());
@@ -305,6 +364,188 @@ function orderItemsToList(rawItems) {
 
 function isStoreOrderVisibleInConsolidated(status) {
   return status === 'submitted' || status === 'processed' || status === 'draft_shared';
+}
+
+function consolidatedHistoryKey(week, type, category, vendorKey) {
+  const normalizedCategory = normalizeCategory(category);
+  const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
+  return [String(week || ''), String(type || '').toUpperCase(), normalizedCategory, normalizedVendorKey || ''].join('::');
+}
+
+async function buildConsolidatedHistory({ days = 7 } = {}) {
+  const parsedDays = Number(days);
+  const safeDays = Number.isFinite(parsedDays) && parsedDays > 0 ? Math.min(Math.floor(parsedDays), 60) : 7;
+  const since = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000);
+
+  const [orders, stores, itemDocs, sentLogs] = await Promise.all([
+    Order.find({
+      $or: [{ submittedAt: { $gte: since } }, { createdAt: { $gte: since } }],
+    }).lean(),
+    Store.find().lean(),
+    Item.find().lean(),
+    SupplierOrder.find({ sentAt: { $gte: since } }).lean(),
+  ]);
+
+  const storeNameById = Object.fromEntries(stores.map((s) => [String(s.id || ''), s.name || s.id || '']));
+  const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [String(it.code || ''), it.name || it.code || '']));
+
+  const sentByGroup = {};
+  sentLogs.forEach((log) => {
+    const key = consolidatedHistoryKey(log.week, log.type, log.category, log.vendorKey);
+    if (!sentByGroup[key]) {
+      sentByGroup[key] = { sentCount: 0, lastSentAt: null };
+    }
+    sentByGroup[key].sentCount += 1;
+    if (!sentByGroup[key].lastSentAt || new Date(log.sentAt || 0) > new Date(sentByGroup[key].lastSentAt)) {
+      sentByGroup[key].lastSentAt = log.sentAt || null;
+    }
+  });
+
+  const grouped = {};
+  orders.forEach((order) => {
+    const normalizedCategory = normalizeCategory(order.category);
+    const normalizedVendorKey = normalizeVendorKey(normalizedCategory, order.vendorKey);
+    const key = consolidatedHistoryKey(order.week, order.type, normalizedCategory, normalizedVendorKey);
+    if (!grouped[key]) {
+      grouped[key] = {
+        week: order.week,
+        type: String(order.type || '').toUpperCase(),
+        category: normalizedCategory,
+        vendorKey: normalizedVendorKey,
+        latestAt: order.submittedAt || order.createdAt || new Date(0),
+        storeOrders: [],
+      };
+    }
+    const group = grouped[key];
+    const candidateLatest = order.submittedAt || order.createdAt || new Date(0);
+    if (new Date(candidateLatest) > new Date(group.latestAt || 0)) {
+      group.latestAt = candidateLatest;
+    }
+
+    const normalizedItems = orderItemsToList(order.items)
+      .filter((entry) => (Number(entry.quantity) || 0) > 0 || String(entry.note || '').trim())
+      .map((entry) => ({
+        itemCode: entry.itemCode,
+        itemName: itemNameByCode[String(entry.itemCode || '')] || displayOrderItemCode(entry.itemCode),
+        quantity: Number(entry.quantity) || 0,
+        note: String(entry.note || '').trim(),
+      }));
+
+    group.storeOrders.push({
+      storeId: order.storeId,
+      storeName: storeNameById[String(order.storeId || '')] || order.storeId || '-',
+      status: order.status || 'draft',
+      submittedAt: order.submittedAt || order.createdAt || null,
+      itemCount: normalizedItems.length,
+      items: normalizedItems,
+    });
+  });
+
+  return Object.values(grouped)
+    .map((group) => {
+      const key = consolidatedHistoryKey(group.week, group.type, group.category, group.vendorKey);
+      const sentInfo = sentByGroup[key] || { sentCount: 0, lastSentAt: null };
+      const sortedStoreOrders = (group.storeOrders || [])
+        .slice()
+        .sort((a, b) => String(a.storeName || '').localeCompare(String(b.storeName || '')));
+      return {
+        week: group.week,
+        type: group.type,
+        category: group.category,
+        vendorKey: group.vendorKey || null,
+        latestAt: group.latestAt,
+        sent: sentInfo.sentCount > 0,
+        sentCount: sentInfo.sentCount,
+        lastSentAt: sentInfo.lastSentAt,
+        storeCount: sortedStoreOrders.length,
+        storeOrders: sortedStoreOrders,
+      };
+    })
+    .sort((a, b) => new Date(b.latestAt || 0) - new Date(a.latestAt || 0));
+}
+
+async function buildConsolidatedHistoryExcelPayload({ week, type, category, vendorKey }) {
+  const normalizedCategory = normalizeCategory(category);
+  const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
+  const normalizedType = String(type || '').toUpperCase();
+  const normalizedWeek = String(week || '').trim();
+
+  const [orders, stores, itemDocs, sentLogs] = await Promise.all([
+    Order.find({
+      week: normalizedWeek,
+      type: normalizedType,
+      category: normalizedCategory,
+      vendorKey: normalizedVendorKey,
+    }).lean(),
+    Store.find().lean(),
+    Item.find({ category: normalizedCategory, vendorKey: normalizedVendorKey }).lean(),
+    SupplierOrder.find({
+      week: normalizedWeek,
+      type: normalizedType,
+      category: normalizedCategory,
+      vendorKey: normalizedVendorKey,
+    })
+      .sort({ sentAt: -1 })
+      .lean(),
+  ]);
+
+  const storeNameById = Object.fromEntries(stores.map((s) => [String(s.id || ''), s.name || s.id || '']));
+  const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [String(it.code || ''), it.name || it.code || '']));
+  const sentCount = sentLogs.length;
+  const lastSentAt = sentLogs[0] ? sentLogs[0].sentAt : null;
+  const sentLabel = sentCount > 0 ? 'Yes' : 'No';
+
+  const rows = [];
+  rows.push(['Consolidated Order History']);
+  rows.push(['Week', normalizedWeek, 'Type', normalizedType, 'Category', normalizedCategory, 'Vendor', normalizedVendorKey || '-']);
+  rows.push(['Sent', sentLabel, 'Sent Count', sentCount, 'Last Sent At', lastSentAt ? new Date(lastSentAt).toISOString() : '-']);
+  rows.push([]);
+  rows.push(['Store ID', 'Store Name', 'Order Status', 'Order Date', 'Item Code', 'Item Name', 'Quantity', 'Note']);
+
+  const sortedOrders = (orders || []).slice().sort((a, b) => {
+    const byStore = String(storeNameById[String(a.storeId || '')] || a.storeId || '').localeCompare(
+      String(storeNameById[String(b.storeId || '')] || b.storeId || '')
+    );
+    if (byStore !== 0) return byStore;
+    return new Date(a.submittedAt || a.createdAt || 0) - new Date(b.submittedAt || b.createdAt || 0);
+  });
+
+  sortedOrders.forEach((order) => {
+    const storeId = order.storeId || '-';
+    const storeName = storeNameById[String(order.storeId || '')] || order.storeId || '-';
+    const orderDate = order.submittedAt || order.createdAt || null;
+    const lines = orderItemsToList(order.items)
+      .filter((entry) => (Number(entry.quantity) || 0) > 0 || String(entry.note || '').trim())
+      .map((entry) => ({
+        itemCode: entry.itemCode,
+        itemName: itemNameByCode[String(entry.itemCode || '')] || displayOrderItemCode(entry.itemCode),
+        quantity: Number(entry.quantity) || 0,
+        note: String(entry.note || '').trim(),
+      }));
+
+    if (lines.length === 0) {
+      rows.push([storeId, storeName, order.status || 'draft', orderDate ? new Date(orderDate).toISOString() : '-', '', '', '', '']);
+      return;
+    }
+
+    lines.forEach((line) => {
+      rows.push([
+        storeId,
+        storeName,
+        order.status || 'draft',
+        orderDate ? new Date(orderDate).toISOString() : '-',
+        line.itemCode,
+        line.itemName,
+        line.quantity,
+        line.note,
+      ]);
+    });
+  });
+
+  const excelBuffer = await rowsToPlainExcelBuffer(rows);
+  const safeWeek = normalizedWeek.replace(/[^A-Za-z0-9_-]/g, '_');
+  const excelFilename = `consolidated-history-${normalizedType}-${normalizedCategory}${normalizedVendorKey ? `-${normalizedVendorKey}` : ''}-${safeWeek}.xlsx`;
+  return { excelBuffer, excelFilename };
 }
 
 function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNameByCode }) {
@@ -423,7 +664,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   const weekBase = getWeekKey();
   const mo = await getManualOpenState();
   const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
-  const stores = await Store.find().sort({ id: 1 }).lean();
+  const stores = await getStoresForConsolidatedWindow(type, resolvedCategory, resolvedVendorKey, weekKey, weekBase);
   const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
   const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [it.code, it.name]));
   const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
@@ -434,7 +675,14 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       slotOrders[slot.apna] = null;
       continue;
     }
-    slotOrders[slot.apna] = await findCurrentWeekOrder(slot.store.id, type, weekKey, resolvedCategory, resolvedVendorKey);
+    slotOrders[slot.apna] = await findCurrentWeekOrder(
+      slot.store.id,
+      type,
+      weekKey,
+      resolvedCategory,
+      resolvedVendorKey,
+      weekBase
+    );
   }
 
   const now = new Date();
@@ -739,11 +987,11 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
     const weekKey = composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
-    const stores = await Store.find().sort({ id: 1 }).lean();
+    const stores = await getStoresForConsolidatedWindow(req.params.type, category, vendorKey, weekKey, weekBase);
     const response = [];
 
     for (const store of stores) {
-      const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey, category, vendorKey);
+      const order = await findCurrentWeekOrder(store.id, req.params.type, weekKey, category, vendorKey, weekBase);
       const visibleOrder = order && isStoreOrderVisibleInConsolidated(order.status) ? order : null;
       const visibleItems = visibleOrder ? orderItemsToList(visibleOrder.items) : [];
       const itemsObj = {};
@@ -960,6 +1208,46 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
     });
   } catch (err) {
     console.error('Store order Excel preview alias error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/consolidated-history', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const days = parseInt(req.query.days, 10);
+    const history = await buildConsolidatedHistory({ days: Number.isNaN(days) ? 7 : days });
+    res.json(history);
+  } catch (err) {
+    console.error('Get consolidated history error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/consolidated-history/excel', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const { week, type, category, vendorKey } = req.body || {};
+    if (!week || !type) {
+      return res.status(400).json({ error: 'week and type are required' });
+    }
+    const { excelBuffer, excelFilename } = await buildConsolidatedHistoryExcelPayload({
+      week: String(week),
+      type: String(type),
+      category: normalizeCategory(category),
+      vendorKey: normalizeVendorKey(category, vendorKey),
+    });
+    res.json({
+      success: true,
+      filename: excelFilename,
+      excelBase64: excelBuffer.toString('base64'),
+    });
+  } catch (err) {
+    console.error('Consolidated history Excel error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
