@@ -3,6 +3,12 @@ import { authMiddleware } from '../auth.js';
 import Setting from '../models/setting.js';
 
 const router = express.Router();
+const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
+
+function nowInTimezone(tz) {
+  const text = new Date().toLocaleString('en-US', { timeZone: tz });
+  return new Date(text);
+}
 
 // Get all settings
 router.get('/', async (req, res) => {
@@ -62,6 +68,8 @@ router.get('/', async (req, res) => {
       manualOpenLeaves,
       vendorOrdersOpenVendor,
       categoryTemplates,
+      scheduleToday: nowInTimezone(ORDER_TIMEZONE).getDay(),
+      orderTimezone: ORDER_TIMEZONE,
     };
     console.log('GET /settings returning', {
       schedule: result.schedule,
@@ -72,6 +80,8 @@ router.get('/', async (req, res) => {
       manualOpenLeaves: result.manualOpenLeaves,
       vendorOrdersOpenVendor: result.vendorOrdersOpenVendor,
       categoryTemplateKeys: Object.keys(result.categoryTemplates),
+      scheduleToday: result.scheduleToday,
+      orderTimezone: result.orderTimezone,
     });
     res.json(result);
   } catch (err) {

@@ -13,7 +13,7 @@ var ORDER_CATEGORIES=[
 ];
 var CATEGORY_LABELS=ORDER_CATEGORIES.reduce(function(acc,c){acc[c.id]=c.label;return acc;},{});
 
-function activeType(sc){var t=new Date().getDay();for(var k in sc){if(sc[k]===t)return k;}return null;}
+function activeType(sc, dayOverride){var t=Number.isInteger(dayOverride)?dayOverride:new Date().getDay();for(var k in sc){if(sc[k]===t)return k;}return null;}
 function normalizeCategory(v){var raw=String(v||"").trim().toLowerCase();return ORDER_CATEGORIES.some(function(c){return c.id===raw;})?raw:"vegetables";}
 function normalizeVendorKey(category,v){return normalizeCategory(category)==="vendor_orders"?(String(v||"").trim()||null):null;}
 function weekNum(d){var dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));dt.setUTCDate(dt.getUTCDate()+4-(dt.getUTCDay()||7));var ys=new Date(Date.UTC(dt.getUTCFullYear(),0,1));return Math.ceil(((dt-ys)/86400000+1)/7);}
@@ -464,6 +464,7 @@ export default function App(){
   var _n=useState([]),notifs=_n[0],setNotifs=_n[1];
   var _s=useState([]),stores=_s[0],setStores=_s[1];
   var _sc=useState({}),schedule=_sc[0],setSchedule=_sc[1];
+  var _sct=useState(null),scheduleToday=_sct[0],setScheduleToday=_sct[1];
   var _mo=useState(null),manualOpenOrder=_mo[0],setManualOpenOrder=_mo[1];
   var _ms=useState(null),manualOpenSeq=_ms[0],setManualOpenSeq=_ms[1];
   var _mol=useState(false),manualOpenLeaves=_mol[0],setManualOpenLeaves=_mol[1];
@@ -514,6 +515,7 @@ export default function App(){
       setItems([]);
       setStores([]);
       setSchedule({});
+      setScheduleToday(null);
       setOrderMsgs({});
       setManualOpenOrder(null);
       setManualOpenSeq(null);
@@ -561,12 +563,14 @@ export default function App(){
         // schedule and message keys.  each is keyed by order type (A/B/C).
         var settings = data.settings || {};
         var serverSched = settings.schedule || {};
+        var serverScheduleToday=Number.isInteger(settings.scheduleToday)?settings.scheduleToday:null;
         var serverMsg = settings.message || {};
         var serverManualOpen = settings.manualOpenOrder || null;
         var serverManualOpenSeq = settings.manualOpenSeq != null ? Number(settings.manualOpenSeq) : null;
         var serverManualOpenLeaves = !!settings.manualOpenLeaves;
         var serverVendorOrdersOpenVendor = settings.vendorOrdersOpenVendor || null;
         var serverCategoryTemplates=settings.categoryTemplates&&typeof settings.categoryTemplates==="object"?settings.categoryTemplates:{};
+        setScheduleToday(function(prev){return prev===serverScheduleToday?prev:serverScheduleToday;});
         var nextMsgs={A:serverMsg.A||"",B:serverMsg.B||"",C:serverMsg.C||""};
         var nextManualSeq=Number.isNaN(serverManualOpenSeq)?null:serverManualOpenSeq;
         setOrderMsgs(function(prev){return sameJson(prev,nextMsgs)?prev:nextMsgs;});
@@ -585,7 +589,7 @@ export default function App(){
           C: serverSched.C != null ? serverSched.C : null,
         };
         // fallback to today's weekday if the server somehow returns null
-        var today = new Date().getDay();
+        var today = serverScheduleToday!=null?serverScheduleToday:new Date().getDay();
         ['A','B','C'].forEach(function(t){
           if (schedMap[t] == null) {
             console.warn('schedule for',t,'was null, defaulting to current day',today);
@@ -655,7 +659,7 @@ export default function App(){
   
   var sN=user.storeId?(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId:"All Stores";
   var isA=user.role==="admin";
-  var aot=manualOpenOrder||activeType(schedule);
+  var aot=manualOpenOrder||activeType(schedule,scheduleToday);
   var navs=isA?[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"orders",label:"Order Monitor",ico:"clip"},
     {id:"consolidated",label:"Consolidated",ico:"grid"},{id:"supplier-orders",label:"Supplier Orders",ico:"truck"},
@@ -1453,15 +1457,57 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[vendorOrdersOpenVendor,selCategory]);
   var getStoreOrder=function(storeId){return getCurrentOrderForStoreType(orders,storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);};
   var supplierById=useMemo(function(){var m={};supplierList.forEach(function(s){m[s.id]=s;});return m;},[supplierList]);
+  var primaryOpenType=(consolidatedType||aot||null);
+  var carryOpenType=useMemo(function(){
+    if(selCategory==="vendor_orders") return null;
+    var visibleStatus={submitted:true,draft_shared:true,processed:true};
+    var nowTs=Date.now();
+    var bestType=null;
+    var bestTs=0;
+    ["A","B","C"].forEach(function(t){
+      var suffix="-"+t+"-"+categoryKey(selCategory,resolvedVendorKey);
+      var dkType=dateKey(t,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
+      var weekKeyType=dkType.endsWith(suffix)?dkType.slice(0,dkType.length-suffix.length):dkType;
+      var latestLog=(logs||[])
+        .filter(function(l){
+          if(!l) return false;
+          if(String(l.type||"")!==String(t)) return false;
+          if(normalizeCategory(l.category||"vegetables")!==normalizeCategory(selCategory)) return false;
+          if(String(l.week||"")!==String(weekKeyType||"")) return false;
+          if(String(l.vendorKey||"")!==String(resolvedVendorKey||"")) return false;
+          return true;
+        })
+        .sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);})[0]||null;
+      if(latestLog&&latestLog.finished===true) return;
+      var latestVisibleTs=0;
+      slots.forEach(function(sl){
+        if(!sl.store) return;
+        var so=getCurrentOrderForStoreType(orders,sl.store.id,t,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
+        if(!so||!visibleStatus[String(so.status||"")]) return;
+        var ts=new Date(so.date||0).getTime();
+        if(!Number.isNaN(ts)&&ts>latestVisibleTs) latestVisibleTs=ts;
+      });
+      if(!latestVisibleTs) return;
+      if((nowTs-latestVisibleTs)>(24*60*60*1000)) return;
+      if(latestVisibleTs>bestTs){bestTs=latestVisibleTs;bestType=t;}
+    });
+    return bestType;
+  },[selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,logs,slots,orders]);
+  var allowedOpenTypes=useMemo(function(){
+    var out=[];
+    if(primaryOpenType) out.push(primaryOpenType);
+    if(carryOpenType&&out.indexOf(carryOpenType)<0) out.push(carryOpenType);
+    return out;
+  },[primaryOpenType,carryOpenType]);
   useEffect(function(){ if(consolidatedType&&consolidatedType!==vt) sVt(consolidatedType); },[consolidatedType]);
   useEffect(function(){
-    var onlyOpen = consolidatedType||aot||null;
+    var onlyOpen = primaryOpenType;
     if(selCategory==="vendor_orders") return;
-    if(onlyOpen && vt!==onlyOpen){
+    if(onlyOpen && vt!==onlyOpen && (!carryOpenType||vt!==carryOpenType)){
       sVt(onlyOpen);
       setEditingAll(false);setEditQtyByStore({});setEditNotesByStore({});
     }
-  },[consolidatedType,aot]);
+  },[primaryOpenType,carryOpenType,selCategory,vt]);
   useEffect(function(){
     setStep(1);setSavedRows([]);setSplitSupplierIds([]);setItemOverrides({});setSentSplitBySupplier({});
     setEditingAll(false);setEditQtyByStore({});setEditNotesByStore({});
@@ -1804,7 +1850,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var tHeadSub=Object.assign({},tCellBase,{fontWeight:700,background:"#D9D9D9",textAlign:"center",textTransform:"uppercase",position:"sticky",top:26,zIndex:9});
   var tProductCell=Object.assign({},tCellBase,{fontWeight:600,background:"#FFFFFF",textAlign:"left"});
   var tQtyCell=Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"center"});
-  var onlyOpen=(consolidatedType||aot||vt);
+  var onlyOpen=(allowedOpenTypes[0]||vt);
 
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
@@ -1815,7 +1861,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         orderType={vt}
         setOrderType={function(t){if(editingAll){toast("Save quantities before switching order type",true);return;}sVt(t);if(setConsolidatedType)setConsolidatedType(t);}}
         getCategoryDisabled={function(catId){return catId==="vendor_orders"?false:!isCategoryOpenForType(catId,vt,onlyOpen||vt,manualOpenLeaves);}}
-        getOrderTypeDisabled={function(t){return t!==onlyOpen;}}
+        getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:false;}}
         onCategoryChanged={function(){setStep(1);}}
       />
       {selCategory==="vendor_orders"&&<select style={Object.assign({},S.inp,{width:220})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setStep(1);}}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>}
@@ -1826,7 +1872,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         <span style={Object.assign({},S.bg,step===3?S.bgG:S.bgY)}>{isSingleVendorFlow?"2. Preview/Send":"3. Preview/Send"}</span>
       </div>
     </div>
-    {selCategory!=="vendor_orders"&&(consolidatedType||aot)&&<div style={S.nI}>{manualOpenOrder?("Manual override active: only Order "+(consolidatedType||aot)+" is open right now."):("Schedule mode active: only Order "+(consolidatedType||aot)+" is open right now.")}</div>}
+    {selCategory!=="vendor_orders"&&primaryOpenType&&<div style={S.nI}>{manualOpenOrder?("Manual override active: only Order "+primaryOpenType+" is open right now."):("Schedule mode active: only Order "+primaryOpenType+" is open right now.")}</div>}
+    {selCategory!=="vendor_orders"&&carryOpenType&&carryOpenType!==primaryOpenType&&<div style={S.nI}>Order {carryOpenType} remains available for up to 24 hours because supplier email has not been sent yet.</div>}
     {selCategory==="leaves"&&vt==="B"&&!leavesSentThisWeek&&<div style={S.nP}>Leaves Order B is pending. Send supplier email to complete it.</div>}
     {!latestTypeLog&&unsentHoursLeft!==null&&unsentHoursLeft>0&&<div style={S.nI}>This consolidated order remains open for {unsentHoursLeft} more hour(s) because supplier email has not been sent yet.</div>}
     {!latestTypeLog&&unsentHoursLeft===0&&<div style={S.nP}>This consolidated order is now locked because 24 hours elapsed without sending supplier email.</div>}
