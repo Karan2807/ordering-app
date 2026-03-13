@@ -173,6 +173,48 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
   });
   return rows;
 }
+
+async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qtyByCodeStoreId, noteByCode, itemNameByCode }) {
+  if (!template || !template.originalFile || !template.originalFile.base64) return null;
+  const filename = String(template.originalFile.filename || '').toLowerCase();
+  if (!filename.endsWith('.xlsx')) return null;
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(Buffer.from(template.originalFile.base64, 'base64'));
+  const worksheet = template.sheetName
+    ? workbook.getWorksheet(template.sheetName) || workbook.worksheets[0]
+    : workbook.worksheets[0];
+  if (!worksheet) return null;
+
+  const slotByKey = Object.fromEntries((slots || []).map((slot) => [slot.apna, slot]));
+  if (template.dateCell && template.dateCell.rowIndex != null && template.dateCell.colIndex != null) {
+    worksheet.getCell(template.dateCell.rowIndex + 1, template.dateCell.colIndex + 1).value = `${template.dateCell.prefix || ''}${dateText}`;
+  }
+  (template.itemRows || []).forEach((itemRow) => {
+    const code = String(itemRow.code || '').trim();
+    const name = itemNameByCode[code] || itemRow.name || displayOrderItemCode(code);
+    worksheet.getCell(itemRow.rowIndex + 1, (itemRow.colIndex || 0) + 1).value = name;
+    if (template.kind === 'tabular') {
+      const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+      if (template.quantityColumn && template.quantityColumn.colIndex != null) {
+        worksheet.getCell(itemRow.rowIndex + 1, template.quantityColumn.colIndex + 1).value = qtyTotal > 0 ? qtyTotal : null;
+      }
+      if (template.noteColumn && template.noteColumn.colIndex != null) {
+        worksheet.getCell(itemRow.rowIndex + 1, template.noteColumn.colIndex + 1).value = noteByCode[code] || null;
+      }
+      return;
+    }
+    (template.storeColumns || []).forEach((col) => {
+      const slot = slotByKey[col.slotKey];
+      const storeId = slot && slot.store ? slot.store.id : null;
+      const qty = storeId && qtyByCodeStoreId[code] ? Number(qtyByCodeStoreId[code][storeId]) || 0 : 0;
+      worksheet.getCell(itemRow.rowIndex + 1, col.colIndex + 1).value = qty > 0 ? qty : null;
+    });
+  });
+
+  const out = await workbook.xlsx.writeBuffer();
+  return Buffer.from(out);
+}
 async function sendEmailWithFallback({ to, subject, text, html, attachments = [] }) {
   try {
     // Prefer Microsoft Graph when Graph credentials are present.
@@ -673,6 +715,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   const dateText = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
   let excelRows = [];
   let usePlainWorkbook = false;
+  let excelBuffer = null;
   const qtyByCodeStoreId = {};
   const noteByCode = {};
   if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
@@ -727,7 +770,15 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       noteByCode,
       itemNameByCode,
     });
-    usePlainWorkbook = true;
+    excelBuffer = await buildWorkbookFromCategoryTemplate({
+      template,
+      dateText,
+      slots,
+      qtyByCodeStoreId,
+      noteByCode,
+      itemNameByCode,
+    });
+    usePlainWorkbook = !excelBuffer;
   } else if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
     excelRows.push([`Date: ${dateText}`, '', ...slots.map((slot) => `${slot.apna}${type}`), '']);
     excelRows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QUANTITY (case qty)'), 'NOTE']);
@@ -754,9 +805,11 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   }
 
   const snapshotLines = excelRows.map((row) => row.join(' | '));
-  const excelBuffer = usePlainWorkbook ? await rowsToPlainExcelBuffer(excelRows) : await rowsToExcelBuffer(excelRows);
-  const excelFilename = `consolidated-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${weekKey}.xlsx`;
-  return { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename };
+  const finalExcelBuffer = excelBuffer || (usePlainWorkbook ? await rowsToPlainExcelBuffer(excelRows) : await rowsToExcelBuffer(excelRows));
+  const excelFilename = template && template.originalFile && template.originalFile.filename && String(template.originalFile.filename).toLowerCase().endsWith('.xlsx')
+    ? template.originalFile.filename
+    : `consolidated-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${weekKey}.xlsx`;
+  return { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer: finalExcelBuffer, excelFilename };
 }
 
 async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride, itemNamesObj }) {
@@ -800,6 +853,7 @@ async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId,
 
   let rows;
   let usePlainWorkbook = false;
+  let excelBuffer = null;
   if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
     rows = buildRowsFromCategoryTemplate({
       template,
@@ -809,7 +863,15 @@ async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId,
       noteByCode,
       itemNameByCode,
     });
-    usePlainWorkbook = true;
+    excelBuffer = await buildWorkbookFromCategoryTemplate({
+      template,
+      dateText,
+      slots,
+      qtyByCodeStoreId,
+      noteByCode,
+      itemNameByCode,
+    });
+    usePlainWorkbook = !excelBuffer;
   } else {
     rows = [];
     rows.push([`Date: ${dateText}`, ...slots.map((slot) => `${slot.apna}${type}`), '', '']);
@@ -826,10 +888,12 @@ async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId,
     });
   }
 
-  const excelBuffer = usePlainWorkbook ? await rowsToPlainExcelBuffer(rows) : await rowsToExcelBuffer(rows);
+  const finalExcelBuffer = excelBuffer || (usePlainWorkbook ? await rowsToPlainExcelBuffer(rows) : await rowsToExcelBuffer(rows));
   const stamp = now.toISOString().replace(/[:.]/g, '-');
-  const excelFilename = `store-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${storeId}-${stamp}.xlsx`;
-  return { excelBuffer, excelFilename };
+  const excelFilename = template && template.originalFile && template.originalFile.filename && String(template.originalFile.filename).toLowerCase().endsWith('.xlsx')
+    ? template.originalFile.filename
+    : `store-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${storeId}-${stamp}.xlsx`;
+  return { excelBuffer: finalExcelBuffer, excelFilename };
 }
 
 // Get orders for user
@@ -839,7 +903,7 @@ router.get('/', authMiddleware, async (req, res) => {
     const filter = {};
     if (storeId) filter.storeId = storeId;
 
-    let orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
+    let orders = await Order.find(filter).sort({ submittedAt: -1, createdAt: -1 }).lean();
 
     const result = orders.map((order) => ({
       id: order.id,
@@ -857,7 +921,9 @@ router.get('/', authMiddleware, async (req, res) => {
         if (i.note) acc[i.itemCode] = i.note;
         return acc;
       }, {}),
-      date: order.createdAt,
+      date: order.submittedAt || order.createdAt,
+      createdAt: order.createdAt,
+      submittedAt: order.submittedAt || null,
       itemCount: order.items ? order.items.length : 0,
     }));
 
@@ -910,6 +976,8 @@ router.post('/', authMiddleware, async (req, res) => {
     };
     if (status === 'submitted') {
       update.$set.submittedAt = now;
+    } else if (status === 'draft') {
+      update.$unset = { submittedAt: 1 };
     }
 
     let order;
@@ -928,6 +996,7 @@ router.post('/', authMiddleware, async (req, res) => {
               items: normalizedItems,
               ...(status === 'submitted' ? { submittedAt: now } : {}),
             },
+            ...(status === 'draft' ? { $unset: { submittedAt: 1 } } : {}),
           },
           { new: true }
         );

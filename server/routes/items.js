@@ -24,6 +24,7 @@ function normalizeTemplatePayload(template) {
   return {
     kind: String(template.kind || 'matrix'),
     sourceFilename: String(template.sourceFilename || '').trim(),
+    sheetName: String(template.sheetName || '').trim(),
     headerRowIndex: Number.isInteger(template.headerRowIndex) ? template.headerRowIndex : null,
     dateCell: template.dateCell && typeof template.dateCell === 'object'
       ? {
@@ -67,6 +68,13 @@ function normalizeTemplatePayload(template) {
           note: String(template.uiHeaders.note || '').trim(),
           total: String(template.uiHeaders.total || '').trim(),
           date: String(template.uiHeaders.date || '').trim(),
+        }
+      : null,
+    originalFile: template.originalFile && typeof template.originalFile === 'object'
+      ? {
+          filename: String(template.originalFile.filename || '').trim(),
+          contentType: String(template.originalFile.contentType || '').trim(),
+          base64: String(template.originalFile.base64 || '').trim(),
         }
       : null,
   };

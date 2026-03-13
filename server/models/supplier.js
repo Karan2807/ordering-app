@@ -6,6 +6,8 @@ const supplierSchema = new mongoose.Schema({
   email: { type: String, required: true },
   emails: { type: [String], default: [] },
   phone: { type: String },
+  categories: { type: [String], default: [] },
+  items: { type: [String], default: [] },
   createdAt: { type: Date, default: Date.now },
 });
 
