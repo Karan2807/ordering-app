@@ -6,11 +6,7 @@ import SmsReminderLog from '../models/smsReminderLog.js';
 import { sendSms } from './sms.js';
 
 function isoWeekKeyForDateLocal(now) {
-  const dt = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-  dt.setUTCDate(dt.getUTCDate() + 4 - (dt.getUTCDay() || 7));
-  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((dt - yearStart) / 86400000 + 1) / 7);
-  return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
 function nowInTimezone(tz) {
@@ -55,9 +51,9 @@ function reminderMessage(type, storeName, category = 'vegetables', vendorKey = n
 
 function composeWeekKeyForType(baseWeekKey, type, manualOpenOrder, manualOpenSeq) {
   if (manualOpenOrder && manualOpenSeq && manualOpenOrder === type) {
-    return `${baseWeekKey}-M${manualOpenSeq}-${type}`;
+    return `${baseWeekKey}-M${manualOpenSeq}`;
   }
-  return `${baseWeekKey}-${type}`;
+  return baseWeekKey;
 }
 
 export async function sendManualReminders({ type, storeId = null, category = 'vegetables', vendorKey = null }) {

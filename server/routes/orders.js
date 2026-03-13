@@ -203,22 +203,13 @@ function normalizeRecipientEmails(email, emails) {
 }
 
 function getWeekKey() {
-  // Match frontend ISO-week logic so admin dashboard/consolidated keys line up.
   const d = new Date();
-  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  dt.setUTCDate(dt.getUTCDate() + 4 - (dt.getUTCDay() || 7));
-  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((dt - yearStart) / 86400000 + 1) / 7);
-  return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function getIsoWeekKeyForDate(value) {
   const d = new Date(value);
-  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  dt.setUTCDate(dt.getUTCDate() + 4 - (dt.getUTCDay() || 7));
-  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((dt - yearStart) / 86400000 + 1) / 7);
-  return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 async function getManualOpenState() {
@@ -245,14 +236,7 @@ function escapeRegex(value) {
 }
 
 function weekWindowFilter(weekKey, weekBase) {
-  if (!weekBase) {
-    return { week: weekKey };
-  }
-  return {
-    week: {
-      $regex: new RegExp(`^${escapeRegex(weekBase)}(?:-M\\d+)?$`),
-    },
-  };
+  return { week: weekKey };
 }
 
 async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase = null) {

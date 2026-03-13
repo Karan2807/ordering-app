@@ -16,7 +16,10 @@ var CATEGORY_LABELS=ORDER_CATEGORIES.reduce(function(acc,c){acc[c.id]=c.label;re
 function activeType(sc, dayOverride){var t=Number.isInteger(dayOverride)?dayOverride:new Date().getDay();for(var k in sc){if(sc[k]===t)return k;}return null;}
 function normalizeCategory(v){var raw=String(v||"").trim().toLowerCase();return ORDER_CATEGORIES.some(function(c){return c.id===raw;})?raw:"vegetables";}
 function normalizeVendorKey(category,v){return normalizeCategory(category)==="vendor_orders"?(String(v||"").trim()||null):null;}
-function weekNum(d){var dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));dt.setUTCDate(dt.getUTCDate()+4-(dt.getUTCDay()||7));var ys=new Date(Date.UTC(dt.getUTCFullYear(),0,1));return Math.ceil(((dt-ys)/86400000+1)/7);}
+function cycleBaseKey(d){
+  var dt=d instanceof Date?new Date(d.getTime()):new Date(d);
+  return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+}
 function categoryKey(category,vendorKey){var cat=normalizeCategory(category);var vendor=normalizeVendorKey(cat,vendorKey);return vendor?cat+"-"+vendor:cat;}
 function isCategoryOpenForType(category, type, aot, manualOpenLeaves){
   var cat=normalizeCategory(category);
@@ -24,12 +27,15 @@ function isCategoryOpenForType(category, type, aot, manualOpenLeaves){
   return type===aot;
 }
 function dateKey(type, category, vendorKey, manualOpenOrder, manualOpenSeq){
-  var n=new Date();
-  var base=n.getFullYear()+"-W"+String(weekNum(n)).padStart(2,"0");
+  var base=cycleBaseKey(new Date());
   if(manualOpenOrder&&manualOpenSeq&&manualOpenOrder===type) return base+"-M"+manualOpenSeq+"-"+type+"-"+categoryKey(category,vendorKey);
   return base+"-"+type+"-"+categoryKey(category,vendorKey);
 }
-function lastWeekKey(type, category, vendorKey){var n=new Date();return n.getFullYear()+"-W"+String(weekNum(n)-1).padStart(2,"0")+"-"+type+"-"+categoryKey(category,vendorKey);}
+function lastWeekKey(type, category, vendorKey){
+  var n=new Date();
+  n.setDate(n.getDate()-7);
+  return cycleBaseKey(n)+"-"+type+"-"+categoryKey(category,vendorKey);
+}
 function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKey, manualOpenOrder, manualOpenSeq){
   var exactKey=storeId+"_"+dateKey(type,category,vendorKey,manualOpenOrder,manualOpenSeq);
   if(orderMap&&orderMap[exactKey]) return orderMap[exactKey];
@@ -710,10 +716,10 @@ export default function App(){
 
 /* ═══ ADMIN DASHBOARD ═══ */
 function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,vendorOrdersOpenVendor,suppliers}){
-  var now=new Date(), curW=weekNum(now), curY=now.getFullYear();
-  var weekOrders=Object.values(orders).filter(function(o){if(!o||!o.date)return false;var d=new Date(o.date);return d.getFullYear()===curY&&weekNum(d)===curW;});
-  var sub=weekOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
-  var proc=weekOrders.filter(function(o){return o.status==="processed";}).length;
+  var todayKey=cycleBaseKey(new Date());
+  var cycleOrders=Object.values(orders).filter(function(o){if(!o||!o.date)return false;return cycleBaseKey(new Date(o.date))===todayKey;});
+  var sub=cycleOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
+  var proc=cycleOrders.filter(function(o){return o.status==="processed";}).length;
   var activeVendorName=((suppliers||[]).find(function(v){return v.id===vendorOrdersOpenVendor;})||{}).name||vendorOrdersOpenVendor||"None";
   // Pending reminders: managers who haven't submitted for active order
   var isStoreOrderSent=function(o){
