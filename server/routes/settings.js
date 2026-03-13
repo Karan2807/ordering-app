@@ -1,6 +1,7 @@
 import express from 'express';
 import { authMiddleware } from '../auth.js';
 import Setting from '../models/setting.js';
+import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
 const router = express.Router();
 const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
@@ -23,7 +24,7 @@ router.get('/', async (req, res) => {
     let manualOpenLeaves = false;
     let vendorOrdersOpenVendor = null;
 
-    docs.forEach((row) => {
+    for (const row of docs) {
       if (row.key.startsWith('schedule')) {
         const num = parseInt(row.value);
         schedules[row.key.replace('schedule', '')] = Number.isNaN(num) ? null : num;
@@ -33,7 +34,44 @@ router.get('/', async (req, res) => {
         // store raw base64 string (or empty) for client
         logoValue = row.value || null;
       } else if (row.key.startsWith('orderTemplate:')) {
-        categoryTemplates[row.key.replace('orderTemplate:', '')] = row.value;
+        let templateValue = row.value;
+        if (
+          templateValue &&
+          typeof templateValue === 'object' &&
+          String(templateValue.kind || '').trim() === 'docx_vendor_form' &&
+          templateValue.originalFile &&
+          templateValue.originalFile.base64
+        ) {
+          try {
+            const reparsed = await parseVendorDocxTemplate({
+              buffer: Buffer.from(String(templateValue.originalFile.base64 || ''), 'base64'),
+              filename: String(templateValue.originalFile.filename || templateValue.sourceFilename || 'template.docx'),
+              contentType: String(
+                templateValue.originalFile.contentType ||
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+              ),
+            });
+            if (reparsed && reparsed.template && reparsed.template.docxMap) {
+              const nextTemplateValue = {
+                ...templateValue,
+                uiHeaders: reparsed.template.uiHeaders || templateValue.uiHeaders || null,
+                docxMap: reparsed.template.docxMap,
+              };
+              const changed = JSON.stringify(templateValue.docxMap || null) !== JSON.stringify(nextTemplateValue.docxMap || null);
+              templateValue = nextTemplateValue;
+              if (changed) {
+                await Setting.updateOne(
+                  { key: row.key },
+                  { value: templateValue },
+                  { upsert: true }
+                );
+              }
+            }
+          } catch (templateErr) {
+            console.error('Template reparse error for setting', row.key, templateErr);
+          }
+        }
+        categoryTemplates[row.key.replace('orderTemplate:', '')] = templateValue;
       } else if (row.key === 'manualOpenOrder') {
         manualOpen = row.value || null;
       } else if (row.key === 'manualOpenSeq') {
@@ -44,7 +82,7 @@ router.get('/', async (req, res) => {
       } else if (row.key === 'vendorOrdersOpenVendor') {
         vendorOrdersOpenVendor = row.value || null;
       }
-    });
+    }
 
     // ensure A/B/C always exist and persist defaults when missing
     const defaultSched = { A: 0, B: 1, C: 5 };

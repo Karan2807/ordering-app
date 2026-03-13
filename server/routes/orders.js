@@ -12,6 +12,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendManualReminders } from '../services/reminderScheduler.js';
 import { sendGraphMail } from '../services/msSendMail.js';
+import { renderVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
 // create a simple transporter; prefer Outlook settings, then generic SMTP URL,
 // then Gmail credentials. Otherwise fall back to a console logger (jsonTransport).
@@ -279,6 +280,10 @@ function escapeRegex(value) {
 
 function weekWindowFilter(weekKey, weekBase) {
   return { week: weekKey };
+}
+
+function safeFilenamePart(value) {
+  return String(value || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'document';
 }
 
 async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase = null) {
@@ -814,7 +819,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   return { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer: finalExcelBuffer, excelFilename };
 }
 
-async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride, itemNamesObj }) {
+async function buildStoreOrderDocumentPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride, itemNamesObj }) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const stores = await Store.find().sort({ id: 1 }).lean();
@@ -856,6 +861,33 @@ async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId,
   let rows;
   let usePlainWorkbook = false;
   let excelBuffer = null;
+  const storeDoc = stores.find((st) => String(st.id || '') === String(storeId || '')) || { id: storeId, name: storeId };
+  if (template && template.kind === 'docx_vendor_form' && template.docxMap && template.originalFile && template.originalFile.base64) {
+    const quantitiesByCode = {};
+    codes.forEach((code) => {
+      const qty = Math.max(0, Number(normalizedItems[code]) || 0);
+      if (qty > 0) quantitiesByCode[code] = qty;
+    });
+    const rendered = await renderVendorDocxTemplate({
+      template,
+      storeName: storeDoc.name || storeDoc.id || storeId,
+      dateText,
+      quantitiesByCode,
+    });
+    const stamp = now.toISOString().slice(0, 10);
+    const sourceBase = safeFilenamePart(String(template.originalFile.filename || '').replace(/\.docx$/i, ''));
+    const storeBase = safeFilenamePart(storeDoc.name || storeDoc.id || storeId);
+    return {
+      fileBuffer: rendered.buffer,
+      filename: `${sourceBase}_${storeBase}_${stamp}.docx`,
+      contentType: rendered.contentType,
+      snapshotLines: codes.map((code) => {
+        const qty = Math.max(0, Number(normalizedItems[code]) || 0);
+        const note = String(normalizedNotes[code] || '').trim();
+        return [storeDoc.name || storeDoc.id || storeId, code, itemNameByCode[code] || displayOrderItemCode(code), qty || '', note].join(' | ');
+      }),
+    };
+  }
   if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
     rows = buildRowsFromCategoryTemplate({
       template,
@@ -895,7 +927,12 @@ async function buildStoreOrderExcelPayload({ type, category, vendorKey, storeId,
   const excelFilename = template && template.originalFile && template.originalFile.filename && String(template.originalFile.filename).toLowerCase().endsWith('.xlsx')
     ? template.originalFile.filename
     : `store-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${storeId}-${stamp}.xlsx`;
-  return { excelBuffer: finalExcelBuffer, excelFilename };
+  return {
+    fileBuffer: finalExcelBuffer,
+    filename: excelFilename,
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    snapshotLines: (rows || []).map((row) => (Array.isArray(row) ? row.join(' | ') : String(row || ''))),
+  };
 }
 
 // Get orders for user
@@ -1213,7 +1250,7 @@ router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
     const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
 
-    const { excelBuffer, excelFilename } = await buildStoreOrderExcelPayload({
+    const { fileBuffer, filename, contentType } = await buildStoreOrderDocumentPayload({
       type: String(type),
       category: normalizeCategory(category),
       vendorKey: normalizeVendorKey(category, vendorKey),
@@ -1226,8 +1263,10 @@ router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      filename: excelFilename,
-      excelBase64: excelBuffer.toString('base64'),
+      filename,
+      contentType,
+      fileBase64: fileBuffer.toString('base64'),
+      excelBase64: contentType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ? fileBuffer.toString('base64') : null,
     });
   } catch (err) {
     console.error('Store order Excel preview error:', err);
@@ -1245,7 +1284,7 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
     const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
 
-    const { excelBuffer, excelFilename } = await buildStoreOrderExcelPayload({
+    const { fileBuffer, filename, contentType } = await buildStoreOrderDocumentPayload({
       type: String(type),
       category: normalizeCategory(category),
       vendorKey: normalizeVendorKey(category, vendorKey),
@@ -1258,11 +1297,123 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
 
     res.json({
       success: true,
-      filename: excelFilename,
-      excelBase64: excelBuffer.toString('base64'),
+      filename,
+      contentType,
+      fileBase64: fileBuffer.toString('base64'),
+      excelBase64: contentType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ? fileBuffer.toString('base64') : null,
     });
   } catch (err) {
     console.error('Store order Excel preview alias error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const vendorKey = String(req.params.vendorKey || '').trim();
+    const { email, emails, supplierName } = req.body || {};
+    const recipients = normalizeRecipientEmails(email, emails);
+    if (!vendorKey) return res.status(400).json({ error: 'vendorKey is required' });
+    if (recipients.length === 0) return res.status(400).json({ error: 'At least one recipient email is required' });
+
+    const category = 'vendor_orders';
+    const type = 'VENDOR';
+    const weekBase = getWeekKey();
+    const mo = await getManualOpenState();
+    const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+    const stores = await getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase);
+    const attachments = [];
+    const snapshotLines = [];
+    const totalObj = {};
+
+    for (const store of stores) {
+      const order = await findCurrentWeekOrder(store.id, type, weekKey, category, vendorKey, weekBase);
+      if (!order || !isStoreOrderVisibleInConsolidated(order.status)) continue;
+      const orderList = orderItemsToList(order.items);
+      const hasLines = orderList.some((line) => (Number(line.quantity) || 0) > 0 || String(line.note || '').trim());
+      if (!hasLines) continue;
+
+      const itemsObj = {};
+      const notesObj = {};
+      orderList.forEach((line) => {
+        itemsObj[line.itemCode] = Number(line.quantity) || 0;
+        if (line.note) notesObj[line.itemCode] = line.note;
+        totalObj[line.itemCode] = (totalObj[line.itemCode] || 0) + (Number(line.quantity) || 0);
+      });
+
+      const doc = await buildStoreOrderDocumentPayload({
+        type,
+        category,
+        vendorKey,
+        storeId: store.id,
+        itemsObj,
+        notesObj,
+        dateOverride: order.submittedAt || order.createdAt || new Date(),
+        itemNamesObj: {},
+      });
+
+      attachments.push({
+        filename: doc.filename,
+        content: doc.fileBuffer,
+        contentType: doc.contentType,
+      });
+      snapshotLines.push(`${store.name || store.id} | ${doc.filename} | ${order.status}`);
+    }
+
+    if (attachments.length === 0) {
+      return res.status(400).json({ error: 'No submitted vendor store documents available to send' });
+    }
+
+    await sendEmailWithFallback({
+      to: recipients,
+      subject: `Vendor Orders - Individual Store Documents (${weekKey})`,
+      text: 'Please find attached the individual store order documents.',
+      attachments,
+    });
+
+    let supplierOrder = null;
+    try {
+      supplierOrder = await SupplierOrder.create({
+        supplierName: String(supplierName || vendorKey).trim(),
+        email: recipients.join(', '),
+        emails: recipients,
+        type,
+        category,
+        vendorKey,
+        week: weekKey,
+        items: totalObj,
+        snapshotLines,
+        finished: true,
+      });
+    } catch (historyErr) {
+      console.error('Vendor individual email history save error:', historyErr);
+    }
+
+    res.json({
+      success: true,
+      attachmentsCount: attachments.length,
+      supplierOrder: supplierOrder
+        ? {
+            _id: supplierOrder._id,
+            supplierName: supplierOrder.supplierName,
+            email: supplierOrder.email,
+            emails: supplierOrder.emails || [],
+            type: supplierOrder.type,
+            category: normalizeCategory(supplierOrder.category),
+            vendorKey: supplierOrder.vendorKey || null,
+            week: supplierOrder.week,
+            items: supplierOrder.items,
+            snapshotLines: supplierOrder.snapshotLines,
+            sentAt: supplierOrder.sentAt,
+            finished: supplierOrder.finished,
+          }
+        : null,
+    });
+  } catch (err) {
+    console.error('Vendor individual email error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

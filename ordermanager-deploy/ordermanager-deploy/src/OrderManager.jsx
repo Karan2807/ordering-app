@@ -349,12 +349,118 @@ function getTemplateForCategory(categoryTemplates, category, vendorKey){
   if(vendor&&categoryTemplates[cat+":"+vendor]) return categoryTemplates[cat+":"+vendor];
   return categoryTemplates[cat]||null;
 }
+function buildTemplateDisplayRows(template, itemList){
+  var itemsOnly=Array.isArray(itemList)?itemList.filter(function(it){return !!it&&!!it.code;}):[];
+  var outline=template&&template.kind==="docx_vendor_form"&&template.docxMap&&Array.isArray(template.docxMap.outline)?template.docxMap.outline:[];
+  var itemRows=template&&template.kind==="docx_vendor_form"&&template.docxMap&&Array.isArray(template.docxMap.itemRows)?template.docxMap.itemRows:[];
+  if(!outline.length){
+    if(itemRows.length){
+      var itemByCodeNoOutline={};
+      var usedNoOutline={};
+      var rowsNoOutline=[];
+      itemsOnly.forEach(function(it){
+        if(!itemByCodeNoOutline[it.code]) itemByCodeNoOutline[it.code]=it;
+      });
+      itemRows.forEach(function(row, idx){
+        var code=String(row&&row.code||"").trim();
+        var item=itemByCodeNoOutline[code];
+        if(!item||usedNoOutline[code]) return;
+        rowsNoOutline.push({type:"item",key:item.code||("item-"+idx),item:item});
+        usedNoOutline[code]=true;
+      });
+      itemsOnly.forEach(function(it){
+        if(usedNoOutline[it.code]) return;
+        rowsNoOutline.push({type:"item",key:it.code,item:it});
+      });
+      return rowsNoOutline;
+    }
+    return itemsOnly.map(function(it){return {type:"item",key:it.code,item:it};});
+  }
+  var itemByCode={};
+  itemsOnly.forEach(function(it){
+    if(!itemByCode[it.code]) itemByCode[it.code]=it;
+  });
+  var used={};
+  var rows=[];
+  var pendingHeading=null;
+  outline.forEach(function(entry, idx){
+    if(!entry||typeof entry!=="object") return;
+    if(entry.type==="heading"){
+      var headingText=String(entry.text||"").trim();
+      pendingHeading=headingText?{type:"heading",key:"heading-"+idx+"-"+headingText,text:headingText}:null;
+      return;
+    }
+    if(entry.type!=="item") return;
+    var code=String(entry.code||"").trim();
+    var item=itemByCode[code];
+    if(!item||used[code]) return;
+    if(pendingHeading){
+      rows.push(pendingHeading);
+      pendingHeading=null;
+    }
+    rows.push({type:"item",key:item.code,item:item});
+    used[code]=true;
+  });
+  itemsOnly.forEach(function(it){
+    if(used[it.code]) return;
+    rows.push({type:"item",key:it.code,item:it});
+  });
+  return rows;
+}
+function orderRowsByTemplate(template, rows){
+  var list=Array.isArray(rows)?rows.slice():[];
+  if(!list.length) return list;
+  var orderedCodes=buildTemplateDisplayRows(template,list.map(function(row){return {code:row.code,name:row.name};}))
+    .filter(function(row){return row&&row.type==="item"&&row.item&&row.item.code;})
+    .map(function(row){return row.item.code;});
+  if(!orderedCodes.length) return list;
+  var orderIndex={};
+  orderedCodes.forEach(function(code, idx){
+    if(orderIndex[code]==null) orderIndex[code]=idx;
+  });
+  return list.slice().sort(function(a,b){
+    var ai=orderIndex[a.code]!=null?orderIndex[a.code]:Number.MAX_SAFE_INTEGER;
+    var bi=orderIndex[b.code]!=null?orderIndex[b.code]:Number.MAX_SAFE_INTEGER;
+    if(ai!==bi) return ai-bi;
+    return String(a&&a.name||"").localeCompare(String(b&&b.name||""),undefined,{sensitivity:"base"});
+  });
+}
+function buildTemplateDataRows(template, rows){
+  var rowList=Array.isArray(rows)?rows:[];
+  var rowByCode={};
+  rowList.forEach(function(row){
+    if(row&&row.code&&rowByCode[row.code]==null) rowByCode[row.code]=row;
+  });
+  return buildTemplateDisplayRows(template,rowList.map(function(row){return {code:row.code,name:row.name};}))
+    .map(function(entry){
+      if(!entry) return null;
+      if(entry.type==="heading") return entry;
+      var code=entry.item&&entry.item.code;
+      return rowByCode[code]?{type:"item",key:entry.key,row:rowByCode[code]}:null;
+    })
+    .filter(function(entry){return !!entry;});
+}
 function isVendorOrderType(type){
   return String(type||"").toUpperCase()==="VENDOR";
 }
 function stopNumberWheelChange(e){
   e.preventDefault();
   if(e.currentTarget&&typeof e.currentTarget.blur==="function") e.currentTarget.blur();
+}
+function downloadBase64File(fileBase64, filename, contentType){
+  if(!fileBase64) throw new Error("No file data returned");
+  var bin=atob(fileBase64);
+  var bytes=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  var blob=new Blob([bytes],{type:contentType||"application/octet-stream"});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");
+  a.href=url;
+  a.download=filename||"download";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function(){URL.revokeObjectURL(url);},1000);
 }
 
 
@@ -492,6 +598,7 @@ export default function App(){
   var _mn=useState(false),showMobileNav=_mn[0],setShowMobileNav=_mn[1];
   var _p=useState("dashboard"),page=_p[0],setPage=_p[1];
   var _t=useState(""),tM=_t[0],sTM=_t[1];var _te=useState(false),tE=_te[0],sTE=_te[1];
+  var _dr=useState(null),draftRequest=_dr[0],setDraftRequest=_dr[1];
   var _i=useState([]),items=_i[0],setItems=_i[1];
   var _us=useState([]),users=_us[0],setUsers=_us[1];
   var _o=useState({}),orders=_o[0],setOrders=_o[1];
@@ -540,6 +647,7 @@ export default function App(){
     setLoadError(null);
     setConsolidatedType(null);
     setEntryType(null);
+    setDraftRequest(null);
     setReopenedFromId(null);
     setOrders({});
     setNotifs([]);
@@ -706,7 +814,7 @@ export default function App(){
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"order-entry",label:"Place Order",ico:"clip"},
     {id:"history",label:"Order History",ico:"eye"},
   ];
-  var PP={aot:aot,manualOpenOrder:manualOpenOrder,setManualOpenOrder:setManualOpenOrder,manualOpenSeq:manualOpenSeq,setManualOpenSeq:setManualOpenSeq,manualOpenLeaves:manualOpenLeaves,setManualOpenLeaves:setManualOpenLeaves,vendorOrdersOpenVendor:vendorOrdersOpenVendor,setVendorOrdersOpenVendor:setVendorOrdersOpenVendor,categoryTemplates:categoryTemplates,setCategoryTemplates:setCategoryTemplates,entryType:entryType,setEntryType:setEntryType,consolidatedType:consolidatedType,setConsolidatedType:setConsolidatedType,reopenedFromId:reopenedFromId,setReopenedFromId:setReopenedFromId,orders:orders,setOrders:setOrders,refreshOrders:refreshOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
+  var PP={aot:aot,manualOpenOrder:manualOpenOrder,setManualOpenOrder:setManualOpenOrder,manualOpenSeq:manualOpenSeq,setManualOpenSeq:setManualOpenSeq,manualOpenLeaves:manualOpenLeaves,setManualOpenLeaves:setManualOpenLeaves,vendorOrdersOpenVendor:vendorOrdersOpenVendor,setVendorOrdersOpenVendor:setVendorOrdersOpenVendor,categoryTemplates:categoryTemplates,setCategoryTemplates:setCategoryTemplates,entryType:entryType,setEntryType:setEntryType,draftRequest:draftRequest,setDraftRequest:setDraftRequest,consolidatedType:consolidatedType,setConsolidatedType:setConsolidatedType,reopenedFromId:reopenedFromId,setReopenedFromId:setReopenedFromId,orders:orders,setOrders:setOrders,refreshOrders:refreshOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
   var sidebarStyle=isMobile?Object.assign({},S.sidebar,{position:"fixed",top:0,left:0,bottom:0,height:"100vh",zIndex:1200,transform:showMobileNav?"translateX(0)":"translateX(-110%)",transition:"transform 0.2s ease",boxShadow:"0 20px 40px rgba(15,23,42,.22)"}):S.sidebar;
   var topbarStyle=isMobile?Object.assign({},S.topbar,{padding:"0 12px",gap:8}):S.topbar;
   var contentStyle=isMobile?Object.assign({},S.content,{padding:12}):S.content;
@@ -898,7 +1006,7 @@ function MgrDash({user,orders,notifs,aot,setPage,stores,schedule,orderMsgs,manua
 }
 
 /* ═══ ORDER ENTRY ═══ */
-function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,manualOpenLeaves,vendorOrdersOpenVendor,categoryTemplates,entryType,setEntryType,notifs,suppliers}){
+function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,manualOpenLeaves,vendorOrdersOpenVendor,categoryTemplates,entryType,setEntryType,draftRequest,setDraftRequest,notifs,suppliers}){
   var _s=useState(entryType||aot||"A"),sel=_s[0],setSel=_s[1];
   var _cat=useState("vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
   var _vk=useState(null),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
@@ -906,8 +1014,9 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
   var _ed=useState(false),isEditingDraft=_ed[0],setIsEditingDraft=_ed[1];
   var _dl=useState({}),draftLockByKey=_dl[0],setDraftLockByKey=_dl[1];
   var unsavedByOrderKeyRef=useRef({});
+  var isAdmin=!!(user&&user.role==="admin");
   var vendorOptions=Array.isArray(suppliers)?suppliers:[];
-  var visibleVendorOptions=user&&user.role==="admin"?vendorOptions:vendorOptions.filter(function(v){return !vendorOrdersOpenVendor||v.id===vendorOrdersOpenVendor;});
+  var visibleVendorOptions=isAdmin?vendorOptions:vendorOptions.filter(function(v){return !vendorOrdersOpenVendor||v.id===vendorOrdersOpenVendor;});
   useEffect(function(){
     if(selCategory==="vendor_orders"){
       return;
@@ -916,11 +1025,23 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
     }
   },[selCategory,selectedVendorKey]);
   useEffect(function(){
-    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"&&(!user||user.role!=="admin")){
+    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"&&!isAdmin){
       setSelCategory("vegetables");
       setSelectedVendorKey(null);
     }
-  },[vendorOrdersOpenVendor,selCategory,user&&user.role]);
+  },[vendorOrdersOpenVendor,selCategory,isAdmin]);
+  useEffect(function(){
+    if(isAdmin) return;
+    if(selCategory!=="vendor_orders") return;
+    var activeVendorKey=String(vendorOrdersOpenVendor||"").trim()||null;
+    if(!activeVendorKey){
+      if(selectedVendorKey) setSelectedVendorKey(null);
+      return;
+    }
+    if(selectedVendorKey!==activeVendorKey){
+      setSelectedVendorKey(activeVendorKey);
+    }
+  },[vendorOrdersOpenVendor,selCategory,selectedVendorKey,isAdmin]);
   var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
   var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
@@ -974,11 +1095,26 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
   useEffect(function(){
     if(entryType==="VENDOR"){
       setSelCategory("vendor_orders");
+      if(!isAdmin&&vendorOrdersOpenVendor){setSelectedVendorKey(vendorOrdersOpenVendor);}
     }else if(entryType&&entryType!==sel){
       setSel(entryType);
     }
     if(entryType&&setEntryType){setEntryType(null);}
-  },[entryType]);
+  },[entryType,isAdmin,vendorOrdersOpenVendor,sel]);
+  useEffect(function(){
+    if(!draftRequest) return;
+    var nextCategory=normalizeCategory(draftRequest.category||"vegetables");
+    var nextVendorKey=normalizeVendorKey(nextCategory,draftRequest.vendorKey||null);
+    setSelCategory(nextCategory);
+    setSelectedVendorKey(nextVendorKey);
+    if(nextCategory!=="vendor_orders"&&draftRequest.type&&draftRequest.type!==sel){
+      setSel(draftRequest.type);
+    }
+    if(nextCategory==="vendor_orders"&&draftRequest.type!=="VENDOR"&&draftRequest.type){
+      setSel(draftRequest.type);
+    }
+    if(setDraftRequest) setDraftRequest(null);
+  },[draftRequest]);
   useEffect(function(){
     if(ex&& (ex.status==="submitted"||ex.status==="processed")){
       setDraftLockByKey(function(prev){
@@ -1019,21 +1155,8 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
       var itemNamesByCode={};
       sorted.forEach(function(it){itemNamesByCode[it.code]=it.name;});
       var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,po.items||qty,po.notes||notes,user.storeId,po.date||new Date().toISOString(),itemNamesByCode);
-      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
-      var b64=resp.excelBase64;
-      var bin=atob(b64);
-      var bytes=new Uint8Array(bin.length);
-      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-      var url=URL.createObjectURL(blob);
-      var a=document.createElement("a");
-      a.href=url;
-      a.download=resp.filename||("store-order-"+selCategory+"-"+currentType+"-"+user.storeId+".xlsx");
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function(){URL.revokeObjectURL(url);},1000);
-    }catch(e){toast(e.message||"Failed to generate Excel",true);}
+      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
+    }catch(e){toast(e.message||"Failed to generate document",true);}
   };
   var save=async function(){
     try{
@@ -1066,6 +1189,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
     var extras=extraCodes.map(function(code){return {code:code,name:displayNameForOrderKey(code,items),category:selCategory,unit:"",_extra:true};});
     return sortItems(known.concat(extras));
   },[itemList,items,qty,notes,selCategory]);
+  var displayRows=useMemo(function(){return buildTemplateDisplayRows(activeTemplate,sorted);},[activeTemplate,sorted]);
   return(<div>
     {(notifs||[]).map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={{marginBottom:12}}>
@@ -1074,21 +1198,21 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
         setSelCategory={setSelCategory}
         orderType={sel}
         setOrderType={setSel}
-        getCategoryDisabled={function(catId){return catId==="vendor_orders"?(!vendorOrdersOpenVendor&&!(user&&user.role==="admin")):!isCategoryOpenForType(catId,sel,aot,manualOpenLeaves);}}
+        getCategoryDisabled={function(catId){return catId==="vendor_orders"?(!vendorOrdersOpenVendor&&!isAdmin):!isCategoryOpenForType(catId,sel,aot,manualOpenLeaves);}}
         getOrderTypeDisabled={function(){return false;}}
         orderTypeSuffix={function(t){return t===aot?" *":"";}}
       />
     </div>
-    {selCategory==="vendor_orders"&&<div style={S.card}><div style={S.lb}>Vendor</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}} disabled={!!vendorOrdersOpenVendor&&!(user&&user.role==="admin")}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select></div>}
+    {selCategory==="vendor_orders"&&<div style={S.card}><div style={S.lb}>Vendor</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}} disabled={!!vendorOrdersOpenVendor&&!isAdmin}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>{!!vendorOrdersOpenVendor&&!isAdmin&&selectedVendorKey&&<div style={Object.assign({},S.d,{marginTop:6})}>Admin opened vendor orders for {activeVendorName}. This store can only place that vendor order right now.</div>}</div>}
     {locked&&<div style={S.nP}>{selCategory==="vendor_orders"?"Vendor orders stay locked until admin/warehouse activates a vendor.":(CATEGORY_LABELS[selCategory]+" for Order "+sel+" is locked. "+(selCategory==="leaves"?"Leaves opens automatically with VEG Order B, or when Leaves manual override is enabled in Settings.":("Opens on "+(DAYS[schedule[sel]]||"Unset")+".")))}</div>}
     {selCategory==="vendor_orders"&&!resolvedVendorKey&&<div style={S.nP}>Select a vendor to work with vendor-specific orders.</div>}
     {done&&<div style={S.nG}>{selCategory==="vendor_orders"?("Vendor Order for "+activeVendorName):(""+CATEGORY_LABELS[selCategory]+" Order "+sel)} has been {ex.status}. Read only.</div>}
-    {isDraftOrder&&!isEditingDraft&&<div style={S.nI}>Draft order saved and locked. Click Edit Draft to modify, then Save Draft or Submit.</div>}
+    {isDraftOrder&&!isEditingDraft&&<div style={S.nP}>Draft saved only. It has not been sent yet. Click Edit Draft to modify it, or click Submit to send it to admin/consolidated and lock editing.</div>}
     {isDraftOrder&&isEditingDraft&&<div style={S.nI}>Editing draft. You can save draft again multiple times before final submit.</div>}
     <div style={S.card}><div style={S.cH}>
       <div><div style={S.t}>{selCategory==="vendor_orders"?("Vendor Orders - "+activeVendorName+" - "+sName):(CATEGORY_LABELS[selCategory]+" - Order "+sel+" - "+sName)}</div><div style={S.d}>{filled} items | {ex?ex.status:"New"}</div></div>
       <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-        <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadOrderExcel({items:qty,notes:notes,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Download Excel</button>
+        <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadOrderExcel({items:qty,notes:notes,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Download Document</button>
         {done?null:(isDraftOrder&&!isEditingDraft?<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={function(){setIsEditingDraft(true);}}>Edit Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}}>Submit</button></Fragment>:<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={save}>Save Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}}>Submit</button></Fragment>)}
       </div>
     </div>
@@ -1099,13 +1223,19 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
     </div>
     <div style={S.tw}><table style={S.tbl}>
       <thead><tr><th style={S.th}>{itemHeader}</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader}</th><th style={S.th}>{noteHeader}</th></tr></thead>
-      <tbody>{sorted.map(function(it){return(<tr key={it.code}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="text" inputMode="numeric" pattern="[0-9]*" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} onWheel={stopNumberWheelChange} disabled={ro}/></td><td style={S.td}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:11.5})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} placeholder="note" disabled={ro}/></td></tr>);})}
+      <tbody>{displayRows.map(function(row){
+        if(row.type==="heading"){
+          return <tr key={row.key}><td colSpan={3} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
+        }
+        var it=row.item;
+        return(<tr key={row.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="text" inputMode="numeric" pattern="[0-9]*" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} onWheel={stopNumberWheelChange} disabled={ro}/></td><td style={S.td}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:11.5})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} placeholder="note" disabled={ro}/></td></tr>);
+      })}
       {sorted.length===0&&<tr><td colSpan={3} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items in {CATEGORY_LABELS[selCategory]}.</td></tr>}</tbody>
     </table></div></div>
     {showConfirm&&(<div style={S.ov} onClick={function(){setShowConfirm(false);}}><div style={Object.assign({},S.mo,{width:420,textAlign:"center"})} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:40,marginBottom:8}}>⚠️</div>
       <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Submit {selCategory==="vendor_orders"?("Vendor Order for "+activeVendorName):(CATEGORY_LABELS[selCategory]+" Order "+sel)}?</div>
-      <div style={{fontSize:13,color:"#64748B",marginBottom:20,lineHeight:1.6}}>Are you sure you want to submit this order?<br/>Once submitted, you will <strong style={{color:"#F87171"}}>not be able to edit</strong> it.</div>
+      <div style={{fontSize:13,color:"#64748B",marginBottom:20,lineHeight:1.6}}>Are you sure you want to submit this order?<br/>This will send it to admin/consolidated and you will <strong style={{color:"#F87171"}}>not be able to edit</strong> it after submission.</div>
       <div style={{display:"flex",gap:8,justifyContent:"center"}}>
         <button style={Object.assign({},S.b,S.bS,{padding:"9px 24px"})} onClick={function(){setShowConfirm(false);}}>No, Go Back & Edit</button>
         <button style={Object.assign({},S.b,S.bP,{padding:"9px 24px"})} onClick={doSubmit}>Yes, Submit</button>
@@ -1115,7 +1245,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
 }
 
 /* ═══ ORDER HISTORY ═══ */
-function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType}){
+function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType,setDraftRequest}){
   var my=Object.entries(orders).filter(function(e){return e[0].indexOf(user.storeId)===0;}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var _s=useState(null),sel=_s[0],setSel=_s[1];
   var statusBg=function(st){return st==="processed"?S.bgP:st==="submitted"?S.bgG:S.bgY;};
@@ -1135,22 +1265,9 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       var historyItemNames={};
       Object.keys(Object.assign({},o.items||{},o.notes||{})).forEach(function(code){historyItemNames[code]=displayNameForOrderKey(code,items);});
       var resp=await apiClient.orders.storeOrderExcelPreview(o.type||"A",o.category||"vegetables",o.vendorKey||null,o.items||{},o.notes||{},o.store||user.storeId,o.date||new Date().toISOString(),historyItemNames);
-      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
-      var b64=resp.excelBase64;
-      var bin=atob(b64);
-      var bytes=new Uint8Array(bin.length);
-      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-      var url=URL.createObjectURL(blob);
-      var a=document.createElement("a");
-      a.href=url;
-      a.download=resp.filename||("order-history-"+String(o.type||"X")+"-"+user.storeId+".xlsx");
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function(){URL.revokeObjectURL(url);},1000);
-      toast("Excel downloaded");
-    }catch(e){toast(e.message||"Failed to generate Excel",true);}
+      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
+      toast("Document downloaded");
+    }catch(e){toast(e.message||"Failed to generate document",true);}
   };
   var reopenAsDraft=async function(o){
     try{
@@ -1165,19 +1282,20 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       toast("Submitted order reopened as draft");
     }catch(e){toast(e.message,true);}
   };
-  var closeDraft=async function(o,k){
-    if(!window.confirm("Close this draft and lock it as submitted?")) return;
-    try{
-      await apiClient.orders.create({type:o.type,category:o.category||"vegetables",vendorKey:o.vendorKey||null,items:o.items||{},notes:o.notes||{},status:"submitted",storeId:user.storeId});
-      if(refreshOrders) await refreshOrders(user.storeId);
-      toast("Draft closed and submitted");
-    }catch(e){toast(e.message,true);}
+  var openDraft=function(o){
+    if(!o||o.status!=="draft") return;
+    if(setDraftRequest){
+      setDraftRequest({type:o.type,category:o.category||"vegetables",vendorKey:o.vendorKey||null});
+    }else if(setEntryType){
+      setEntryType(o.type);
+    }
+    if(setPage) setPage("order-entry");
   };
   return(<div><div style={S.card}><div style={S.t}>Past Orders</div>
-    <div style={S.d}>Reopen as Draft is only enabled for currently open Order {openType||"-"} and only once.</div>
+    <div style={S.d}>Reopen as Draft is only enabled for currently open Order {openType||"-"} and only once. Draft rows can be opened in Place Order and submitted from there.</div>
     {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:
     <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-      {my.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq);var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download Excel</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeDraft(o,k);}}>Close Draft</button>}</div></td></tr>);})}</tbody></table></div>}</div>
+      {my.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq);var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}</tbody></table></div>}</div>
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>{CATEGORY_LABELS[orders[sel].category||"vegetables"]} Order {orders[sel].type} - {fmtDT(orders[sel].date)}</div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Qty</th><th style={S.th}>Note</th></tr></thead><tbody>
@@ -1296,11 +1414,11 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   };
   var closeDraftFromAdmin=async function(k,o){
     if(!o||o.status!=="draft") return;
-    if(!window.confirm("Close this draft and lock it as submitted?")) return;
+    if(!window.confirm("Submit this draft now? This will send it into admin consolidated flow and lock store editing.")) return;
     try{
       await apiClient.orders.create({type:o.type,category:o.category||"vegetables",vendorKey:o.vendorKey||null,items:o.items||{},notes:o.notes||{},status:"submitted",storeId:o.store});
       if(refreshOrders) await refreshOrders();
-      toast("Draft closed and submitted");
+      toast("Draft submitted");
     }catch(e){toast(e.message,true);}
   };
   return(<div>
@@ -1366,7 +1484,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
                 try{await apiClient.orders.process(o.id);
                   setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},n[k],{status:"processed"});return n;});
                   toast("Processed");
-                }catch(e){toast(e.message,true);} }}>Process</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10,marginLeft:4})} onClick={function(){closeDraftFromAdmin(k,o);}}>Close Draft</button>}</td>
+                }catch(e){toast(e.message,true);} }}>Process</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10,marginLeft:4})} onClick={function(){closeDraftFromAdmin(k,o);}}>Submit Draft</button>}</td>
           </tr>);})}</tbody></table></div>}
       </div>
     )}
@@ -1421,10 +1539,17 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var _fl=useState(false),forceCompletedLock=_fl[0],setForceCompletedLock=_fl[1];
   var _logs=useState([]),logs=_logs[0],setLogs=_logs[1];
   var _sq=useState(""),supplierSearch=_sq[0],setSupplierSearch=_sq[1];
+  var _vsm=useState("individual"),vendorSendMode=_vsm[0],setVendorSendMode=_vsm[1];
+  var _vsr=useState(null),vendorStoreDialogRow=_vsr[0],setVendorStoreDialogRow=_vsr[1];
+  var _vse=useState(false),vendorStoreDialogEditing=_vse[0],setVendorStoreDialogEditing=_vse[1];
+  var _vsq=useState({}),vendorStoreDialogQty=_vsq[0],setVendorStoreDialogQty=_vsq[1];
+  var _vsn=useState({}),vendorStoreDialogNotes=_vsn[0],setVendorStoreDialogNotes=_vsn[1];
+  var _vss=useState(false),savingVendorStoreDialog=_vss[0],setSavingVendorStoreDialog=_vss[1];
   var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
   var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
   var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"PRODUCT";
+  var qtyHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QTY";
   var totalHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.total?templateHeaders.total:"TOTAL QTY";
   var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"NOTE";
   var currentType=selCategory==="vendor_orders"?"VENDOR":vt;
@@ -1484,6 +1609,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[vendorOrdersOpenVendor,selCategory]);
   var getStoreOrder=function(storeId){return getCurrentOrderForStoreType(orders,storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);};
   var supplierById=useMemo(function(){var m={};supplierList.forEach(function(s){m[s.id]=s;});return m;},[supplierList]);
+  var selectedVendor=supplierById[resolvedVendorKey]||null;
   var primaryOpenType=(consolidatedType||aot||null);
   var carryOpenType=useMemo(function(){
     if(selCategory==="vendor_orders") return null;
@@ -1538,6 +1664,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   useEffect(function(){
     setStep(1);setSavedRows([]);setSplitSupplierIds([]);setItemOverrides({});setSentSplitBySupplier({});
     setEditingAll(false);setEditQtyByStore({});setEditNotesByStore({});
+    setVendorSendMode("individual");
   },[dk]);
   useEffect(function(){ setSupplierSearch(""); },[selCategory,vt,resolvedVendorKey,step]);
   useEffect(function(){
@@ -1565,7 +1692,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     Object.keys(dynamicCodes).forEach(function(code){
       if(!knownCodes[code]) rows.push({code:code,name:displayNameForOrderKey(code,items),category:"",unit:"",_extra:true});
     });
-    rows.sort(function(a,b){return String(a.name||"").localeCompare(String(b.name||""));});
+    rows=selCategory==="vendor_orders"?orderRowsByTemplate(activeTemplate,rows):rows.sort(function(a,b){return String(a.name||"").localeCompare(String(b.name||""));});
     return rows.map(function(it){
       var qtyByStoreId={};var total=0;var noteParts=[];
       slots.forEach(function(sl){
@@ -1577,7 +1704,44 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       });
       return {code:it.code,name:it.name,qtyByStoreId:qtyByStoreId,total:total,note:noteParts.join(" | ")};
     });
-  },[items,orders,slots,currentType,selCategory,manualOpenOrder,manualOpenSeq]);
+  },[items,orders,slots,currentType,selCategory,manualOpenOrder,manualOpenSeq,resolvedVendorKey,activeTemplate]);
+  var vendorStoreDocs=useMemo(function(){
+    if(!isSingleVendorFlow||!resolvedVendorKey) return [];
+    return (slots||[]).filter(function(sl){return !!(sl&&sl.store);}).map(function(sl){
+      var order=getStoreOrder(sl.store.id);
+      var status=String(order&&order.status||"");
+      var hasVisible=["submitted","draft_shared","processed"].indexOf(status)>=0;
+      var lineCount=order?Object.keys(Object.assign({},order.items||{},order.notes||{})).filter(function(code){
+        return (Number((order.items||{})[code])||0)>0 || String((order.notes||{})[code]||"").trim();
+      }).length:0;
+      return {slot:sl,store:sl.store,order:order,lineCount:lineCount,ready:hasVisible&&lineCount>0};
+    }).filter(function(row){return row.ready;});
+  },[isSingleVendorFlow,resolvedVendorKey,slots,orders,currentType,selCategory,manualOpenOrder,manualOpenSeq]);
+  var vendorPendingCount=useMemo(function(){
+    if(!isSingleVendorFlow||!resolvedVendorKey) return 0;
+    return (slots||[]).filter(function(sl){
+      if(!sl||!sl.store) return false;
+      var order=getStoreOrder(sl.store.id);
+      return !(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
+    }).length;
+  },[isSingleVendorFlow,resolvedVendorKey,slots,orders,currentType,selCategory,manualOpenOrder,manualOpenSeq]);
+  var vendorStoreDialogDisplayRows=useMemo(function(){
+    if(!vendorStoreDialogRow||!vendorStoreDialogRow.store) return [];
+    var sid=vendorStoreDialogRow.store.id;
+    var sourceRows=baseRows.map(function(r){
+      return {
+        code:r.code,
+        name:r.name,
+        qty:(vendorStoreDialogEditing?Number(vendorStoreDialogQty[r.code])||0:Number(r.qtyByStoreId&&r.qtyByStoreId[sid])||0),
+        note:vendorStoreDialogEditing?String(vendorStoreDialogNotes[r.code]||""):String(((vendorStoreDialogRow.order&&vendorStoreDialogRow.order.notes)||{})[r.code]||""),
+      };
+    });
+    return buildTemplateDataRows(activeTemplate,sourceRows.map(function(r){return {code:r.code,name:r.name};})).map(function(entry){
+      if(entry.type==="heading") return entry;
+      var row=sourceRows.find(function(src){return src.code===entry.row.code;});
+      return row?{type:"item",key:entry.key,row:row}:null;
+    }).filter(function(entry){return !!entry;});
+  },[vendorStoreDialogRow,vendorStoreDialogEditing,vendorStoreDialogQty,vendorStoreDialogNotes,baseRows,activeTemplate]);
 
   var startEditAll=function(){
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
@@ -1752,8 +1916,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var beginSplit=function(){
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
     if(editingAll){toast("Save edited quantities before continuing",true);return;}
+    if(isSingleVendorFlow&&(!resolvedVendorKey||!selectedVendor)){toast("Select a vendor first",true);return;}
+    if(isSingleVendorFlow&&vendorStoreDocs.length<1){toast("No submitted store orders are ready for this vendor yet",true);return;}
     var snap=baseRows.map(function(r){return {code:r.code,name:r.name,note:r.note||"",total:r.total,qtyByStoreId:Object.assign({},r.qtyByStoreId)};});
-    var ids=(isSingleVendorFlow?supplierList.slice(0,1):(isLeavesFlow?[]:supplierList)).map(function(s){return s.id;});
+    var ids=isSingleVendorFlow?(resolvedVendorKey?[resolvedVendorKey]:[]):(isLeavesFlow?[]:supplierList.map(function(s){return s.id;}));
     if(isSingleVendorFlow&&ids.length<1){toast("Add a supplier first",true);return;}
     if(!isSingleVendorFlow&&!isLeavesFlow&&ids.length<1){toast("Add at least one supplier first",true);return;}
     var preset=loadSplitPreset();
@@ -1764,7 +1930,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     setSavedRows(snap);
     setSplitSupplierIds(ids);
     setItemOverrides(nextOverrides);
-    setStep(isSingleVendorFlow?3:2);
+    setStep(2);
   };
   var chooseSingleSupplier=function(sid){
     setSplitSupplierIds(sid?[sid]:[]);
@@ -1812,6 +1978,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     });
     return out;
   },[savedRows,splitSupplierIds,itemOverrides,slots]);
+  var vendorPreviewRows=useMemo(function(){
+    if(!isSingleVendorFlow||!splitSupplierIds.length) return [];
+    var sid=splitSupplierIds[0];
+    return splitRowsBySupplier[sid]||[];
+  },[isSingleVendorFlow,splitSupplierIds,splitRowsBySupplier]);
+  var vendorPreviewDisplayRows=useMemo(function(){
+    if(!isSingleVendorFlow) return [];
+    return buildTemplateDataRows(activeTemplate,vendorPreviewRows);
+  },[isSingleVendorFlow,activeTemplate,vendorPreviewRows]);
 
   var sendSplitEmail=async function(sid){
     var supplier=supplierById[sid]||null;
@@ -1825,11 +2000,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var payloadRows=rows.map(function(r){return {itemCode:r.code,itemName:r.name,note:r.note||"",total:r.total||0,qtyByStoreId:r.qtyByStoreId};});
       var nextSent=Object.assign({},sentSplitBySupplier);nextSent[sid]=true;
       var isFinal=splitSupplierIds.length>0 && splitSupplierIds.every(function(id){return nextSent[id];});
-      var emailResp=await apiClient.orders.emailConsolidated(currentType,selCategory,resolvedVendorKey,recipientEmails,supplier.name,reopenedFromId,{rows:payloadRows,finished:isFinal});
+      await apiClient.orders.emailConsolidated(currentType,selCategory,resolvedVendorKey,recipientEmails,supplier.name,reopenedFromId,{rows:payloadRows,finished:isFinal});
       toast("Email sent to "+recipientEmails.join(", "));
-      if(emailResp&&emailResp.supplierOrder){
-        setLogs(function(l){return [emailResp.supplierOrder].concat(l||[]).sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);});});
-      }
+      var latestLogs=await apiClient.supplierOrders.getAll();
+      setLogs(latestLogs||[]);
       setSentSplitBySupplier(nextSent);
       if(isFinal){
         setForceCompletedLock(true);
@@ -1844,6 +2018,95 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       }
       if(setReopenedFromId) setReopenedFromId(null);
     }catch(e){toast(e.message,true);}finally{sEMailing(false);}
+  };
+  var downloadVendorStoreDocument=async function(row){
+    if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
+    try{
+      setDownloadingSplit(function(prev){var n=Object.assign({},prev);n[String(row.store.id||"")]=true;return n;});
+      var itemNamesByCode={};
+      Object.keys(Object.assign({},row.order.items||{},row.order.notes||{})).forEach(function(code){itemNamesByCode[code]=displayNameForOrderKey(code,items);});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode);
+      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
+      toast("Document downloaded for "+(row.store.name||row.store.id));
+    }catch(e){toast(e.message||"Failed to download document",true);}
+    finally{
+      setDownloadingSplit(function(prev){var n=Object.assign({},prev);delete n[String(row.store.id||"")];return n;});
+    }
+  };
+  var openVendorStoreDialog=function(row, editing){
+    if(!row||!row.store){toast("Store order not available",true);return;}
+    var order=row.order||{};
+    var qtyMap={};
+    var noteMap={};
+    baseRows.forEach(function(r){
+      qtyMap[r.code]=Number(order.items&&order.items[r.code])||0;
+      noteMap[r.code]=String(order.notes&&order.notes[r.code]||"");
+    });
+    setVendorStoreDialogRow(row);
+    setVendorStoreDialogEditing(!!editing);
+    setVendorStoreDialogQty(qtyMap);
+    setVendorStoreDialogNotes(noteMap);
+  };
+  var closeVendorStoreDialog=function(){
+    setVendorStoreDialogRow(null);
+    setVendorStoreDialogEditing(false);
+    setVendorStoreDialogQty({});
+    setVendorStoreDialogNotes({});
+  };
+  var saveVendorStoreDialog=async function(){
+    if(!vendorStoreDialogRow||!vendorStoreDialogRow.store){return;}
+    try{
+      setSavingVendorStoreDialog(true);
+      var existing=vendorStoreDialogRow.order||{};
+      var nextStatus=(existing.status==="submitted"||existing.status==="processed"||existing.status==="draft_shared")?existing.status:"draft";
+      await apiClient.orders.create({
+        type:currentType,
+        category:selCategory,
+        vendorKey:resolvedVendorKey,
+        items:vendorStoreDialogQty,
+        notes:vendorStoreDialogNotes,
+        status:nextStatus,
+        storeId:vendorStoreDialogRow.store.id
+      });
+      setOrders(function(prev){
+        var n=Object.assign({},prev);
+        var key=vendorStoreDialogRow.store.id+"_"+dk;
+        n[key]=Object.assign({},prev[key]||{},{
+          id:(prev[key]||{}).id||existing.id,
+          items:Object.assign({},vendorStoreDialogQty),
+          notes:Object.assign({},vendorStoreDialogNotes),
+          status:nextStatus,
+          store:vendorStoreDialogRow.store.id,
+          type:currentType,
+          category:selCategory,
+          vendorKey:resolvedVendorKey,
+          date:(prev[key]||{}).date||existing.date||new Date().toISOString()
+        });
+        return n;
+      });
+      toast("Store order updated");
+      setVendorStoreDialogRow(null);
+      setVendorStoreDialogEditing(false);
+      setVendorStoreDialogQty({});
+      setVendorStoreDialogNotes({});
+    }catch(e){toast(e.message||"Failed to update store order",true);}
+    finally{setSavingVendorStoreDialog(false);}
+  };
+  var sendVendorIndividualDocs=async function(){
+    if(!selectedVendor){toast("Select a vendor first",true);return;}
+    var recipientEmails=supplierEmailsArray(selectedVendor);
+    if(!recipientEmails.length){toast("Vendor email missing",true);return;}
+    if(!vendorStoreDocs.length){toast("No submitted store documents ready for this vendor",true);return;}
+    sEMailing(true);
+    try{
+      await apiClient.orders.emailVendorIndividual(selectedVendor.id,recipientEmails,selectedVendor.name);
+      var latestLogs=await apiClient.supplierOrders.getAll();
+      setLogs(latestLogs||[]);
+      if(setReopenedFromId) setReopenedFromId(null);
+      toast("Individual store documents sent to "+selectedVendor.name);
+      setStep(1);
+    }catch(e){toast(e.message||"Failed to send vendor documents",true);}
+    finally{sEMailing(false);}
   };
   var downloadSplitExcel=async function(sid){
     var rows=splitRowsBySupplier[sid]||[];
@@ -1897,9 +2160,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       {selCategory==="vendor_orders"&&<select style={Object.assign({},S.inp,{width:220})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setStep(1);}}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>}
       </div>
       <div style={{display:"flex",gap:6}}>
-        <span style={Object.assign({},S.bg,step===1?S.bgG:S.bgY)}>1. Consolidated</span>
-        {!isSingleVendorFlow&&<span style={Object.assign({},S.bg,step===2?S.bgG:S.bgY)}>2. Split</span>}
-        <span style={Object.assign({},S.bg,step===3?S.bgG:S.bgY)}>{isSingleVendorFlow?"2. Preview/Send":"3. Preview/Send"}</span>
+        {isSingleVendorFlow?(<Fragment>
+          <span style={Object.assign({},S.bg,step===1?S.bgG:S.bgY)}>1. Store Orders</span>
+          <span style={Object.assign({},S.bg,step===2?S.bgG:S.bgY)}>2. Send Mode</span>
+          <span style={Object.assign({},S.bg,step===3?S.bgG:S.bgY)}>3. Consolidated Preview</span>
+        </Fragment>):(<Fragment>
+          <span style={Object.assign({},S.bg,step===1?S.bgG:S.bgY)}>1. Consolidated</span>
+          <span style={Object.assign({},S.bg,step===2?S.bgG:S.bgY)}>2. Split</span>
+          <span style={Object.assign({},S.bg,step===3?S.bgG:S.bgY)}>3. Preview/Send</span>
+        </Fragment>)}
       </div>
     </div>
     {selCategory!=="vendor_orders"&&primaryOpenType&&<div style={S.nI}>{manualOpenOrder?("Manual override active: only Order "+primaryOpenType+" is open right now."):("Schedule mode active: only Order "+primaryOpenType+" is open right now.")}</div>}
@@ -1911,7 +2180,25 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     {reopenedFromId&&<div style={Object.assign({},S.nP,{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10})}><span>Resend mode active. This send will be stored as a reopened resend history entry.</span><button style={Object.assign({},S.b,S.bS,{padding:"4px 10px",fontSize:11})} onClick={function(){if(setReopenedFromId) setReopenedFromId(null);}}>Clear</button></div>}
     {editingAll&&<div style={S.nI}>Editing quantities and notes for all stores. Click Save when finished.</div>}
 
-    {step===1&&(<div style={Object.assign({},S.card,{padding:0})}>
+    {step===1&&(isSingleVendorFlow?(<div style={Object.assign({},S.card,{padding:0})}>
+      <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(148,163,184,.24)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div><div style={S.t}>{selectedVendor?(selectedVendor.name+" - Store Orders"):"Vendor Store Orders"}</div><div style={S.d}>Review each store document first. Next, choose whether supplier email should be sent as individual store documents or as one consolidated order.</div></div>
+        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {(latestTypeLog&&vendorStoreDocs.length>0)&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
+          <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked||!selectedVendor||vendorStoreDocs.length<1}>Next</button>
+        </div>
+      </div>
+      <div style={{padding:"12px 14px"}}>
+        <div style={S.d}>{vendorStoreDocs.length} ready store document(s){vendorPendingCount>0?(" | "+vendorPendingCount+" store(s) still pending submission"):""}</div>
+      </div>
+      {vendorStoreDocs.length===0?<div style={{textAlign:"center",padding:"8px 14px 22px",color:"#6B7186"}}>{selectedVendor?"No submitted store orders are ready for this vendor yet.":"Select a vendor to review store orders."}</div>:
+      <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Submitted</th><th style={S.th}>Lines</th><th style={S.th}>Document</th><th style={S.th}>Actions</th></tr></thead><tbody>
+        {vendorStoreDocs.map(function(row){
+          var downloadKey=String(row.store.id||"");
+          return <tr key={downloadKey}><td style={Object.assign({},S.td,{fontWeight:600})}>{row.store.name||row.store.id}</td><td style={S.td}><span style={Object.assign({},S.bg,String(row.order&&row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order&&row.order.status||"-"}</span></td><td style={S.tm}>{fmtDT(row.order&&row.order.date)}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700})}>{row.lineCount}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloadingSplit[downloadKey]}>{downloadingSplit[downloadKey]?"Downloading...":"Download Document"}</button></td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openVendorStoreDialog(row,false);}}>View</button><button style={Object.assign({},S.b,S.bP,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openVendorStoreDialog(row,true);}} disabled={isCompletedLocked}>Edit</button></div></td></tr>;
+        })}
+      </tbody></table></div>}
+    </div>):(<div style={Object.assign({},S.card,{padding:0})}>
       <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(148,163,184,.24)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div><div style={S.t}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" Consolidated"):(""+CATEGORY_LABELS[selCategory]+" Consolidated Order "+vt)}</div><div style={S.d}>Review store quantities, then save and continue to supplier split.</div></div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
@@ -1926,9 +2213,29 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </thead><tbody>{baseRows.map(function(it){
         return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{it.total||""}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var editQ=sid&&editingAll?Number((editQtyByStore[sid]||{})[it.code])||0:baseQ;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={editQ} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:baseQ>0?"#0F172A":"#64748B"}}>{baseQ||""}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{slots.filter(function(sl){return !!sl.store;}).map(function(sl){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"6px 8px",fontSize:12.5,minHeight:32})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
       })}</tbody></table></div>
-    </div>)}
+    </div>))}
 
-    {!isSingleVendorFlow&&step===2&&(<div style={S.card}>
+    {step===2&&(isSingleVendorFlow?(<div style={S.card}>
+      <div style={S.cH}><div><div style={S.t}>{selectedVendor?(selectedVendor.name+" - Send Mode"):"Vendor Send Mode"}</div><div style={S.d}>Choose whether the supplier should receive individual store documents or one consolidated order.</div></div></div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:10,marginBottom:14}}>
+        <button style={Object.assign({},S.card,{marginBottom:0,textAlign:"left",border:vendorSendMode==="individual"?"2px solid #16A34A":"1px solid rgba(148,163,184,.28)",background:vendorSendMode==="individual"?"rgba(22,163,74,.08)":"rgba(255,255,255,.7)",cursor:"pointer"})} onClick={function(){setVendorSendMode("individual");}}>
+          <div style={Object.assign({},S.t,{marginBottom:6})}>Send Individual Store Documents</div>
+          <div style={S.d}>{vendorStoreDocs.length} attachment(s), one document per ready store. This keeps each store in its own uploaded format.</div>
+        </button>
+        <button style={Object.assign({},S.card,{marginBottom:0,textAlign:"left",border:vendorSendMode==="consolidated"?"2px solid #16A34A":"1px solid rgba(148,163,184,.28)",background:vendorSendMode==="consolidated"?"rgba(22,163,74,.08)":"rgba(255,255,255,.7)",cursor:"pointer"})} onClick={function(){setVendorSendMode("consolidated");}}>
+          <div style={Object.assign({},S.t,{marginBottom:6})}>Send One Consolidated Order</div>
+          <div style={S.d}>Review a single combined vendor order first, then send that consolidated file to the supplier.</div>
+        </button>
+      </div>
+      <div style={Object.assign({},S.card,{padding:"12px 14px"})}>
+        <div style={S.t}>{vendorSendMode==="individual"?"Individual Store Email":"Consolidated Vendor Email"}</div>
+        <div style={S.d}>{vendorSendMode==="individual"?((selectedVendor&&supplierEmailsText(selectedVendor))||"No vendor email set")+" | "+vendorStoreDocs.length+" store document(s) ready.":("Continue to consolidated preview for "+((selectedVendor&&selectedVendor.name)||"this vendor")+" before sending.")}</div>
+      </div>
+      <div style={S.mA}>
+        <button style={Object.assign({},S.b,S.bS)} onClick={function(){setStep(1);}}>Back</button>
+        {vendorSendMode==="individual"?<button style={Object.assign({},S.b,S.bP)} onClick={sendVendorIndividualDocs} disabled={eMailing||!selectedVendor||vendorStoreDocs.length<1||isCompletedLocked}>{eMailing?"Sending...":"Send Individual Store Documents"}</button>:<button style={Object.assign({},S.b,S.bP)} onClick={function(){setStep(3);}} disabled={!selectedVendor||isCompletedLocked}>Continue to Consolidated Preview</button>}
+      </div>
+    </div>):(<div style={S.card}>
       <div style={S.cH}><div><div style={S.t}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" Split by Supplier"):(""+CATEGORY_LABELS[selCategory]+" Split Order "+vt+" by Supplier")}</div><div style={S.d}>Set product-level split percentages for each supplier.</div></div></div>
       {isLeavesFlow&&(<Fragment>
         <div style={S.dWrap}>
@@ -1967,10 +2274,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </Fragment>)}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setStep(1);}}>Back</button><button style={Object.assign({},S.b,S.bP)} disabled={splitSupplierIds.length<1||isCompletedLocked} onClick={function(){saveSplitPreset(itemOverrides);setStep(3);}}>Save Split & Preview</button></div>
       </Fragment>)}
-    </div>)}
+    </div>))}
 
     {step===3&&(<div style={S.card}>
-      <div style={S.cH}><div><div style={S.t}>{CATEGORY_LABELS[selCategory]} Supplier Preview & Send</div><div style={S.d}>{isSingleVendorFlow?"Single-vendor leaves order preview. Review and send.":"Both split orders are shown side by side. You can still override product split percentages below."}</div></div></div>
+      <div style={S.cH}><div><div style={S.t}>{CATEGORY_LABELS[selCategory]} Supplier Preview & Send</div><div style={S.d}>{isSingleVendorFlow?"Review the consolidated vendor order before sending it to the supplier.":"Both split orders are shown side by side. You can still override product split percentages below."}</div></div></div>
       {!isSingleVendorFlow&&!isLeavesFlow&&<div style={Object.assign({},S.card,{padding:"10px 12px"})}>
         <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Further Product-Level Split Override</div>
         <div style={Object.assign({},S.tw,{maxHeight:"30vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>Product</th>{splitSupplierIds.map(function(sid){return <th key={sid} style={Object.assign({},S.th,{textAlign:"center"})}>{(supplierById[sid]||{}).name||sid} %</th>;})}</tr></thead><tbody>
@@ -1980,32 +2287,53 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           })}
         </tbody></table></div>
       </div>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(480px,1fr))",gap:10}}>
+      <div style={{display:"grid",gridTemplateColumns:isSingleVendorFlow?"1fr":"repeat(auto-fit,minmax(480px,1fr))",gap:10}}>
         {splitSupplierIds.map(function(sid){
           var s=supplierById[sid]||{id:sid,name:sid,email:"",emails:[]};
           var sEmailText=supplierEmailsText(s);
           var rows=splitRowsBySupplier[sid]||[];
+          var displayRows=isSingleVendorFlow?vendorPreviewDisplayRows:rows.map(function(r){return {type:"item",key:r.code,row:r};});
           var sent=!!sentSplitBySupplier[sid];
           var isDownloading=!!downloadingSplit[sid];
           return <div key={sid} style={Object.assign({},S.card,{marginBottom:0,padding:10})}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
               <div><div style={S.t}>{s.name}</div><div style={S.d}>{sEmailText||"No email"}</div></div>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadSplitExcel(sid);}} disabled={isDownloading||isCompletedLocked}>{isDownloading?"Downloading...":"Download Excel"}</button>
-                <button style={Object.assign({},S.b,sent?S.bG:S.bP)} onClick={function(){sendSplitEmail(sid);}} disabled={eMailing||supplierEmailsArray(s).length===0||isCompletedLocked||sent}>{sent?"Sent":"Send Supplier Order"}</button>
+                <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadSplitExcel(sid);}} disabled={isDownloading||isCompletedLocked}>{isDownloading?"Downloading...":(isSingleVendorFlow?"Download Consolidated File":"Download Excel")}</button>
+                <button style={Object.assign({},S.b,sent?S.bG:S.bP)} onClick={function(){sendSplitEmail(sid);}} disabled={eMailing||supplierEmailsArray(s).length===0||isCompletedLocked||sent}>{sent?"Sent":"Send Consolidated Order"}</button>
               </div>
             </div>
             <div style={Object.assign({},S.tw,{maxHeight:"40vh",border:"1px solid rgba(148,163,184,.25)"})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
               <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:120})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:360})}></th></tr>
               <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:120})}>{selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header?activeTemplate.storeColumns[idx].header:(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QUANTITY (case qty)")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
             </thead><tbody>
-              {rows.map(function(r){return <tr key={r.code}><td style={tProductCell}>{r.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{r.note||""}</td></tr>;})}
+              {displayRows.map(function(entry){
+                if(entry.type==="heading"){
+                  return <tr key={entry.key}><td colSpan={slots.length+3} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
+                }
+                var r=entry.row;
+                return <tr key={entry.key}><td style={tProductCell}>{r.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{r.note||""}</td></tr>;
+              })}
             </tbody></table></div>
           </div>;
         })}
       </div>
-      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setStep(isSingleVendorFlow?1:2);}}>Back</button></div>
+      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setStep(2);}}>Back</button>{isSingleVendorFlow&&latestTypeLog&&vendorStoreDocs.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}</div>
     </div>)}
+    {vendorStoreDialogRow&&(<div style={S.ov} onClick={function(){if(!savingVendorStoreDialog) closeVendorStoreDialog();}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>{vendorStoreDialogEditing?"Edit":"View"} Store Order - {(vendorStoreDialogRow.store&&vendorStoreDialogRow.store.name)||vendorStoreDialogRow.store&&vendorStoreDialogRow.store.id}</div>
+      <div style={{fontSize:12,color:"#64748B",marginBottom:10}}>Status: {vendorStoreDialogRow.order&&vendorStoreDialogRow.order.status||"-"} | Submitted: {fmtDT(vendorStoreDialogRow.order&&vendorStoreDialogRow.order.date)}</div>
+      <div style={Object.assign({},S.tw,{maxHeight:"55vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
+        {vendorStoreDialogDisplayRows.map(function(entry){
+          if(entry.type==="heading"){
+            return <tr key={entry.key}><td colSpan={3} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{entry.text}</td></tr>;
+          }
+          var row=entry.row;
+          return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.name}</td><td style={Object.assign({},S.td,{textAlign:"center"})}>{vendorStoreDialogEditing?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={vendorStoreDialogQty[row.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value,10)||0);setVendorStoreDialogQty(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog}/>:<span style={{fontFamily:"monospace"}}>{row.qty||""}</span>}</td><td style={S.td}>{vendorStoreDialogEditing?<input style={Object.assign({},S.inp,{padding:"5px 8px",fontSize:11.5})} value={vendorStoreDialogNotes[row.code]||""} onChange={function(e){var v=e.target.value;setVendorStoreDialogNotes(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog} placeholder="note"/>:(row.note||"-")}</td></tr>;
+        })}
+      </tbody></table></div>
+      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={closeVendorStoreDialog} disabled={savingVendorStoreDialog}>Close</button>{vendorStoreDialogEditing&&<button style={Object.assign({},S.b,S.bP)} onClick={saveVendorStoreDialog} disabled={savingVendorStoreDialog}>{savingVendorStoreDialog?"Saving...":"Save"}</button>}</div>
+    </div></div>)}
   </div>);
 }
 function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendor}){
@@ -2016,6 +2344,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   var _sending=useState({}),sending=_sending[0],sSending=_sending[1];
   var _downloading=useState({}),downloading=_downloading[0],setDownloading=_downloading[1];
   var _hist=useState([]),history=_hist[0],setHistory=_hist[1];
+  var _vm=useState("individual"),vendorSendMode=_vm[0],setVendorSendMode=_vm[1];
   var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
   var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
@@ -2091,6 +2420,63 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       setDownloading(function(prev){var n=Object.assign({},prev);delete n[key];return n;});
     }
   };
+  var selectedVendor=supList.find(function(v){return v.id===resolvedVendorKey;})||null;
+  var vendorStoreDocs=useMemo(function(){
+    if(selCategory!=="vendor_orders"||!resolvedVendorKey) return [];
+    return (stores||[]).map(function(st){
+      var order=getCurrentOrderForStoreType(orders,st.id,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
+      var hasVisible=!!(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
+      var lineCount=order?Object.keys(Object.assign({},order.items||{},order.notes||{})).filter(function(code){return (Number((order.items||{})[code])||0)>0||String((order.notes||{})[code]||"").trim();}).length:0;
+      return {store:st,order:order,lineCount:lineCount,ready:hasVisible&&lineCount>0};
+    }).filter(function(row){return row.ready;});
+  },[stores,orders,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq]);
+  var vendorPendingCount=useMemo(function(){
+    if(selCategory!=="vendor_orders"||!resolvedVendorKey) return 0;
+    return (stores||[]).filter(function(st){
+      var order=getCurrentOrderForStoreType(orders,st.id,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
+      return !(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
+    }).length;
+  },[stores,orders,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq]);
+  var vendorHistorySent=useMemo(function(){
+    if(selCategory!=="vendor_orders"||!resolvedVendorKey) return false;
+    return (history||[]).some(function(r){
+      return normalizeCategory(r.category||"vegetables")==="vendor_orders"
+        && String(r.vendorKey||"")===String(resolvedVendorKey||"")
+        && String(r.type||"")===String(currentType||"")
+        && String(r.week||"")===String(dk.endsWith("-"+currentType+"-"+categoryKey(selCategory,resolvedVendorKey))?dk.slice(0,dk.length-("-"+currentType+"-"+categoryKey(selCategory,resolvedVendorKey)).length):dk);
+    });
+  },[history,selCategory,resolvedVendorKey,currentType,dk]);
+  var downloadVendorStoreDocument=async function(row){
+    if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
+    try{
+      var key=String(row.store.id||"");
+      setDownloading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
+      var itemNamesByCode={};
+      Object.keys(Object.assign({},row.order.items||{},row.order.notes||{})).forEach(function(code){itemNamesByCode[code]=displayNameForOrderKey(code,items);});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode);
+      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
+      toast("Document downloaded for "+(row.store.name||row.store.id));
+    }catch(e){toast(e.message||"Failed to download document",true);}
+    finally{
+      setDownloading(function(prev){var n=Object.assign({},prev);delete n[String(row.store.id||"")];return n;});
+    }
+  };
+  var sendVendorIndividualDocs=async function(){
+    if(!selectedVendor){toast("Select a vendor first",true);return;}
+    var recipients=supplierEmailsArray(selectedVendor);
+    if(!recipients.length){toast("Vendor email missing",true);return;}
+    try{
+      sSending(function(prev){var n=Object.assign({},prev);n.vendorIndividual=true;return n;});
+      await apiClient.orders.emailVendorIndividual(selectedVendor.id,recipients,selectedVendor.name);
+      sSent(function(prev){var n=Object.assign({},prev);n["vendorIndividual_"+selectedVendor.id]=true;return n;});
+      var h=await apiClient.supplierOrders.getAll();
+      setHistory(h||[]);
+      toast("Individual store documents sent to "+selectedVendor.name);
+    }catch(e){toast(e.message||"Failed to send vendor documents",true);}
+    finally{
+      sSending(function(prev){var n=Object.assign({},prev);delete n.vendorIndividual;return n;});
+    }
+  };
 
   return(<div>
     {history.length>0&&(<div style={Object.assign({},S.card,{marginBottom:12})}>
@@ -2116,9 +2502,33 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       </div>
       {allSent&&supplierGroups.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
     </div>
-    <div style={S.nI}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" by supplier. Send emails, then mark as processed."):(""+CATEGORY_LABELS[selCategory]+" Order "+vt+" by supplier. Send emails, then mark as processed.")}</div>
-    {supplierGroups.length===0&&<div style={S.card}><div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No order data for {selCategory==="vendor_orders"?CATEGORY_LABELS[selCategory]:(CATEGORY_LABELS[selCategory]+" Order "+vt)}. Submit orders first.</div></div>}
-    {supplierGroups.map(function(g){
+    {selCategory==="vendor_orders"&&(
+      <div>
+        <div style={S.nI}>Vendor supplier sending now runs from Consolidated {" > "} Vendors. Use this page only to review store documents and past send history.</div>
+        <div style={Object.assign({},S.card,{marginBottom:12})}>
+          <div style={S.cH}>
+            <div>
+              <div style={S.t}>{selectedVendor?(selectedVendor.name+" - Individual Store Documents"):"Vendor Documents"}</div>
+              <div style={S.d}>{vendorStoreDocs.length} ready store document(s){vendorPendingCount>0?(" | "+vendorPendingCount+" store(s) still pending submission"):""}</div>
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              {(vendorHistorySent||sent["vendorIndividual_"+(selectedVendor&&selectedVendor.id||"")])&&<span style={Object.assign({},S.bg,S.bgG)}>Sent</span>}
+              {(vendorHistorySent||sent["vendorIndividual_"+(selectedVendor&&selectedVendor.id||"")])&&vendorStoreDocs.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
+            </div>
+          </div>
+          {vendorStoreDocs.length===0?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>{selectedVendor?"No submitted store documents ready for this vendor yet.":"Select a vendor to see store documents."}</div>:
+          <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Lines</th><th style={S.th}>Document</th></tr></thead><tbody>
+            {vendorStoreDocs.map(function(row){
+              var dKey=String(row.store.id||"");
+              return <tr key={dKey}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.store.name||row.store.id}</td><td style={S.td}><span style={Object.assign({},S.bg,String(row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order.status}</span></td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace"})}>{row.lineCount}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloading[dKey]}>{downloading[dKey]?"Downloading...":"Download Document"}</button></td></tr>;
+            })}
+          </tbody></table></div>}
+        </div>
+      </div>
+    )}
+    {selCategory!=="vendor_orders"&&<div style={S.nI}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" by supplier. Send emails, then mark as processed."):(""+CATEGORY_LABELS[selCategory]+" Order "+vt+" by supplier. Send emails, then mark as processed.")}</div>}
+    {selCategory!=="vendor_orders"&&supplierGroups.length===0&&<div style={S.card}><div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No order data for {selCategory==="vendor_orders"?CATEGORY_LABELS[selCategory]:(CATEGORY_LABELS[selCategory]+" Order "+vt)}. Submit orders first.</div></div>}
+    {selCategory!=="vendor_orders"&&supplierGroups.map(function(g){
       var isSent=sent[g.supplier.id+"_"+currentType+"_"+selCategory];
       return(<div key={g.supplier.id} style={Object.assign({},S.card,{border:isSent?"1px solid rgba(52,211,153,0.3)":"1px solid rgba(148,163,184,.24)"})}>
         <div style={S.cH}>
@@ -2136,14 +2546,14 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
           </tr>);})}</tbody></table></div>
       </div>);
     })}
-    {unassigned.length>0&&(<div style={Object.assign({},S.card,{borderColor:"rgba(248,113,113,0.3)"})}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Unassigned Items</div><div style={S.d}>These items are not mapped to any supplier.</div></div></div>
+    {selCategory!=="vendor_orders"&&unassigned.length>0&&(<div style={Object.assign({},S.card,{borderColor:"rgba(248,113,113,0.3)"})}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Unassigned Items</div><div style={S.d}>These items are not mapped to any supplier.</div></div></div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Total Qty</th></tr></thead><tbody>
         {unassigned.map(function(it){return <tr key={it.code}><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700})}>{totals[it.code]}</td></tr>;})}</tbody></table></div></div>)}
   </div>);
 }
 
 /* ═══ ITEM MASTER (no category rows) ═══ */
-function ItemMaster({items,setItems,toast,suppliers}){
+function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategoryTemplates}){
   var _a=useState(false),shA=_a[0],sA=_a[1];var _u=useState(false),shU=_u[0],sU=_u[1];
   var _n=useState({code:"",name:"",category:"vegetables",unit:""}),nI=_n[0],sNI=_n[1];
   var _s=useState(""),sr=_s[0],sSr=_s[1];var _c=useState(null),csv=_c[0],sC=_c[1];var _m=useState("merge"),md=_m[0],sMd=_m[1];
@@ -2162,8 +2572,15 @@ function ItemMaster({items,setItems,toast,suppliers}){
       if(uploadVendorKey) setUploadVendorKey(null);
     }
   },[selCategory,selectedVendorKey,uploadVendorKey]);
-  var fl=items.filter(function(it){var q=sr.toLowerCase();var cat=normalizeCategory(it.category);var vendor=normalizeVendorKey(cat,it.vendorKey);return cat===selCategory&&vendor===normalizeVendorKey(selCategory,selectedVendorKey)&&(it.name.toLowerCase().indexOf(q)>=0||it.code.toLowerCase().indexOf(q)>=0||cat.toLowerCase().indexOf(q)>=0);});
+  var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
+  var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
+  var fl=items.filter(function(it){var q=sr.toLowerCase();var cat=normalizeCategory(it.category);var vendor=normalizeVendorKey(cat,it.vendorKey);return cat===selCategory&&vendor===resolvedVendorKey&&(it.name.toLowerCase().indexOf(q)>=0||it.code.toLowerCase().indexOf(q)>=0||cat.toLowerCase().indexOf(q)>=0);});
   var sorted=useMemo(function(){return sortItems(fl);},[fl]);
+  var displayRows=useMemo(function(){return buildTemplateDisplayRows(activeTemplate,sorted);},[activeTemplate,sorted]);
+  var uploadPreviewRows=useMemo(function(){
+    if(!uploadTemplate||!csv) return [];
+    return buildTemplateDisplayRows(uploadTemplate,csv);
+  },[uploadTemplate,csv]);
   var add=async function(){
       if(!nI.code||!nI.name){toast("Code and Name required",true);return;}
       if(items.find(function(i){return i.code===nI.code;})){toast("Code exists",true);return;}
@@ -2209,11 +2626,62 @@ function ItemMaster({items,setItems,toast,suppliers}){
           }
         }catch(err){console.error('Excel parse error',err);toast("Could not parse Excel file",true);}      };
       r.readAsArrayBuffer(f);
+    }else if(ext==="docx"){
+      if(uploadCategory!=="vendor_orders"||!uploadVendorKey){
+        toast("Word templates are supported only for vendor orders with a selected vendor",true);
+      }else{
+        var r=new FileReader();
+        r.onload=async function(ev){
+          try{
+            var result=String(ev.target.result||"");
+            var base64=result.indexOf(",")>=0?result.split(",")[1]:result;
+            var parsed=await apiClient.items.parseTemplate({
+              filename:name,
+              contentType:f.type||"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              base64:base64,
+              category:uploadCategory,
+              vendorKey:uploadVendorKey
+            });
+            if(!parsed||!parsed.items||!parsed.items.length||!parsed.template){
+              toast("Could not detect order rows in Word file",true);
+              return;
+            }
+            sC(parsed.items);
+            setUploadTemplate(parsed.template);
+            sU(true);
+          }catch(err){console.error('Word parse error',err);toast(err.message||"Could not parse Word file",true);}
+        };
+        r.readAsDataURL(f);
+      }
     }else{
       toast("Unsupported file type",true);
     }
     e.target.value="";};
-  var cfU=async function(){if(!csv)return;try{await apiClient.items.bulkImport(csv,md,uploadCategory,uploadTemplate,uploadVendorKey);const all=await apiClient.items.getAll();setItems(sortItems(all));toast(md==="replace"?"Replaced "+csv.length+" "+CATEGORY_LABELS[uploadCategory].toLowerCase()+" items":"Merged "+csv.length+" "+CATEGORY_LABELS[uploadCategory].toLowerCase()+" items");}catch(e){toast(e.message,true);}sC(null);setUploadTemplate(null);sU(false);};
+  var cfU=async function(){
+    if(!csv)return;
+    try{
+      await apiClient.items.bulkImport(csv,md,uploadCategory,uploadTemplate,uploadVendorKey);
+      const results=await Promise.all([
+        apiClient.items.getAll(),
+        apiClient.settings.getAll(),
+      ]);
+      const all=results[0]||[];
+      const settingsResp=results[1]||{};
+      setItems(sortItems(all));
+      if(setCategoryTemplates){
+        var nextTemplates=settingsResp.categoryTemplates&&typeof settingsResp.categoryTemplates==="object"?settingsResp.categoryTemplates:{};
+        if(uploadTemplate&&Object.keys(nextTemplates).length===0){
+          var templateKey=normalizeVendorKey(uploadCategory,uploadVendorKey)?(normalizeCategory(uploadCategory)+":"+normalizeVendorKey(uploadCategory,uploadVendorKey)):normalizeCategory(uploadCategory);
+          nextTemplates[templateKey]=uploadTemplate;
+        }
+        setCategoryTemplates(nextTemplates);
+      }
+      toast(md==="replace"?"Replaced "+csv.length+" "+CATEGORY_LABELS[uploadCategory].toLowerCase()+" items":"Merged "+csv.length+" "+CATEGORY_LABELS[uploadCategory].toLowerCase()+" items");
+    }catch(e){
+      toast(e.message,true);
+    }
+    sC(null);setUploadTemplate(null);sU(false);
+  };
   return(<div><div style={S.card}>
     <div style={S.cH}>
       <div><div style={S.t}>Item Master</div><div style={S.d}>{sorted.length} items in {CATEGORY_LABELS[selCategory]}</div></div>
@@ -2221,14 +2689,20 @@ function ItemMaster({items,setItems,toast,suppliers}){
         <div style={S.tabs}>{ORDER_CATEGORIES.map(function(cat){return <button key={cat.id} style={Object.assign({},S.tab,selCategory===cat.id?S.tA:S.tI)} onClick={function(){setSelCategory(cat.id);setUploadCategory(cat.id);sNI(function(prev){return Object.assign({},prev,{category:cat.id});});}}>{cat.label}</button>;})}</div>
         {selCategory==="vendor_orders"&&<select style={Object.assign({},S.inp,{width:220})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setUploadVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{vendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>}
         <div style={S.sB}><Ic type="search" size={13}/><input style={S.sI} placeholder="Search..." value={sr} onChange={function(e){sSr(e.target.value);}}/></div>
-        <button style={Object.assign({},S.b,S.bS)} onClick={function(){fR.current&&fR.current.click();}}>Upload CSV/Excel</button>
+        <button style={Object.assign({},S.b,S.bS)} onClick={function(){fR.current&&fR.current.click();}}>Upload CSV/Excel/Word</button>
         <button style={Object.assign({},S.b,S.bP)} onClick={function(){sNI(function(prev){return Object.assign({},prev,{category:selCategory});});sA(true);}} disabled={selCategory==="vendor_orders"&&!selectedVendorKey}>+ Add</button>
-        <input ref={fR} type="file" accept=".csv,.txt,.xls,.xlsx" style={{display:"none"}} onChange={hF}/>
+        <input ref={fR} type="file" accept=".csv,.txt,.xls,.xlsx,.docx" style={{display:"none"}} onChange={hF}/>
       </div>
     </div>
     <div style={{display:"flex",justifyContent:"center"}}>
       <div style={Object.assign({},S.tw,{width:"100%",maxWidth:1120})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{width:40})}></th></tr></thead>
-        <tbody>{sorted.map(function(it){return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit||"-"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(it.code);}}>Del</button></td></tr>);})}{sorted.length===0&&<tr><td colSpan={5} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items</td></tr>}</tbody></table></div>
+        <tbody>{displayRows.map(function(row){
+          if(row.type==="heading"){
+            return <tr key={row.key}><td colSpan={5} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
+          }
+          var it=row.item;
+          return(<tr key={row.key}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit||"-"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(it.code);}}>Del</button></td></tr>);
+        })}{sorted.length===0&&<tr><td colSpan={5} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items</td></tr>}</tbody></table></div>
     </div>
     </div>
     {shA&&(<div style={S.ov} onClick={function(){sA(false);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
@@ -2244,10 +2718,17 @@ function ItemMaster({items,setItems,toast,suppliers}){
       <div style={S.fg}><div style={S.lb}>Category</div><select style={S.inp} value={uploadCategory} onChange={function(e){setUploadCategory(e.target.value);}}>{ORDER_CATEGORIES.map(function(cat){return <option key={cat.id} value={cat.id}>{cat.label}</option>;})}</select></div>
       {uploadCategory==="vendor_orders"&&<div style={S.fg}><div style={S.lb}>Vendor</div><select style={S.inp} value={uploadVendorKey||""} onChange={function(e){setUploadVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{vendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select></div>}
       <div style={S.fg}><div style={S.lb}>Mode</div><select style={S.inp} value={md} onChange={function(e){sMd(e.target.value);}}><option value="merge">Merge</option><option value="replace">Replace</option></select></div>
-      {uploadTemplate&&<div style={S.nI}>Template layout detected from the uploaded form. This category will use the same row/column layout for Excel output.</div>}
+      {uploadTemplate&&<div style={S.nI}>{uploadTemplate.kind==="docx_vendor_form"?"Word template layout detected. Store documents will preserve the uploaded vendor form format.":"Template layout detected from the uploaded form. This category will use the same row/column layout for document output."}</div>}
       <div style={{fontSize:11,color:"#64748B",marginBottom:6}}>Preview (first 8):</div>
       <div style={Object.assign({},S.tw,{maxHeight:180})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th></tr></thead><tbody>
-        {csv.slice(0,8).map(function(it,i){return <tr key={i}><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={S.td}>{it.category||"-"}</td><td style={S.td}>{it.unit||"-"}</td></tr>;})}</tbody></table></div>
+        {(uploadTemplate&&uploadTemplate.kind==="docx_vendor_form"?uploadPreviewRows.slice(0,12).map(function(row){
+          if(row.type==="heading"){
+            return <tr key={row.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
+          }
+          var it=row.item;
+          return <tr key={row.key}><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={S.td}>{it.category||"-"}</td><td style={S.td}>{it.unit||"-"}</td></tr>;
+        }):csv.slice(0,8).map(function(it,i){return <tr key={i}><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={S.td}>{it.category||"-"}</td><td style={S.td}>{it.unit||"-"}</td></tr>;}) )}
+      </tbody></table></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sU(false);sC(null);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={cfU}>Confirm</button></div></div></div>)}
   </div>);
 }

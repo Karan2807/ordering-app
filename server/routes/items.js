@@ -2,6 +2,7 @@ import express from 'express';
 import { authMiddleware } from '../auth.js';
 import Item from '../models/item.js';
 import Setting from '../models/setting.js';
+import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
 const router = express.Router();
 const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders'];
@@ -18,6 +19,69 @@ function normalizeVendorKey(category, vendorKey) {
 
 function normalizeTemplatePayload(template) {
   if (!template || typeof template !== 'object') return null;
+  const kind = String(template.kind || '').trim();
+  if (kind === 'docx_vendor_form') {
+    const originalFile = template.originalFile && typeof template.originalFile === 'object'
+      ? {
+          filename: String(template.originalFile.filename || '').trim(),
+          contentType: String(template.originalFile.contentType || '').trim(),
+          base64: String(template.originalFile.base64 || '').trim(),
+        }
+      : null;
+    const docxMap = template.docxMap && typeof template.docxMap === 'object'
+      ? {
+          storeParagraphIndex: Number.isInteger(template.docxMap.storeParagraphIndex) ? template.docxMap.storeParagraphIndex : null,
+          dateParagraphIndex: Number.isInteger(template.docxMap.dateParagraphIndex) ? template.docxMap.dateParagraphIndex : null,
+          outline: Array.isArray(template.docxMap.outline)
+            ? template.docxMap.outline
+                .map((entry) => ({
+                  type: String(entry && entry.type || '').trim(),
+                  text: String(entry && entry.text || '').trim(),
+                  code: String(entry && entry.code || '').trim(),
+                  name: String(entry && entry.name || '').trim(),
+                  paragraphIndex: Number.isInteger(entry && entry.paragraphIndex) ? entry.paragraphIndex : null,
+                }))
+                .filter((entry) => (
+                  entry.paragraphIndex != null &&
+                  (
+                    (entry.type === 'heading' && entry.text) ||
+                    (entry.type === 'item' && entry.code && entry.name)
+                  )
+                ))
+            : [],
+          itemRows: Array.isArray(template.docxMap.itemRows)
+            ? template.docxMap.itemRows
+                .map((row) => ({
+                  code: String(row && row.code || '').trim(),
+                  name: String(row && row.name || '').trim(),
+                  paragraphIndex: Number.isInteger(row && row.paragraphIndex) ? row.paragraphIndex : null,
+                  sep1: String(row && row.sep1 || ''),
+                  qty: String(row && row.qty || ''),
+                  sep2: String(row && row.sep2 || ''),
+                }))
+                .filter((row) => row.code && row.name && row.paragraphIndex != null)
+            : [],
+        }
+      : null;
+    if (!originalFile || !originalFile.base64 || !docxMap || !Array.isArray(docxMap.itemRows) || docxMap.itemRows.length === 0) {
+      return null;
+    }
+    return {
+      kind: 'docx_vendor_form',
+      sourceFilename: String(template.sourceFilename || '').trim(),
+      uiHeaders: template.uiHeaders && typeof template.uiHeaders === 'object'
+        ? {
+            item: String(template.uiHeaders.item || '').trim(),
+            quantity: String(template.uiHeaders.quantity || '').trim(),
+            note: String(template.uiHeaders.note || '').trim(),
+            total: String(template.uiHeaders.total || '').trim(),
+            date: String(template.uiHeaders.date || '').trim(),
+          }
+        : null,
+      docxMap,
+      originalFile,
+    };
+  }
   if (!Array.isArray(template.rows) || !Array.isArray(template.itemRows) || !Array.isArray(template.storeColumns)) {
     return null;
   }
@@ -79,6 +143,37 @@ function normalizeTemplatePayload(template) {
       : null,
   };
 }
+
+router.post('/template/parse', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const { filename, contentType, base64, category, vendorKey } = req.body || {};
+    const resolvedCategory = normalizeCategory(category);
+    const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+    if (resolvedCategory !== 'vendor_orders' || !resolvedVendorKey) {
+      return res.status(400).json({ error: 'Word template parsing is supported only for vendor orders' });
+    }
+    const resolvedFilename = String(filename || '').trim();
+    if (!resolvedFilename.toLowerCase().endsWith('.docx')) {
+      return res.status(400).json({ error: 'Only .docx templates are supported' });
+    }
+    const buffer = Buffer.from(String(base64 || '').trim(), 'base64');
+    if (!buffer.length) {
+      return res.status(400).json({ error: 'Template file is empty' });
+    }
+    const parsed = await parseVendorDocxTemplate({
+      buffer,
+      filename: resolvedFilename,
+      contentType: String(contentType || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    });
+    res.json(parsed);
+  } catch (err) {
+    console.error('Parse template error:', err);
+    res.status(500).json({ error: 'Could not parse Word template' });
+  }
+});
 
 // Get all items
 router.get('/', async (req, res) => {
@@ -167,12 +262,18 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
     }
 
     const toInsert = [];
+    const seenCodes = new Set();
     for (const item of items) {
       const { code, name, category: itemCategory, vendorKey: itemVendorKey, unit } = item;
       if (code && name) {
+        const normalizedCode = String(code).trim();
+        if (!normalizedCode || seenCodes.has(normalizedCode)) {
+          continue;
+        }
+        seenCodes.add(normalizedCode);
         const nextCategory = normalizeCategory(itemCategory || resolvedCategory);
         toInsert.push({
-          code,
+          code: normalizedCode,
           name,
           category: nextCategory,
           vendorKey: normalizeVendorKey(nextCategory, itemVendorKey || resolvedVendorKey),
@@ -181,7 +282,16 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
       }
     }
     if (toInsert.length) {
-      await Item.insertMany(toInsert, { ordered: false });
+      await Item.bulkWrite(
+        toInsert.map((item) => ({
+          updateOne: {
+            filter: { code: item.code },
+            update: { $set: item },
+            upsert: true,
+          },
+        })),
+        { ordered: false }
+      );
     }
 
     const normalizedTemplate = normalizeTemplatePayload(template);
@@ -193,7 +303,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
       );
     }
 
-    res.json({ success: true, imported: items.length, category: resolvedCategory, vendorKey: resolvedVendorKey });
+    res.json({ success: true, imported: toInsert.length, category: resolvedCategory, vendorKey: resolvedVendorKey });
   } catch (err) {
     console.error('Bulk import error:', err);
     res.status(500).json({ error: 'Server error' });

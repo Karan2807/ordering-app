@@ -121,6 +121,12 @@ export const apiClient = {
         body: JSON.stringify({ items, mode, category, template, vendorKey }),
       });
     },
+    parseTemplate(data) {
+      return apiClient.request('/items/template/parse', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
   },
 
   // Orders
@@ -199,6 +205,14 @@ export const apiClient = {
       if (date) body.date = date;
       if (itemNames && typeof itemNames === 'object') body.itemNames = itemNames;
       return apiClient.request('/orders/store-order/excel-preview', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+    emailVendorIndividual(vendorKey, emailOrEmails, supplierName) {
+      const body = Array.isArray(emailOrEmails) ? { emails: emailOrEmails } : { email: emailOrEmails };
+      if (supplierName) body.supplierName = supplierName;
+      return apiClient.request(`/orders/vendor-orders/${encodeURIComponent(vendorKey)}/email-individual`, {
         method: 'POST',
         body: JSON.stringify(body),
       });
