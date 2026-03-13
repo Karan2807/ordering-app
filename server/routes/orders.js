@@ -350,9 +350,11 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
       .lean();
     if (windowOrder) return windowOrder;
   }
-  const latest = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey }).sort({ createdAt: -1 }).lean();
+  const latest = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey })
+    .sort({ submittedAt: -1, createdAt: -1 })
+    .lean();
   if (!latest) return null;
-  const latestWeek = getIsoWeekKeyForDate(latest.createdAt || latest.submittedAt || new Date());
+  const latestWeek = getIsoWeekKeyForDate(latest.submittedAt || latest.createdAt || new Date());
   return latestWeek === weekKey ? latest : null;
 }
 
