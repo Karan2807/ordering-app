@@ -158,26 +158,33 @@ export const apiClient = {
       });
     },
 
-    getConsolidated(type) {
-      return apiClient.request(`/orders/consolidated/${type}`);
+    getConsolidated(type, category, vendorKey, week) {
+      const params = new URLSearchParams();
+      if (category) params.set('category', category);
+      if (vendorKey) params.set('vendorKey', vendorKey);
+      if (week) params.set('week', week);
+      const query = params.toString();
+      return apiClient.request(`/orders/consolidated/${type}${query ? `?${query}` : ''}`);
     },
 
-    emailConsolidated(type, category, vendorKey, emailOrEmails, supplierName, reopenedFromId, splitData) {
+    emailConsolidated(type, category, vendorKey, emailOrEmails, supplierName, reopenedFromId, splitData, week) {
       const body = Array.isArray(emailOrEmails) ? { emails: emailOrEmails } : { email: emailOrEmails };
       body.category = category || 'vegetables';
       if (vendorKey) body.vendorKey = vendorKey;
       if (supplierName) body.supplierName = supplierName;
       if (reopenedFromId) body.reopenedFromId = reopenedFromId;
       if (splitData) body.splitData = splitData;
+      if (week) body.week = week;
       return apiClient.request(`/orders/consolidated/${type}/email`, {
         method: 'POST',
         body: JSON.stringify(body),
       });
     },
-    consolidatedExcelPreview(type, category, vendorKey, splitData) {
+    consolidatedExcelPreview(type, category, vendorKey, splitData, week) {
       const body = { category: category || 'vegetables' };
       if (vendorKey) body.vendorKey = vendorKey;
       if (splitData) body.splitData = splitData;
+      if (week) body.week = week;
       return apiClient.request(`/orders/consolidated/${type}/excel-preview`, {
         method: 'POST',
         body: JSON.stringify(body),

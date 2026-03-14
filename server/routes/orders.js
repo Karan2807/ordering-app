@@ -14,6 +14,21 @@ import { sendManualReminders } from '../services/reminderScheduler.js';
 import { sendGraphMail } from '../services/msSendMail.js';
 import { renderVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
+async function clearVendorOrdersOpenIfMatching(vendorKey) {
+  const normalizedVendorKey = String(vendorKey || '').trim();
+  if (!normalizedVendorKey) return null;
+
+  const currentSetting = await Setting.findOne({ key: 'vendorOrdersOpenVendor' }).lean();
+  const currentVendorKey = currentSetting && currentSetting.value ? String(currentSetting.value).trim() : null;
+
+  if (currentVendorKey && currentVendorKey === normalizedVendorKey) {
+    await Setting.deleteOne({ key: 'vendorOrdersOpenVendor' });
+    return null;
+  }
+
+  return currentVendorKey;
+}
+
 // create a simple transporter; prefer Outlook settings, then generic SMTP URL,
 // then Gmail credentials. Otherwise fall back to a console logger (jsonTransport).
 let transportConfig = process.env.SMTP_URL;
@@ -253,6 +268,12 @@ function getWeekKey() {
 function getIsoWeekKeyForDate(value) {
   const d = new Date(value);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function normalizeRequestedWeekKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  return /^\d{4}-\d{2}-\d{2}(?:-M\d+)?$/.test(raw) ? raw : null;
 }
 
 async function getManualOpenState() {
@@ -691,12 +712,13 @@ async function rowsToPlainExcelBuffer(rows) {
   return Buffer.from(out);
 }
 
-async function buildConsolidatedExcelPayload(type, category, vendorKey, splitData) {
+async function buildConsolidatedExcelPayload(type, category, vendorKey, splitData, requestedWeekKey = null) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const weekBase = getWeekKey();
   const mo = await getManualOpenState();
-  const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+  const resolvedRequestedWeekKey = normalizeRequestedWeekKey(requestedWeekKey);
+  const weekKey = resolvedRequestedWeekKey || composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
   const stores = await getStoresForConsolidatedWindow(type, resolvedCategory, resolvedVendorKey, weekKey, weekBase);
   const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
   const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [it.code, it.name]));
@@ -976,11 +998,15 @@ router.get('/', authMiddleware, async (req, res) => {
 // Create or update order
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { type, category, vendorKey, items = {}, notes = {}, status, storeId: bodyStoreId } = req.body;
+    const { type, category, vendorKey, items = {}, notes = {}, status, storeId: bodyStoreId, week: bodyWeek } = req.body;
     // allow admin to specify a different store when creating/updating
     const storeId = req.user.role === 'admin' && bodyStoreId ? bodyStoreId : req.user.storeId;
     const resolvedCategory = normalizeCategory(category);
     const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+    const requestedWeekKey = normalizeRequestedWeekKey(bodyWeek);
+    if (bodyWeek && !requestedWeekKey) {
+      return res.status(400).json({ error: 'Invalid week key' });
+    }
     if (resolvedCategory === 'vendor_orders' && !resolvedVendorKey) {
       return res.status(400).json({ error: 'vendorKey is required for vendor orders' });
     }
@@ -993,7 +1019,10 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
-    const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+    const weekKey =
+      req.user.role === 'admin' && requestedWeekKey
+        ? requestedWeekKey
+        : composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
     const normalizedItems = normalizeOrderItems(items, notes);
     const now = new Date();
     const orderId = uuidv4();
@@ -1076,9 +1105,13 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
 
     const category = normalizeCategory(req.query.category);
     const vendorKey = normalizeVendorKey(category, req.query.vendorKey);
+    const requestedWeekKey = normalizeRequestedWeekKey(req.query.week);
+    if (req.query.week && !requestedWeekKey) {
+      return res.status(400).json({ error: 'Invalid week key' });
+    }
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
-    const weekKey = composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
+    const weekKey = requestedWeekKey || composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
     const stores = await getStoresForConsolidatedWindow(req.params.type, category, vendorKey, weekKey, weekBase);
     const response = [];
 
@@ -1121,15 +1154,19 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const { email, emails, supplierName, reopenedFromId, splitData, category, vendorKey } = req.body;
+    const { email, emails, supplierName, reopenedFromId, splitData, category, vendorKey, week } = req.body;
     const resolvedCategory = normalizeCategory(category);
     const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+    const requestedWeekKey = normalizeRequestedWeekKey(week);
+    if (week && !requestedWeekKey) {
+      return res.status(400).json({ error: 'Invalid week key' });
+    }
     const recipients = normalizeRecipientEmails(email, emails);
     if (recipients.length === 0) return res.status(400).json({ error: 'At least one recipient email is required' });
     // supplierName is optional here; frontend will send when available
 
     const { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename } =
-      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, splitData);
+      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, splitData, requestedWeekKey);
     const supplierDisplayName = (supplierName || 'Supplier').trim();
     let body = 'Please find attached the consolidated order';
 
@@ -1146,6 +1183,11 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
       ],
     });
 
+    const finishedFlag = splitData && typeof splitData.finished === 'boolean' ? splitData.finished : true;
+    const vendorOrdersOpenVendorState =
+      resolvedCategory === 'vendor_orders' && finishedFlag
+        ? await clearVendorOrdersOpenIfMatching(resolvedVendorKey)
+        : undefined;
     let supplierOrder = null;
     try {
       const totalObj = {};
@@ -1168,7 +1210,6 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
           }
         });
       }
-      const finishedFlag = splitData && typeof splitData.finished === 'boolean' ? splitData.finished : true;
       supplierOrder = await SupplierOrder.create({
         supplierName: supplierDisplayName,
         email: recipients.join(', '),
@@ -1190,6 +1231,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
+      vendorOrdersOpenVendor: vendorOrdersOpenVendorState,
       supplierOrder: supplierOrder
         ? {
             _id: supplierOrder._id,
@@ -1224,12 +1266,17 @@ router.post('/consolidated/:type/excel-preview', authMiddleware, async (req, res
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const { splitData, category, vendorKey } = req.body || {};
+    const { splitData, category, vendorKey, week } = req.body || {};
+    const requestedWeekKey = normalizeRequestedWeekKey(week);
+    if (week && !requestedWeekKey) {
+      return res.status(400).json({ error: 'Invalid week key' });
+    }
     const { excelBuffer, excelFilename } = await buildConsolidatedExcelPayload(
       req.params.type,
       normalizeCategory(category),
       normalizeVendorKey(category, vendorKey),
-      splitData
+      splitData,
+      requestedWeekKey
     );
     res.json({
       success: true,
@@ -1375,6 +1422,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
     });
 
     let supplierOrder = null;
+    const vendorOrdersOpenVendorState = await clearVendorOrdersOpenIfMatching(vendorKey);
     try {
       supplierOrder = await SupplierOrder.create({
         supplierName: String(supplierName || vendorKey).trim(),
@@ -1395,6 +1443,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
     res.json({
       success: true,
       attachmentsCount: attachments.length,
+      vendorOrdersOpenVendor: vendorOrdersOpenVendorState,
       supplierOrder: supplierOrder
         ? {
             _id: supplierOrder._id,

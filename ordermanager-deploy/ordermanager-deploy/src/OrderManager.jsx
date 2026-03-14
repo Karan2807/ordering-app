@@ -338,9 +338,45 @@ function buildOrderStateMap(list){
     var category=normalizeCategory(o.category);
     var vendorKey=normalizeVendorKey(category,o.vendorKey);
     var key=o.storeId+"_"+o.week+"-"+o.type+"-"+categoryKey(category,vendorKey);
-    orderMap[key]={id:o.id,items:o.items||{},notes:o.notes||{},status:o.status,store:o.storeId,type:o.type,category:category,vendorKey:vendorKey,date:o.date||o.submittedAt||o.createdAt||new Date().toISOString(),submittedAt:o.submittedAt||null,createdAt:o.createdAt||null};
+    orderMap[key]={id:o.id,items:o.items||{},notes:o.notes||{},status:o.status,store:o.storeId,type:o.type,category:category,vendorKey:vendorKey,week:o.week||null,date:o.date||o.submittedAt||o.createdAt||new Date().toISOString(),submittedAt:o.submittedAt||null,createdAt:o.createdAt||null};
   });
   return orderMap;
+}
+function orderStateKey(storeId, week, type, category, vendorKey){
+  return String(storeId||"")+"_"+String(week||"")+"-"+String(type||"")+"-"+categoryKey(category,vendorKey);
+}
+function getStoreOrderForWeek(orderMap, storeId, week, type, category, vendorKey){
+  if(!storeId||!week) return null;
+  var key=orderStateKey(storeId,week,type,category,vendorKey);
+  return orderMap&&orderMap[key]?orderMap[key]:null;
+}
+function orderTimestampMs(order){
+  var raw=order&&(order.submittedAt||order.date||order.createdAt);
+  var ts=new Date(raw||0).getTime();
+  return Number.isNaN(ts)?0:ts;
+}
+function findLatestMatchingOrder(orderMap, storeIds, type, category, vendorKey, statusMap, maxAgeMs){
+  var ids=Array.isArray(storeIds)?storeIds.filter(Boolean).map(function(v){return String(v);}):[];
+  var filterByStore=ids.length>0;
+  var byStore={};
+  ids.forEach(function(id){byStore[id]=true;});
+  var nowTs=Date.now();
+  var best=null;
+  Object.values(orderMap||{}).forEach(function(o){
+    if(!o) return;
+    if(filterByStore&&!byStore[String(o.store||"")]) return;
+    if(String(o.type||"")!==String(type||"")) return;
+    if(normalizeCategory(o.category||"vegetables")!==normalizeCategory(category)) return;
+    if(normalizeVendorKey(category,o.vendorKey)!==normalizeVendorKey(category,vendorKey)) return;
+    if(statusMap&&!statusMap[String(o.status||"")]) return;
+    var ts=orderTimestampMs(o);
+    if(!ts) return;
+    if(maxAgeMs!=null&&(nowTs-ts)>maxAgeMs) return;
+    if(!best||ts>best.ts){
+      best={order:o,ts:ts,week:o.week||null};
+    }
+  });
+  return best;
 }
 function getTemplateForCategory(categoryTemplates, category, vendorKey){
   var cat=normalizeCategory(category);
@@ -1521,7 +1557,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
 }
 
 /* ═══ CONSOLIDATED ═══ */
-function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendor,consolidatedType,setConsolidatedType,reopenedFromId,setReopenedFromId}){
+function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendor,setVendorOrdersOpenVendor,consolidatedType,setConsolidatedType,reopenedFromId,setReopenedFromId}){
   var _v=useState(consolidatedType||aot||"A"),vt=_v[0],sVt=_v[1];
   var _cat=useState("vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
   var _vk=useState(null),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
@@ -1560,10 +1596,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     }
     return slot.apna+vt;
   };
-  var dk=dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
+  var scheduledGroupKey=dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
   var isSingleVendorFlow=selCategory==="vendor_orders";
   var logKeySuffix="-"+currentType+"-"+categoryKey(selCategory,resolvedVendorKey);
-  var logWeekKey=dk.endsWith(logKeySuffix)?dk.slice(0,dk.length-logKeySuffix.length):dk;
+  var scheduledWeekKey=scheduledGroupKey.endsWith(logKeySuffix)?scheduledGroupKey.slice(0,scheduledGroupKey.length-logKeySuffix.length):scheduledGroupKey;
   var storesForConsolidated=useMemo(function(){
     var map={};
     (stores||[]).forEach(function(st){
@@ -1582,6 +1618,9 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     return Object.values(map).sort(function(a,b){return String(a.name||a.id||"").localeCompare(String(b.name||b.id||""),undefined,{sensitivity:"base"});});
   },[stores,orders,currentType,selCategory,resolvedVendorKey]);
   var slots=useMemo(function(){return mapStoresToTemplateSlots(storesForConsolidated);},[storesForConsolidated]);
+  var visibleStoreIds=useMemo(function(){
+    return (slots||[]).filter(function(sl){return !!(sl&&sl.store&&sl.store.id);}).map(function(sl){return sl.store.id;});
+  },[slots]);
   var supplierList=suppliersForCategory(suppliers,selCategory);
   var filteredSupplierList=useMemo(function(){
     var q=String(supplierSearch||"").trim().toLowerCase();
@@ -1607,45 +1646,49 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setStep(1);
     }
   },[vendorOrdersOpenVendor,selCategory]);
-  var getStoreOrder=function(storeId){return getCurrentOrderForStoreType(orders,storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);};
   var supplierById=useMemo(function(){var m={};supplierList.forEach(function(s){m[s.id]=s;});return m;},[supplierList]);
   var selectedVendor=supplierById[resolvedVendorKey]||null;
   var primaryOpenType=(consolidatedType||aot||null);
+  var visibleStatus={submitted:true,draft_shared:true,processed:true};
+  var hasFinishedLogForWeek=function(type,week){
+    return (logs||[]).some(function(l){
+      return l
+        && String(l.type||"")===String(type||"")
+        && normalizeCategory(l.category||"vegetables")===normalizeCategory(selCategory)
+        && String(l.week||"")===String(week||"")
+        && String(l.vendorKey||"")===String(resolvedVendorKey||"")
+        && l.finished===true;
+    });
+  };
+  var latestCurrentTypeInfo=useMemo(function(){
+    return findLatestMatchingOrder(orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey,visibleStatus,24*60*60*1000);
+  },[orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey]);
+  var activeWeekKey=useMemo(function(){
+    if(isSingleVendorFlow) return scheduledWeekKey;
+    if(!latestCurrentTypeInfo||!latestCurrentTypeInfo.week) return scheduledWeekKey;
+    if(String(latestCurrentTypeInfo.week||"")===String(scheduledWeekKey||"")) return latestCurrentTypeInfo.week;
+    if(hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)) return scheduledWeekKey;
+    return latestCurrentTypeInfo.week;
+  },[isSingleVendorFlow,scheduledWeekKey,latestCurrentTypeInfo,currentType,logs,selCategory,resolvedVendorKey]);
+  var activeGroupKey=activeWeekKey+logKeySuffix;
+  var getStoreOrder=function(storeId){
+    var exact=getStoreOrderForWeek(orders,storeId,activeWeekKey,currentType,selCategory,resolvedVendorKey);
+    if(exact) return exact;
+    return getCurrentOrderForStoreType(orders,storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
+  };
   var carryOpenType=useMemo(function(){
     if(selCategory==="vendor_orders") return null;
-    var visibleStatus={submitted:true,draft_shared:true,processed:true};
-    var nowTs=Date.now();
     var bestType=null;
     var bestTs=0;
     ["A","B","C"].forEach(function(t){
-      var suffix="-"+t+"-"+categoryKey(selCategory,resolvedVendorKey);
-      var dkType=dateKey(t,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
-      var weekKeyType=dkType.endsWith(suffix)?dkType.slice(0,dkType.length-suffix.length):dkType;
-      var latestLog=(logs||[])
-        .filter(function(l){
-          if(!l) return false;
-          if(String(l.type||"")!==String(t)) return false;
-          if(normalizeCategory(l.category||"vegetables")!==normalizeCategory(selCategory)) return false;
-          if(String(l.week||"")!==String(weekKeyType||"")) return false;
-          if(String(l.vendorKey||"")!==String(resolvedVendorKey||"")) return false;
-          return true;
-        })
-        .sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);})[0]||null;
-      if(latestLog&&latestLog.finished===true) return;
-      var latestVisibleTs=0;
-      slots.forEach(function(sl){
-        if(!sl.store) return;
-        var so=getCurrentOrderForStoreType(orders,sl.store.id,t,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);
-        if(!so||!visibleStatus[String(so.status||"")]) return;
-        var ts=new Date(so.date||0).getTime();
-        if(!Number.isNaN(ts)&&ts>latestVisibleTs) latestVisibleTs=ts;
-      });
-      if(!latestVisibleTs) return;
-      if((nowTs-latestVisibleTs)>(24*60*60*1000)) return;
-      if(latestVisibleTs>bestTs){bestTs=latestVisibleTs;bestType=t;}
+      if(primaryOpenType&&t===primaryOpenType) return;
+      var latestInfo=findLatestMatchingOrder(orders,visibleStoreIds,t,selCategory,resolvedVendorKey,visibleStatus,24*60*60*1000);
+      if(!latestInfo||!latestInfo.week) return;
+      if(hasFinishedLogForWeek(t,latestInfo.week)) return;
+      if(latestInfo.ts>bestTs){bestTs=latestInfo.ts;bestType=t;}
     });
     return bestType;
-  },[selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,logs,slots,orders]);
+  },[selCategory,resolvedVendorKey,primaryOpenType,logs,visibleStoreIds,orders]);
   var allowedOpenTypes=useMemo(function(){
     var out=[];
     if(primaryOpenType) out.push(primaryOpenType);
@@ -1665,7 +1708,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     setStep(1);setSavedRows([]);setSplitSupplierIds([]);setItemOverrides({});setSentSplitBySupplier({});
     setEditingAll(false);setEditQtyByStore({});setEditNotesByStore({});
     setVendorSendMode("individual");
-  },[dk]);
+  },[activeGroupKey]);
   useEffect(function(){ setSupplierSearch(""); },[selCategory,vt,resolvedVendorKey,step]);
   useEffect(function(){
     if(selCategory==="vendor_orders") return;
@@ -1704,7 +1747,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       });
       return {code:it.code,name:it.name,qtyByStoreId:qtyByStoreId,total:total,note:noteParts.join(" | ")};
     });
-  },[items,orders,slots,currentType,selCategory,manualOpenOrder,manualOpenSeq,resolvedVendorKey,activeTemplate]);
+  },[items,orders,slots,currentType,selCategory,manualOpenOrder,manualOpenSeq,resolvedVendorKey,activeTemplate,activeWeekKey]);
   var vendorStoreDocs=useMemo(function(){
     if(!isSingleVendorFlow||!resolvedVendorKey) return [];
     return (slots||[]).filter(function(sl){return !!(sl&&sl.store);}).map(function(sl){
@@ -1716,7 +1759,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       }).length:0;
       return {slot:sl,store:sl.store,order:order,lineCount:lineCount,ready:hasVisible&&lineCount>0};
     }).filter(function(row){return row.ready;});
-  },[isSingleVendorFlow,resolvedVendorKey,slots,orders,currentType,selCategory,manualOpenOrder,manualOpenSeq]);
+  },[isSingleVendorFlow,resolvedVendorKey,slots,orders,currentType,selCategory,manualOpenOrder,manualOpenSeq,activeWeekKey]);
   var vendorPendingCount=useMemo(function(){
     if(!isSingleVendorFlow||!resolvedVendorKey) return 0;
     return (slots||[]).filter(function(sl){
@@ -1724,7 +1767,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var order=getStoreOrder(sl.store.id);
       return !(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
     }).length;
-  },[isSingleVendorFlow,resolvedVendorKey,slots,orders,currentType,selCategory,manualOpenOrder,manualOpenSeq]);
+  },[isSingleVendorFlow,resolvedVendorKey,slots,orders,currentType,selCategory,manualOpenOrder,manualOpenSeq,activeWeekKey]);
   var vendorStoreDialogDisplayRows=useMemo(function(){
     if(!vendorStoreDialogRow||!vendorStoreDialogRow.store) return [];
     var sid=vendorStoreDialogRow.store.id;
@@ -1771,15 +1814,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         var notes=Object.assign({},editNotesByStore[sid]||{});
         var existing=getStoreOrder(sid)||{};
         var nextStatus=(existing.status==="submitted"||existing.status==="processed"||existing.status==="draft_shared")?existing.status:"draft";
-        var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:sid});
-        return {sid:sid,orderId:resp&&resp.orderId,qty:qty,notes:notes,status:nextStatus};
+        var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:sid,week:activeWeekKey});
+        return {sid:sid,orderId:resp&&resp.orderId,qty:qty,notes:notes,status:nextStatus,existing:existing};
       }));
       setOrders(function(prev){
         var n=Object.assign({},prev);
         results.forEach(function(r){
-          var k=r.sid+"_"+dk;
+          var k=r.sid+"_"+activeGroupKey;
           n[k]=Object.assign({},prev[k]||{},{
-            id:r.orderId||(prev[k]||{}).id,
+            id:r.orderId||(prev[k]||{}).id||((r.existing&&r.existing.id)||null),
             items:Object.assign({},r.qty),
             notes:Object.assign({},r.notes),
             status:r.status,
@@ -1787,7 +1830,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
             type:currentType,
             category:selCategory,
             vendorKey:resolvedVendorKey,
-            date:(prev[k]||{}).date||new Date().toISOString()
+            week:activeWeekKey,
+            date:(prev[k]||{}).date||(r.existing&&r.existing.date)||new Date().toISOString(),
+            submittedAt:(prev[k]||{}).submittedAt||((r.existing&&r.existing.submittedAt)||null),
+            createdAt:(prev[k]||{}).createdAt||((r.existing&&r.existing.createdAt)||null)
           });
         });
         return n;
@@ -1805,22 +1851,22 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       if(!l) return false;
       var sameType=String(l.type||"")===String(currentType||"");
       var sameCategory=normalizeCategory(l.category||"vegetables")===normalizeCategory(selCategory);
-      var sameWeek=String(l.week||"")===String(logWeekKey||"");
+      var sameWeek=String(l.week||"")===String(activeWeekKey||"");
       var sameVendor=String(l.vendorKey||"")===String(resolvedVendorKey||"");
       return sameType&&sameCategory&&sameWeek&&sameVendor;
     });
     filtered.sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);});
     return filtered[0]||null;
-  },[logs,currentType,selCategory,logWeekKey,resolvedVendorKey]);
+  },[logs,currentType,selCategory,activeWeekKey,resolvedVendorKey]);
   var leavesSentThisWeek=useMemo(function(){
     return (logs||[]).some(function(l){
       return l
         && String(l.type||"") === "B"
         && normalizeCategory(l.category||"vegetables") === "leaves"
-        && String(l.week||"")===String(logWeekKey||"")
+        && String(l.week||"")===String(activeWeekKey||"")
         && l.finished===true;
     });
-  },[logs,logWeekKey]);
+  },[logs,activeWeekKey]);
   var latestVisibleOrderAt=useMemo(function(){
     var latest=0;
     slots.forEach(function(sl){
@@ -1828,11 +1874,11 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var so=getStoreOrder(sl.store.id);
       if(!so) return;
       if(["submitted","draft_shared","processed"].indexOf(String(so.status||""))<0) return;
-      var ts=new Date(so.date||0).getTime();
-      if(!Number.isNaN(ts)&&ts>latest) latest=ts;
+      var ts=orderTimestampMs(so);
+      if(ts>latest) latest=ts;
     });
     return latest>0?latest:null;
-  },[slots,orders,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq]);
+  },[slots,orders,currentType,selCategory,resolvedVendorKey,activeWeekKey]);
   var unsentLockExpired=useMemo(function(){
     if(latestTypeLog&&latestTypeLog.finished===true) return false;
     if(!latestVisibleOrderAt) return false;
@@ -1846,7 +1892,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     return Math.ceil(remainMs/(60*60*1000));
   },[latestTypeLog,latestVisibleOrderAt]);
   var isCompletedLocked=(!reopenedFromId)&&(forceCompletedLock||!!(latestTypeLog&&latestTypeLog.finished===true)||unsentLockExpired);
-  useEffect(function(){ setForceCompletedLock(false); },[currentType,selCategory,logWeekKey]);
+  useEffect(function(){ setForceCompletedLock(false); },[currentType,selCategory,activeWeekKey]);
   useEffect(function(){ if(isCompletedLocked&&step!==1){ setStep(1); } },[isCompletedLocked,step]);
   var parsePct=function(v){
     var s=String(v||"").replace(/[^0-9]/g,"");
@@ -2000,11 +2046,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var payloadRows=rows.map(function(r){return {itemCode:r.code,itemName:r.name,note:r.note||"",total:r.total||0,qtyByStoreId:r.qtyByStoreId};});
       var nextSent=Object.assign({},sentSplitBySupplier);nextSent[sid]=true;
       var isFinal=splitSupplierIds.length>0 && splitSupplierIds.every(function(id){return nextSent[id];});
-      await apiClient.orders.emailConsolidated(currentType,selCategory,resolvedVendorKey,recipientEmails,supplier.name,reopenedFromId,{rows:payloadRows,finished:isFinal});
+      var resp=await apiClient.orders.emailConsolidated(currentType,selCategory,resolvedVendorKey,recipientEmails,supplier.name,reopenedFromId,{rows:payloadRows,finished:isFinal},activeWeekKey);
       toast("Email sent to "+recipientEmails.join(", "));
       var latestLogs=await apiClient.supplierOrders.getAll();
       setLogs(latestLogs||[]);
       setSentSplitBySupplier(nextSent);
+      if(isSingleVendorFlow&&setVendorOrdersOpenVendor&&resp&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendor")){
+        setVendorOrdersOpenVendor(resp.vendorOrdersOpenVendor||null);
+      }
       if(isFinal){
         setForceCompletedLock(true);
         setStep(1);
@@ -2066,11 +2115,12 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         items:vendorStoreDialogQty,
         notes:vendorStoreDialogNotes,
         status:nextStatus,
-        storeId:vendorStoreDialogRow.store.id
+        storeId:vendorStoreDialogRow.store.id,
+        week:activeWeekKey
       });
       setOrders(function(prev){
         var n=Object.assign({},prev);
-        var key=vendorStoreDialogRow.store.id+"_"+dk;
+        var key=vendorStoreDialogRow.store.id+"_"+activeGroupKey;
         n[key]=Object.assign({},prev[key]||{},{
           id:(prev[key]||{}).id||existing.id,
           items:Object.assign({},vendorStoreDialogQty),
@@ -2080,7 +2130,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           type:currentType,
           category:selCategory,
           vendorKey:resolvedVendorKey,
-          date:(prev[key]||{}).date||existing.date||new Date().toISOString()
+          week:activeWeekKey,
+          date:(prev[key]||{}).date||existing.date||new Date().toISOString(),
+          submittedAt:(prev[key]||{}).submittedAt||(existing.submittedAt||null),
+          createdAt:(prev[key]||{}).createdAt||(existing.createdAt||null)
         });
         return n;
       });
@@ -2099,14 +2152,45 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(!vendorStoreDocs.length){toast("No submitted store documents ready for this vendor",true);return;}
     sEMailing(true);
     try{
-      await apiClient.orders.emailVendorIndividual(selectedVendor.id,recipientEmails,selectedVendor.name);
+      var resp=await apiClient.orders.emailVendorIndividual(selectedVendor.id,recipientEmails,selectedVendor.name);
       var latestLogs=await apiClient.supplierOrders.getAll();
       setLogs(latestLogs||[]);
+      if(setVendorOrdersOpenVendor&&resp&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendor")){
+        setVendorOrdersOpenVendor(resp.vendorOrdersOpenVendor||null);
+      }
       if(setReopenedFromId) setReopenedFromId(null);
       toast("Individual store documents sent to "+selectedVendor.name);
       setStep(1);
     }catch(e){toast(e.message||"Failed to send vendor documents",true);}
     finally{sEMailing(false);}
+  };
+  var processOrder=async function(){
+    try{
+      var processedStoreIds={};
+      var tasks=(vendorStoreDocs||[]).filter(function(row){
+        var order=row&&row.order;
+        return !!(row&&row.store&&order&&order.id&&(order.status==="submitted"||order.status==="draft_shared"));
+      }).map(function(row){
+        processedStoreIds[row.store.id]=true;
+        return apiClient.orders.process(row.order.id);
+      });
+      if(!tasks.length){
+        toast("All ready store orders are already processed");
+        return;
+      }
+      await Promise.all(tasks);
+      setOrders(function(prev){
+        var n=Object.assign({},prev);
+        Object.keys(processedStoreIds).forEach(function(storeId){
+          var key=storeId+"_"+activeGroupKey;
+          if(n[key]){
+            n[key]=Object.assign({},n[key],{status:"processed"});
+          }
+        });
+        return n;
+      });
+      toast((selectedVendor&&selectedVendor.name?selectedVendor.name+" store orders":"Store orders")+" marked processed");
+    }catch(e){toast(e.message||"Failed to mark store orders processed",true);}
   };
   var downloadSplitExcel=async function(sid){
     var rows=splitRowsBySupplier[sid]||[];
@@ -2115,7 +2199,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     try{
       setDownloadingSplit(function(prev){var n=Object.assign({},prev);n[sid]=true;return n;});
       var payloadRows=rows.map(function(r){return {itemCode:r.code,itemName:r.name,note:r.note||"",total:r.total||0,qtyByStoreId:r.qtyByStoreId};});
-      var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,{rows:payloadRows});
+      var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,{rows:payloadRows},activeWeekKey);
       if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
       var b64=resp.excelBase64;
       var bin=atob(b64);
@@ -2176,7 +2260,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     {selCategory==="leaves"&&vt==="B"&&!leavesSentThisWeek&&<div style={S.nP}>Leaves Order B is pending. Send supplier email to complete it.</div>}
     {!latestTypeLog&&unsentHoursLeft!==null&&unsentHoursLeft>0&&<div style={S.nI}>This consolidated order remains open for {unsentHoursLeft} more hour(s) because supplier email has not been sent yet.</div>}
     {!latestTypeLog&&unsentHoursLeft===0&&<div style={S.nP}>This consolidated order is now locked because 24 hours elapsed without sending supplier email.</div>}
-    {isCompletedLocked&&<div style={S.nG}>{selCategory==="vendor_orders"?"Vendor Orders":"Consolidated Order "+vt} is completed and locked. Reopen from Order Monitor to edit/send again.</div>}
+    {isCompletedLocked&&<div style={S.nG}>{selCategory==="vendor_orders"?"Vendor Orders":"Consolidated Order "+vt} is completed and locked. {selCategory==="vendor_orders"?"Reopen from Settings to edit/send again.":"Reopen from Order Monitor to edit/send again."}</div>}
     {reopenedFromId&&<div style={Object.assign({},S.nP,{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10})}><span>Resend mode active. This send will be stored as a reopened resend history entry.</span><button style={Object.assign({},S.b,S.bS,{padding:"4px 10px",fontSize:11})} onClick={function(){if(setReopenedFromId) setReopenedFromId(null);}}>Clear</button></div>}
     {editingAll&&<div style={S.nI}>Editing quantities and notes for all stores. Click Save when finished.</div>}
 
@@ -3034,7 +3118,7 @@ function Reports({orders,items,stores}){
 }
 
 /* ═══ SETTINGS (editable schedule + order messages) ═══ */
-function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrder,manualOpenSeq,setManualOpenSeq,manualOpenLeaves,setManualOpenLeaves,vendorOrdersOpenVendor,setVendorOrdersOpenVendor,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo,suppliers}){
+function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrder,manualOpenSeq,setManualOpenSeq,manualOpenLeaves,setManualOpenLeaves,vendorOrdersOpenVendor,setVendorOrdersOpenVendor,setReopenedFromId,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo,suppliers}){
   var _e=useState(null),ed=_e[0],sEd=_e[1];var _v=useState(0),eV=_v[0],sEV=_v[1];
   var _em=useState(null),emT=_em[0],sEmT=_em[1];var _emV=useState(""),emV=_emV[0],sEmV=_emV[1];
   var _mo=useState(manualOpenOrder||""),moType=_mo[0],sMoType=_mo[1];
@@ -3092,7 +3176,12 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       try{
         var resp=await apiClient.settings.updateVendorOrdersOpen(vendorOpenValue||null);
         if(setVendorOrdersOpenVendor) setVendorOrdersOpenVendor(resp.vendorOrdersOpenVendor||null);
-        toast(resp.vendorOrdersOpenVendor?("Vendor orders open for "+resp.vendorOrdersOpenVendor):"Vendor orders locked");
+        if(setReopenedFromId) setReopenedFromId(resp.reopenedSupplierOrderId||null);
+        if(resp.vendorOrdersOpenVendor){
+          toast(resp.reopenedSupplierOrderId?("Vendor order reopened for "+resp.vendorOrdersOpenVendor):("Vendor orders open for "+resp.vendorOrdersOpenVendor));
+        }else{
+          toast("Vendor orders locked");
+        }
       }catch(e){toast(e.message,true);}  };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>

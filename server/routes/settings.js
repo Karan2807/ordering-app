@@ -1,6 +1,7 @@
 import express from 'express';
 import { authMiddleware } from '../auth.js';
 import Setting from '../models/setting.js';
+import SupplierOrder from '../models/supplierOrder.js';
 import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
 const router = express.Router();
@@ -284,14 +285,27 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
     const vendorKey = String((req.body && req.body.vendorKey) || '').trim();
     if (!vendorKey) {
       await Setting.deleteOne({ key: 'vendorOrdersOpenVendor' });
-      return res.json({ success: true, vendorOrdersOpenVendor: null });
+      return res.json({ success: true, vendorOrdersOpenVendor: null, reopenedSupplierOrderId: null });
     }
     await Setting.updateOne(
       { key: 'vendorOrdersOpenVendor' },
       { value: vendorKey },
       { upsert: true }
     );
-    res.json({ success: true, vendorOrdersOpenVendor: vendorKey });
+    const latestVendorOrder = await SupplierOrder.findOne({
+      type: 'VENDOR',
+      category: 'vendor_orders',
+      vendorKey,
+    }).sort({ sentAt: -1, _id: -1 });
+    if (latestVendorOrder && latestVendorOrder.finished !== false) {
+      latestVendorOrder.finished = false;
+      await latestVendorOrder.save();
+    }
+    res.json({
+      success: true,
+      vendorOrdersOpenVendor: vendorKey,
+      reopenedSupplierOrderId: latestVendorOrder ? String(latestVendorOrder._id) : null,
+    });
   } catch (err) {
     console.error('Update vendor orders open error:', err);
     res.status(500).json({ error: 'Server error' });
