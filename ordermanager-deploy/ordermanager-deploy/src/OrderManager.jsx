@@ -139,8 +139,9 @@ function suppliersForCategory(list, category){
   return all;
 }
 function cycleBaseKey(d){
+  // Use UTC dates so week keys are consistent across time zones.
   var dt=d instanceof Date?new Date(d.getTime()):new Date(d);
-  return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+  return dt.getUTCFullYear()+"-"+String(dt.getUTCMonth()+1).padStart(2,"0")+"-"+String(dt.getUTCDate()).padStart(2,"0");
 }
 function categoryKey(category,vendorKey){var cat=normalizeCategory(category);var vendor=normalizeVendorKey(cat,vendorKey);return vendor?cat+"-"+vendor:cat;}
 function isCategoryOpenForType(category, type, aot, manualOpenLeaves){
@@ -171,7 +172,23 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
     var oldKey=storeId+"_"+String(dateKey(type,"vegetables",null,manualOpenOrder,manualOpenSeq)).replace(/-vegetables$/,"");
     if(orderMap&&orderMap[oldKey]) return orderMap[oldKey];
   }
-  return null;
+  // Fallback: scan all orders for this store/type/category/vendor within the last 48h.
+  // This ensures orders from stores in other timezones are found even when week keys differ.
+  var maxAgeMs48=48*60*60*1000;
+  var nowTs=Date.now();
+  var fallbackBest=null;
+  Object.values(orderMap||{}).forEach(function(o){
+    if(!o) return;
+    if(String(o.store||"")!==String(storeId||"")) return;
+    if(String(o.type||"")!==String(type||"")) return;
+    if(normalizeCategory(o.category||"vegetables")!==normalizeCategory(category)) return;
+    if(normalizeVendorKey(category,o.vendorKey)!==normalizeVendorKey(category,vendorKey)) return;
+    var ts=orderTimestampMs(o);
+    if(!ts) return;
+    if(nowTs-ts>maxAgeMs48) return;
+    if(!fallbackBest||ts>fallbackBest.ts) fallbackBest={order:o,ts:ts};
+  });
+  return fallbackBest?fallbackBest.order:null;
 }
 function sortItems(a){
   return a.slice().sort(function(x,y){
@@ -1019,13 +1036,40 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
   var sub=cycleOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
   var proc=cycleOrders.filter(function(o){return o.status==="processed";}).length;
   var vendorSummary=summarizeVendorKeys(activeVendorOrderIds,suppliers);
-  // Pending reminders: managers who haven't submitted for active order
+  // Pending reminders: managers who haven't submitted for active order (vegetables AND leaves)
   var isStoreOrderSent=function(o){
     if(!o) return false;
     return o.status==="submitted"||o.status==="processed"||o.status==="draft_shared";
   };
+  // Build pending alerts across ALL open order categories for the current type.
+  // For type B, leaves orders are also active so both should be tracked.
   var pendingAlerts=[];
-  if(aot){stores.forEach(function(st){var o=getCurrentOrderForStoreType(orders,st.id,aot,"vegetables",null,manualOpenOrder,manualOpenSeq);if(!isStoreOrderSent(o)){var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});pendingAlerts.push({storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A",phone:mgr?mgr.phone:"N/A"});}});}
+  if(aot){
+    var pendingByStore={};
+    // Vegetables
+    stores.forEach(function(st){
+      var o=getCurrentOrderForStoreType(orders,st.id,aot,"vegetables",null,manualOpenOrder,manualOpenSeq);
+      if(!isStoreOrderSent(o)){
+        var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});
+        pendingByStore[st.id]={storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A",phone:mgr?mgr.phone:"N/A",missing:["vegetables"]};
+      }
+    });
+    // Leaves (only open on type B)
+    if(aot==="B"){
+      stores.forEach(function(st){
+        var o=getCurrentOrderForStoreType(orders,st.id,"B","leaves",null,manualOpenOrder,manualOpenSeq);
+        if(!isStoreOrderSent(o)){
+          if(pendingByStore[st.id]){
+            pendingByStore[st.id].missing.push("leaves");
+          } else {
+            var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});
+            pendingByStore[st.id]={storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A",phone:mgr?mgr.phone:"N/A",missing:["leaves"]};
+          }
+        }
+      });
+    }
+    pendingAlerts=Object.values(pendingByStore);
+  }
   var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
     var vendorName=vendorDisplayName(suppliers,vendorKey);
     var pending=[];
@@ -1124,8 +1168,8 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
       {group.pendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted the active vendor order.</div>}
     </div>);})}
     {aot&&(<div style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Order {aot}</div><div style={S.d}>These stores have not submitted yet. Auto SMS runs in final 1 hour window every 30 minutes.</div></div>{pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={sendAllReminders}>Send Reminder to All</button>}</div>
-      {pendingAlerts.length>0&&<div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Manager</th><th style={S.th}>Phone</th><th style={S.th}>Action</th></tr></thead><tbody>
-        {pendingAlerts.map(function(a,i){return <tr key={i}><td style={S.td}>{a.store}</td><td style={S.td}>{a.manager}</td><td style={S.tm}>{a.phone}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){sendOneReminder(a);}}>Send SMS</button></td></tr>;})}
+      {pendingAlerts.length>0&&<div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Manager</th><th style={S.th}>Phone</th><th style={S.th}>Missing</th><th style={S.th}>Action</th></tr></thead><tbody>
+        {pendingAlerts.map(function(a,i){return <tr key={i}><td style={S.td}>{a.store}</td><td style={S.td}>{a.manager}</td><td style={S.tm}>{a.phone}</td><td style={S.td}>{(a.missing||[]).map(function(m){return m.charAt(0).toUpperCase()+m.slice(1);}).join(", ")||"—"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){sendOneReminder(a);}}>Send SMS</button></td></tr>;})}
       </tbody></table></div>}
       {pendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted Order {aot}.</div>}
     </div>)}
@@ -1146,12 +1190,16 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
 }
 
 /* ═══ MANAGER DASHBOARD ═══ */
-function MgrDash({user,orders,notifs,aot,setPage,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setDraftRequest}){
+function MgrDash({user,orders,notifs,aot,setPage,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,manualOpenLeaves,activeVendorOrderIds,suppliers,setDraftRequest}){
   var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId;
   var my=Object.keys(orders).filter(function(k){return k.indexOf(user.storeId)===0;});
   var sub=my.filter(function(k){return orders[k].status==="submitted"||orders[k].status==="processed";}).length;
   var curOrder=aot?getCurrentOrderForStoreType(orders,user.storeId,aot,"vegetables",null,manualOpenOrder,manualOpenSeq):null;
   var curStatus=curOrder?curOrder.status:null;
+  // Leaves order (only open on type B)
+  var leavesOrder=aot==="B"?getCurrentOrderForStoreType(orders,user.storeId,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
+  var leavesStatus=leavesOrder?leavesOrder.status:null;
+  var leavesOpen=isCategoryOpenForType("leaves","B",aot,manualOpenLeaves);
   var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
     var vendorName=vendorDisplayName(suppliers,vendorKey);
     var vendorOrder=getCurrentOrderForStoreType(orders,user.storeId,"VENDOR","vendor_orders",vendorKey,manualOpenOrder,manualOpenSeq);
@@ -1178,6 +1226,15 @@ function MgrDash({user,orders,notifs,aot,setPage,stores,schedule,orderMsgs,manua
           :curStatus==="draft"||curStatus==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>Order {aot} is Draft</div><div style={S.d}>Draft saved. Open Place Order to edit draft or submit final.</div></Fragment>)
           :(<Fragment><div style={Object.assign({},S.t,{color:"#FBBF24"})}>Order {aot} - Action Required</div><div style={S.d}>{orderMsgs[aot]||"Please submit your order."}</div></Fragment>)}</div>
         {curStatus!=="submitted"&&curStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){setPage("order-entry");}}>{curStatus==="draft"||curStatus==="draft_shared"?"Open Draft":"Place Order"}</button>}
+      </div>
+    </div>)}
+    {leavesOpen&&(<div style={S.card}>
+      <div style={S.cH}>
+        <div>{leavesStatus==="submitted"?(<Fragment><div style={Object.assign({},S.t,{color:"#34D399"})}>Leaves Order is Submitted</div><div style={S.d}>Your leaves order has been submitted successfully.</div></Fragment>)
+          :leavesStatus==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>Leaves Order is Processed</div><div style={S.d}>Admin has processed this leaves order.</div></Fragment>)
+          :leavesStatus==="draft"||leavesStatus==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>Leaves Order is Draft</div><div style={S.d}>Draft saved. Open to edit or submit final.</div></Fragment>)
+          :(<Fragment><div style={Object.assign({},S.t,{color:"#16A34A"})}>Leaves Order - Action Required</div><div style={S.d}>Leaves order is open. Please submit your order.</div></Fragment>)}</div>
+        {leavesStatus!=="submitted"&&leavesStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setDraftRequest)setDraftRequest({type:"B",category:"leaves"});setPage("order-entry");}}>{leavesStatus==="draft"||leavesStatus==="draft_shared"?"Open Leaves Draft":"Place Leaves Order"}</button>}
       </div>
     </div>)}
     {vendorGroups.map(function(group){return(<div key={group.vendorKey} style={S.card}>
@@ -1852,7 +1909,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     });
   };
   var latestCurrentTypeInfo=useMemo(function(){
-    return findLatestMatchingOrder(orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey,visibleStatus,24*60*60*1000);
+    return findLatestMatchingOrder(orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey,visibleStatus,48*60*60*1000);
   },[orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey]);
   var activeWeekKey=useMemo(function(){
     if(isSingleVendorFlow) return scheduledWeekKey;
@@ -1873,7 +1930,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     var bestTs=0;
     ["A","B","C"].forEach(function(t){
       if(primaryOpenType&&t===primaryOpenType) return;
-      var latestInfo=findLatestMatchingOrder(orders,visibleStoreIds,t,selCategory,resolvedVendorKey,visibleStatus,24*60*60*1000);
+      var latestInfo=findLatestMatchingOrder(orders,visibleStoreIds,t,selCategory,resolvedVendorKey,visibleStatus,48*60*60*1000);
       if(!latestInfo||!latestInfo.week) return;
       if(hasFinishedLogForWeek(t,latestInfo.week)) return;
       if(latestInfo.ts>bestTs){bestTs=latestInfo.ts;bestType=t;}
@@ -2073,12 +2130,12 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var unsentLockExpired=useMemo(function(){
     if(latestTypeLog&&latestTypeLog.finished===true) return false;
     if(!latestVisibleOrderAt) return false;
-    return (Date.now()-latestVisibleOrderAt)>(24*60*60*1000);
+    return (Date.now()-latestVisibleOrderAt)>(48*60*60*1000);
   },[latestTypeLog,latestVisibleOrderAt]);
   var unsentHoursLeft=useMemo(function(){
     if(latestTypeLog&&latestTypeLog.finished===true) return null;
     if(!latestVisibleOrderAt) return null;
-    var remainMs=(24*60*60*1000)-(Date.now()-latestVisibleOrderAt);
+    var remainMs=(48*60*60*1000)-(Date.now()-latestVisibleOrderAt);
     if(remainMs<=0) return 0;
     return Math.ceil(remainMs/(60*60*1000));
   },[latestTypeLog,latestVisibleOrderAt]);
