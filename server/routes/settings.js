@@ -12,6 +12,173 @@ function nowInTimezone(tz) {
   return new Date(text);
 }
 
+function listifyVendorInputs(input) {
+  if (Array.isArray(input)) return input.slice();
+  if (input && typeof input.values === 'function' && typeof input.size === 'number') {
+    try {
+      return Array.from(input.values());
+    } catch (_err) {
+      return [];
+    }
+  }
+  if (input && typeof input === 'object') {
+    if (input.vendorKey || input.id) return [input];
+    return Object.keys(input).map((key) => {
+      const value = input[key];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return { vendorKey: value.vendorKey || key, ...value };
+      }
+      return { vendorKey: key };
+    });
+  }
+  return input == null || input === '' ? [] : [input];
+}
+
+function extractVendorIdentifier(input) {
+  if (input == null) return '';
+  if (typeof input === 'string' || typeof input === 'number') {
+    const value = String(input).trim();
+    if (!value) return '';
+    const lowered = value.toLowerCase();
+    if (lowered === '[object object]' || lowered === '[object set]') return '';
+    return value;
+  }
+  if (Array.isArray(input)) return extractVendorIdentifier(input[0]);
+  if (typeof input === 'object') {
+    const direct = extractVendorIdentifier(input.vendorKey);
+    if (direct) return direct;
+    const byId = extractVendorIdentifier(input.id);
+    if (byId) return byId;
+    const bySupplierId = extractVendorIdentifier(input.supplierId);
+    if (bySupplierId) return bySupplierId;
+    const byValue = extractVendorIdentifier(input.value);
+    if (byValue) return byValue;
+    const byKey = extractVendorIdentifier(input.key);
+    if (byKey) return byKey;
+  }
+  return '';
+}
+
+function normalizeVendorKeys(input) {
+  const list = listifyVendorInputs(input);
+  const merged = list.map((value) => {
+    return extractVendorIdentifier(value);
+  }).filter(Boolean);
+  return [...new Set(merged)];
+}
+
+function parseOptionalDay(value) {
+  if (value == null || value === '') return null;
+  const day = parseInt(value, 10);
+  return Number.isNaN(day) || day < 0 || day > 6 ? null : day;
+}
+
+function isDayWithinRange(day, startDay, endDay) {
+  if (startDay == null || endDay == null) return true;
+  if (startDay <= endDay) return day >= startDay && day <= endDay;
+  return day >= startDay || day <= endDay;
+}
+
+function normalizeVendorOrderConfigs(input, fallbackVendorKeys = [], fallbackStartDay = null, fallbackEndDay = null) {
+  let list = listifyVendorInputs(input);
+  const legacyVendorKeys = normalizeVendorKeys(fallbackVendorKeys);
+  if (!list.length && legacyVendorKeys.length) {
+    list = legacyVendorKeys.map((vendorKey) => ({
+      vendorKey,
+      startDay: fallbackStartDay,
+      endDay: fallbackEndDay,
+      enabled: true,
+    }));
+  }
+  const byVendorKey = new Map();
+  list.forEach((entry) => {
+    const raw = entry && typeof entry === 'object' ? entry : { vendorKey: entry };
+    const vendorKey = extractVendorIdentifier(raw);
+    if (!vendorKey) return;
+    let startDay = parseOptionalDay(raw.startDay);
+    let endDay = parseOptionalDay(raw.endDay);
+    if ((startDay == null) !== (endDay == null)) {
+      startDay = null;
+      endDay = null;
+    }
+    byVendorKey.set(vendorKey, {
+      vendorKey,
+      startDay,
+      endDay,
+      enabled: raw.enabled !== false,
+    });
+  });
+  return Array.from(byVendorKey.values());
+}
+
+async function persistVendorOrderConfigs(configs) {
+  const normalizedConfigs = normalizeVendorOrderConfigs(configs);
+  const vendorKeys = normalizeVendorKeys(
+    normalizedConfigs
+      .filter((config) => config.enabled !== false)
+      .map((config) => config.vendorKey)
+  );
+  if (normalizedConfigs.length) {
+    await Setting.updateOne(
+      { key: 'vendorOrderConfigs' },
+      { value: normalizedConfigs },
+      { upsert: true }
+    );
+  } else {
+    await Setting.deleteOne({ key: 'vendorOrderConfigs' });
+  }
+  if (vendorKeys.length) {
+    await Setting.updateOne({ key: 'vendorOrdersOpenVendor' }, { value: vendorKeys[0] }, { upsert: true });
+    await Setting.updateOne({ key: 'vendorOrdersOpenVendors' }, { value: vendorKeys }, { upsert: true });
+  } else {
+    await Setting.deleteMany({ key: { $in: ['vendorOrdersOpenVendor', 'vendorOrdersOpenVendors'] } });
+  }
+  await Setting.deleteMany({ key: { $in: ['vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'] } });
+  return normalizedConfigs;
+}
+
+function buildVendorOrdersState({ docs, today }) {
+  let singleVendor = null;
+  let vendorKeys = [];
+  let windowStartDay = null;
+  let windowEndDay = null;
+  let vendorOrderConfigs = [];
+
+  (docs || []).forEach((row) => {
+    if (!row) return;
+    if (row.key === 'vendorOrderConfigs') {
+      vendorOrderConfigs = normalizeVendorOrderConfigs(row.value);
+    } else if (row.key === 'vendorOrdersOpenVendor') {
+      singleVendor = String(row.value || '').trim() || null;
+    } else if (row.key === 'vendorOrdersOpenVendors') {
+      vendorKeys = normalizeVendorKeys(row.value);
+    } else if (row.key === 'vendorOrdersWindowStartDay') {
+      windowStartDay = parseOptionalDay(row.value);
+    } else if (row.key === 'vendorOrdersWindowEndDay') {
+      windowEndDay = parseOptionalDay(row.value);
+    }
+  });
+
+  if (!vendorKeys.length && singleVendor) vendorKeys = [singleVendor];
+  vendorOrderConfigs = normalizeVendorOrderConfigs(vendorOrderConfigs, vendorKeys, windowStartDay, windowEndDay);
+  const configuredVendorConfigs = vendorOrderConfigs.filter((config) => config.enabled !== false);
+  const configuredVendorKeys = normalizeVendorKeys(configuredVendorConfigs.map((config) => config.vendorKey));
+  const activeVendorOrders = configuredVendorConfigs
+    .filter((config) => isDayWithinRange(today, config.startDay, config.endDay))
+    .map((config) => config.vendorKey);
+  const windowOpen = activeVendorOrders.length > 0;
+  const singleConfig = configuredVendorConfigs.length === 1 ? configuredVendorConfigs[0] : null;
+  return {
+    vendorOrderConfigs,
+    vendorOrdersOpenVendors: configuredVendorKeys,
+    vendorOrdersOpenVendor: activeVendorOrders[0] || null,
+    vendorOrdersWindowStartDay: singleConfig ? singleConfig.startDay : null,
+    vendorOrdersWindowEndDay: singleConfig ? singleConfig.endDay : null,
+    vendorOrdersWindowOpen: windowOpen,
+    activeVendorOrders,
+  };
+}
+
 // Get all settings
 router.get('/', async (req, res) => {
   try {
@@ -23,7 +190,7 @@ router.get('/', async (req, res) => {
     let manualOpen = null;
     let manualOpenSeq = null;
     let manualOpenLeaves = false;
-    let vendorOrdersOpenVendor = null;
+    const today = nowInTimezone(ORDER_TIMEZONE).getDay();
 
     for (const row of docs) {
       if (row.key.startsWith('schedule')) {
@@ -80,8 +247,6 @@ router.get('/', async (req, res) => {
         manualOpenSeq = Number.isNaN(num) ? null : num;
       } else if (row.key === 'manualOpenLeaves') {
         manualOpenLeaves = String(row.value || '').toLowerCase() === 'true' || String(row.value || '') === '1';
-      } else if (row.key === 'vendorOrdersOpenVendor') {
-        vendorOrdersOpenVendor = row.value || null;
       }
     }
 
@@ -98,6 +263,7 @@ router.get('/', async (req, res) => {
       }
     }
 
+    const vendorOrdersState = buildVendorOrdersState({ docs, today });
     const result = {
       schedule: schedules,
       message: messages,
@@ -105,9 +271,15 @@ router.get('/', async (req, res) => {
       manualOpenOrder: manualOpen,
       manualOpenSeq,
       manualOpenLeaves,
-      vendorOrdersOpenVendor,
+      vendorOrderConfigs: vendorOrdersState.vendorOrderConfigs,
+      vendorOrdersOpenVendor: vendorOrdersState.vendorOrdersOpenVendor,
+      vendorOrdersOpenVendors: vendorOrdersState.vendorOrdersOpenVendors,
+      vendorOrdersWindowStartDay: vendorOrdersState.vendorOrdersWindowStartDay,
+      vendorOrdersWindowEndDay: vendorOrdersState.vendorOrdersWindowEndDay,
+      vendorOrdersWindowOpen: vendorOrdersState.vendorOrdersWindowOpen,
+      activeVendorOrders: vendorOrdersState.activeVendorOrders,
       categoryTemplates,
-      scheduleToday: nowInTimezone(ORDER_TIMEZONE).getDay(),
+      scheduleToday: today,
       orderTimezone: ORDER_TIMEZONE,
     };
     console.log('GET /settings returning', {
@@ -117,7 +289,12 @@ router.get('/', async (req, res) => {
       manualOpenOrder: result.manualOpenOrder,
       manualOpenSeq: result.manualOpenSeq,
       manualOpenLeaves: result.manualOpenLeaves,
+      vendorOrderConfigs: result.vendorOrderConfigs,
       vendorOrdersOpenVendor: result.vendorOrdersOpenVendor,
+      vendorOrdersOpenVendors: result.vendorOrdersOpenVendors,
+      vendorOrdersWindowStartDay: result.vendorOrdersWindowStartDay,
+      vendorOrdersWindowEndDay: result.vendorOrdersWindowEndDay,
+      vendorOrdersWindowOpen: result.vendorOrdersWindowOpen,
       categoryTemplateKeys: Object.keys(result.categoryTemplates),
       scheduleToday: result.scheduleToday,
       orderTimezone: result.orderTimezone,
@@ -282,29 +459,96 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const vendorKey = String((req.body && req.body.vendorKey) || '').trim();
-    if (!vendorKey) {
-      await Setting.deleteOne({ key: 'vendorOrdersOpenVendor' });
-      return res.json({ success: true, vendorOrdersOpenVendor: null, reopenedSupplierOrderId: null });
+    const reopenedSupplierOrderIds = [];
+    const today = nowInTimezone(ORDER_TIMEZONE).getDay();
+    const docs = await Setting.find({
+      key: { $in: ['vendorOrderConfigs', 'vendorOrdersOpenVendor', 'vendorOrdersOpenVendors', 'vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'] },
+    }).lean();
+    const currentState = buildVendorOrdersState({ docs, today });
+    let nextConfigs = currentState.vendorOrderConfigs.slice();
+
+    if (req.body && (req.body.vendorKey != null || req.body.enabled != null)) {
+      const vendorKey = extractVendorIdentifier(req.body.vendorKey);
+      const enabled = req.body.enabled !== false;
+      const startDayRaw = req.body.startDay;
+      const endDayRaw = req.body.endDay;
+      const startDay = parseOptionalDay(startDayRaw);
+      const endDay = parseOptionalDay(endDayRaw);
+      if (!vendorKey) {
+        return res.status(400).json({ error: 'vendorKey is required' });
+      }
+      if (enabled && ((startDayRaw != null && startDay == null) || (endDayRaw != null && endDay == null))) {
+        return res.status(400).json({ error: 'Invalid vendor order day range' });
+      }
+      if (enabled && ((startDay == null) !== (endDay == null))) {
+        return res.status(400).json({ error: 'Select both start and end day for vendor order range, or leave both empty' });
+      }
+      nextConfigs = nextConfigs.filter((config) => config.vendorKey !== vendorKey);
+      if (enabled) {
+        nextConfigs.push({
+          vendorKey,
+          startDay,
+          endDay,
+          enabled: true,
+        });
+        const latestVendorOrder = await SupplierOrder.findOne({
+          type: 'VENDOR',
+          category: 'vendor_orders',
+          vendorKey,
+        }).sort({ sentAt: -1, _id: -1 });
+        if (latestVendorOrder && latestVendorOrder.finished !== false) {
+          latestVendorOrder.finished = false;
+          await latestVendorOrder.save();
+        }
+        if (latestVendorOrder) reopenedSupplierOrderIds.push(String(latestVendorOrder._id));
+      }
+    } else {
+      const vendorKeys = normalizeVendorKeys(req.body && req.body.vendorKeys);
+      const startDayRaw = req.body ? req.body.startDay : null;
+      const endDayRaw = req.body ? req.body.endDay : null;
+      const startDay = parseOptionalDay(startDayRaw);
+      const endDay = parseOptionalDay(endDayRaw);
+      if ((startDayRaw != null && startDay == null) || (endDayRaw != null && endDay == null)) {
+        return res.status(400).json({ error: 'Invalid vendor order day range' });
+      }
+      if ((startDay == null) !== (endDay == null)) {
+        return res.status(400).json({ error: 'Select both start and end day for vendor order range, or leave both empty' });
+      }
+      nextConfigs = vendorKeys.map((vendorKey) => ({
+        vendorKey,
+        startDay,
+        endDay,
+        enabled: true,
+      }));
+      for (const vendorKey of vendorKeys) {
+        const latestVendorOrder = await SupplierOrder.findOne({
+          type: 'VENDOR',
+          category: 'vendor_orders',
+          vendorKey,
+        }).sort({ sentAt: -1, _id: -1 });
+        if (latestVendorOrder && latestVendorOrder.finished !== false) {
+          latestVendorOrder.finished = false;
+          await latestVendorOrder.save();
+        }
+        if (latestVendorOrder) reopenedSupplierOrderIds.push(String(latestVendorOrder._id));
+      }
     }
-    await Setting.updateOne(
-      { key: 'vendorOrdersOpenVendor' },
-      { value: vendorKey },
-      { upsert: true }
-    );
-    const latestVendorOrder = await SupplierOrder.findOne({
-      type: 'VENDOR',
-      category: 'vendor_orders',
-      vendorKey,
-    }).sort({ sentAt: -1, _id: -1 });
-    if (latestVendorOrder && latestVendorOrder.finished !== false) {
-      latestVendorOrder.finished = false;
-      await latestVendorOrder.save();
-    }
+    const persistedConfigs = await persistVendorOrderConfigs(nextConfigs);
+    const result = buildVendorOrdersState({
+      docs: [{ key: 'vendorOrderConfigs', value: persistedConfigs }],
+      today,
+    });
     res.json({
       success: true,
-      vendorOrdersOpenVendor: vendorKey,
-      reopenedSupplierOrderId: latestVendorOrder ? String(latestVendorOrder._id) : null,
+      vendorOrderConfigs: result.vendorOrderConfigs,
+      vendorOrdersOpenVendor: result.vendorOrdersOpenVendor,
+      vendorOrdersOpenVendors: result.vendorOrdersOpenVendors,
+      vendorOrdersWindowStartDay: result.vendorOrdersWindowStartDay,
+      vendorOrdersWindowEndDay: result.vendorOrdersWindowEndDay,
+      vendorOrdersWindowOpen: result.vendorOrdersWindowOpen,
+      activeVendorOrders: result.activeVendorOrders,
+      reopenedSupplierOrderId: reopenedSupplierOrderIds.length===1?reopenedSupplierOrderIds[0]:null,
+      reopenedSupplierOrderIds,
     });
   } catch (err) {
     console.error('Update vendor orders open error:', err);

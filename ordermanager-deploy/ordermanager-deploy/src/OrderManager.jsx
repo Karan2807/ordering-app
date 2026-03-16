@@ -20,6 +20,114 @@ var SUPPLIER_CATEGORY_OPTIONS=[
 function activeType(sc, dayOverride){var t=Number.isInteger(dayOverride)?dayOverride:new Date().getDay();for(var k in sc){if(sc[k]===t)return k;}return null;}
 function normalizeCategory(v){var raw=String(v||"").trim().toLowerCase();return ORDER_CATEGORIES.some(function(c){return c.id===raw;})?raw:"vegetables";}
 function normalizeVendorKey(category,v){return normalizeCategory(category)==="vendor_orders"?(String(v||"").trim()||null):null;}
+function extractVendorIdentifier(input){
+  if(input==null) return "";
+  if(typeof input==="string"||typeof input==="number"){
+    var value=String(input).trim();
+    if(!value) return "";
+    if(value.toLowerCase()==="[object object]"||value.toLowerCase()==="[object set]") return "";
+    return value;
+  }
+  if(Array.isArray(input)) return extractVendorIdentifier(input[0]);
+  if(typeof input==="object"){
+    var direct=extractVendorIdentifier(input.vendorKey);
+    if(direct) return direct;
+    var byId=extractVendorIdentifier(input.id);
+    if(byId) return byId;
+    var bySupplierId=extractVendorIdentifier(input.supplierId);
+    if(bySupplierId) return bySupplierId;
+    var byValue=extractVendorIdentifier(input.value);
+    if(byValue) return byValue;
+    var byKey=extractVendorIdentifier(input.key);
+    if(byKey) return byKey;
+    return "";
+  }
+  return "";
+}
+function listifyVendorInputs(input){
+  if(Array.isArray(input)) return input.slice();
+  if(input&&typeof input.values==="function"&&typeof input.size==="number"){
+    try{return Array.from(input.values());}catch(_err){return [];}
+  }
+  if(input&&typeof input==="object"){
+    if(input.vendorKey||input.id) return [input];
+    return Object.keys(input).map(function(key){
+      var value=input[key];
+      if(value&&typeof value==="object"&&!Array.isArray(value)){
+        return Object.assign({vendorKey:value.vendorKey||key},value);
+      }
+      return {vendorKey:key};
+    });
+  }
+  return input==null||input===""?[]:[input];
+}
+function normalizeVendorOrderList(input){
+  var normalized=listifyVendorInputs(input).map(function(v){
+    return extractVendorIdentifier(v);
+  }).filter(Boolean);
+  return [].concat(new Set(normalized));
+}
+function parseOptionalDay(value){
+  if(value==null||value==="") return null;
+  var n=Number(value);
+  if(!Number.isInteger(n)||n<0||n>6) return null;
+  return n;
+}
+function normalizeVendorOrderConfigs(input, legacyVendorKeys, legacyStartDay, legacyEndDay){
+  var values=listifyVendorInputs(input);
+  var fallbackKeys=normalizeVendorOrderList(legacyVendorKeys);
+  if(!values.length&&fallbackKeys.length){
+    values=fallbackKeys.map(function(vendorKey){
+      return {vendorKey:vendorKey,startDay:legacyStartDay,endDay:legacyEndDay,enabled:true};
+    });
+  }
+  var byVendorKey={};
+  values.forEach(function(entry){
+    var raw=entry&&typeof entry==="object"?entry:{vendorKey:entry};
+    var vendorKey=extractVendorIdentifier(raw);
+    if(!vendorKey) return;
+    var startDay=parseOptionalDay(raw.startDay);
+    var endDay=parseOptionalDay(raw.endDay);
+    if((startDay===null)!==(endDay===null)){
+      startDay=null;
+      endDay=null;
+    }
+    byVendorKey[vendorKey]={vendorKey:vendorKey,startDay:startDay,endDay:endDay,enabled:raw.enabled!==false};
+  });
+  return Object.keys(byVendorKey).map(function(vendorKey){return byVendorKey[vendorKey];});
+}
+function isDayWithinRange(day,startDay,endDay){
+  var start=parseOptionalDay(startDay);
+  var end=parseOptionalDay(endDay);
+  if(start===null||end===null) return true;
+  if(!Number.isInteger(day)||day<0||day>6) return true;
+  if(start<=end) return day>=start&&day<=end;
+  return day>=start||day<=end;
+}
+function supplierNameById(list,vendorKey){
+  var all=Array.isArray(list)?list:[];
+  if(vendorKey&&typeof vendorKey==="object"&&vendorKey.name) return String(vendorKey.name);
+  var normalizedKey=extractVendorIdentifier(vendorKey);
+  if(!normalizedKey) return "";
+  var found=all.find(function(v){return String(v&&v.id||"").trim()===normalizedKey;})||null;
+  return found&&found.name?String(found.name):normalizedKey;
+}
+function vendorDisplayName(suppliers,vendorKey){
+  return supplierNameById(suppliers,vendorKey)||extractVendorIdentifier(vendorKey)||"Vendor Order";
+}
+function summarizeVendorKeys(vendorKeys,suppliers){
+  var ids=normalizeVendorOrderList(vendorKeys);
+  if(!ids.length) return "Locked";
+  if(ids.length===1) return vendorDisplayName(suppliers,ids[0]);
+  return ids.map(function(id){return vendorDisplayName(suppliers,id);}).join(", ");
+}
+function vendorWindowText(startDay,endDay){
+  var start=parseOptionalDay(startDay);
+  var end=parseOptionalDay(endDay);
+  if(start===null&&end===null) return "Open until changed";
+  if(start===null||end===null) return "Open until changed";
+  return (DAYS[start]||"Day "+start)+" to "+(DAYS[end]||"Day "+end);
+}
 function normalizeSupplierCategories(input){
   var values=Array.isArray(input)?input:[];
   var normalized=values.map(function(v){return String(v||"").trim().toLowerCase();}).filter(function(v){return SUPPLIER_CATEGORY_OPTIONS.some(function(opt){return opt.id===v;});});
@@ -645,9 +753,13 @@ export default function App(){
   var _mo=useState(null),manualOpenOrder=_mo[0],setManualOpenOrder=_mo[1];
   var _ms=useState(null),manualOpenSeq=_ms[0],setManualOpenSeq=_ms[1];
   var _mol=useState(false),manualOpenLeaves=_mol[0],setManualOpenLeaves=_mol[1];
-  var _vov=useState(null),vendorOrdersOpenVendor=_vov[0],setVendorOrdersOpenVendor=_vov[1];
+  var _voc=useState([]),vendorOrderConfigs=_voc[0],setVendorOrderConfigs=_voc[1];
+  var _vov=useState([]),vendorOrdersOpenVendors=_vov[0],setVendorOrdersOpenVendors=_vov[1];
+  var _vws=useState(null),vendorOrdersWindowStartDay=_vws[0],setVendorOrdersWindowStartDay=_vws[1];
+  var _vwe=useState(null),vendorOrdersWindowEndDay=_vwe[0],setVendorOrdersWindowEndDay=_vwe[1];
   var _cts=useState({}),categoryTemplates=_cts[0],setCategoryTemplates=_cts[1];
   var _ct=useState(null),consolidatedType=_ct[0],setConsolidatedType=_ct[1];
+  var _cr=useState(null),consolidatedRequest=_cr[0],setConsolidatedRequest=_cr[1];
   var _et=useState(null),entryType=_et[0],setEntryType=_et[1];
   var _rf=useState(null),reopenedFromId=_rf[0],setReopenedFromId=_rf[1];
   var _om=useState({}),orderMsgs=_om[0],setOrderMsgs=_om[1];
@@ -697,7 +809,10 @@ export default function App(){
       setOrderMsgs({});
       setManualOpenOrder(null);
       setManualOpenSeq(null);
-      setVendorOrdersOpenVendor(null);
+      setVendorOrderConfigs([]);
+      setVendorOrdersOpenVendors([]);
+      setVendorOrdersWindowStartDay(null);
+      setVendorOrdersWindowEndDay(null);
       setCategoryTemplates({});
       setIsLoading(false);
       return;
@@ -746,7 +861,11 @@ export default function App(){
         var serverManualOpen = settings.manualOpenOrder || null;
         var serverManualOpenSeq = settings.manualOpenSeq != null ? Number(settings.manualOpenSeq) : null;
         var serverManualOpenLeaves = !!settings.manualOpenLeaves;
-        var serverVendorOrdersOpenVendor = settings.vendorOrdersOpenVendor || null;
+        var legacyVendorKeys=settings.vendorOrdersOpenVendors&&settings.vendorOrdersOpenVendors.length?settings.vendorOrdersOpenVendors:(settings.vendorOrdersOpenVendor?[settings.vendorOrdersOpenVendor]:[]);
+        var serverVendorOrderConfigs=normalizeVendorOrderConfigs(settings.vendorOrderConfigs,legacyVendorKeys,settings.vendorOrdersWindowStartDay,settings.vendorOrdersWindowEndDay);
+        var serverVendorOrdersOpenVendors = normalizeVendorOrderList(serverVendorOrderConfigs.filter(function(config){return config.enabled!==false;}).map(function(config){return config.vendorKey;}));
+        var serverVendorOrdersWindowStartDay = parseOptionalDay(settings.vendorOrdersWindowStartDay);
+        var serverVendorOrdersWindowEndDay = parseOptionalDay(settings.vendorOrdersWindowEndDay);
         var serverCategoryTemplates=settings.categoryTemplates&&typeof settings.categoryTemplates==="object"?settings.categoryTemplates:{};
         setScheduleToday(function(prev){return prev===serverScheduleToday?prev:serverScheduleToday;});
         var nextMsgs={A:serverMsg.A||"",B:serverMsg.B||"",C:serverMsg.C||""};
@@ -755,7 +874,10 @@ export default function App(){
         setManualOpenOrder(function(prev){return prev===serverManualOpen?prev:serverManualOpen;});
         setManualOpenSeq(function(prev){return prev===nextManualSeq?prev:nextManualSeq;});
         setManualOpenLeaves(function(prev){return prev===serverManualOpenLeaves?prev:serverManualOpenLeaves;});
-        setVendorOrdersOpenVendor(function(prev){return prev===serverVendorOrdersOpenVendor?prev:serverVendorOrdersOpenVendor;});
+        setVendorOrderConfigs(function(prev){return sameJson(prev,serverVendorOrderConfigs)?prev:serverVendorOrderConfigs;});
+        setVendorOrdersOpenVendors(function(prev){return sameJson(prev,serverVendorOrdersOpenVendors)?prev:serverVendorOrdersOpenVendors;});
+        setVendorOrdersWindowStartDay(function(prev){return prev===serverVendorOrdersWindowStartDay?prev:serverVendorOrdersWindowStartDay;});
+        setVendorOrdersWindowEndDay(function(prev){return prev===serverVendorOrdersWindowEndDay?prev:serverVendorOrdersWindowEndDay;});
         setCategoryTemplates(function(prev){return sameJson(prev,serverCategoryTemplates)?prev:serverCategoryTemplates;});
         // pull logo value too (may be null)
         var nextLogo=settings.logo || null;
@@ -839,6 +961,9 @@ export default function App(){
   var sN=user.storeId?(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId:"All Stores";
   var isA=user.role==="admin";
   var aot=manualOpenOrder||activeType(schedule,scheduleToday);
+  var effectiveToday=Number.isInteger(scheduleToday)?scheduleToday:new Date().getDay();
+  var activeVendorOrderIds=normalizeVendorOrderList(vendorOrderConfigs.filter(function(config){return config.enabled!==false&&isDayWithinRange(effectiveToday,config.startDay,config.endDay);}).map(function(config){return config.vendorKey;}));
+  var vendorOrdersWindowOpen=activeVendorOrderIds.length>0;
   var navs=isA?[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"orders",label:"Order Monitor",ico:"clip"},
     {id:"consolidated",label:"Consolidated",ico:"grid"},{id:"supplier-orders",label:"Supplier Orders",ico:"truck"},
@@ -850,7 +975,7 @@ export default function App(){
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"order-entry",label:"Place Order",ico:"clip"},
     {id:"history",label:"Order History",ico:"eye"},
   ];
-  var PP={aot:aot,manualOpenOrder:manualOpenOrder,setManualOpenOrder:setManualOpenOrder,manualOpenSeq:manualOpenSeq,setManualOpenSeq:setManualOpenSeq,manualOpenLeaves:manualOpenLeaves,setManualOpenLeaves:setManualOpenLeaves,vendorOrdersOpenVendor:vendorOrdersOpenVendor,setVendorOrdersOpenVendor:setVendorOrdersOpenVendor,categoryTemplates:categoryTemplates,setCategoryTemplates:setCategoryTemplates,entryType:entryType,setEntryType:setEntryType,draftRequest:draftRequest,setDraftRequest:setDraftRequest,consolidatedType:consolidatedType,setConsolidatedType:setConsolidatedType,reopenedFromId:reopenedFromId,setReopenedFromId:setReopenedFromId,orders:orders,setOrders:setOrders,refreshOrders:refreshOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
+  var PP={aot:aot,manualOpenOrder:manualOpenOrder,setManualOpenOrder:setManualOpenOrder,manualOpenSeq:manualOpenSeq,setManualOpenSeq:setManualOpenSeq,manualOpenLeaves:manualOpenLeaves,setManualOpenLeaves:setManualOpenLeaves,vendorOrderConfigs:vendorOrderConfigs,setVendorOrderConfigs:setVendorOrderConfigs,vendorOrdersOpenVendors:vendorOrdersOpenVendors,setVendorOrdersOpenVendors:setVendorOrdersOpenVendors,vendorOrdersWindowStartDay:vendorOrdersWindowStartDay,setVendorOrdersWindowStartDay:setVendorOrdersWindowStartDay,vendorOrdersWindowEndDay:vendorOrdersWindowEndDay,setVendorOrdersWindowEndDay:setVendorOrdersWindowEndDay,vendorOrdersWindowOpen:vendorOrdersWindowOpen,activeVendorOrderIds:activeVendorOrderIds,scheduleToday:scheduleToday,categoryTemplates:categoryTemplates,setCategoryTemplates:setCategoryTemplates,entryType:entryType,setEntryType:setEntryType,draftRequest:draftRequest,setDraftRequest:setDraftRequest,consolidatedType:consolidatedType,setConsolidatedType:setConsolidatedType,consolidatedRequest:consolidatedRequest,setConsolidatedRequest:setConsolidatedRequest,reopenedFromId:reopenedFromId,setReopenedFromId:setReopenedFromId,orders:orders,setOrders:setOrders,refreshOrders:refreshOrders,items:items,setItems:setItems,users:users,setUsers:setUsers,notifs:notifs,setNotifs:setNotifs,stores:stores,setStores:setStores,user:user,toast:toast,setPage:setPage,schedule:schedule,setSchedule:setSchedule,orderMsgs:orderMsgs,setOrderMsgs:setOrderMsgs,suppliers:suppliers,setSuppliers:setSuppliers,logo:logo,setLogo:setLogo,logoRef:logoRef};
   var sidebarStyle=isMobile?Object.assign({},S.sidebar,{position:"fixed",top:0,left:0,bottom:0,height:"100vh",zIndex:1200,transform:showMobileNav?"translateX(0)":"translateX(-110%)",transition:"transform 0.2s ease",boxShadow:"0 20px 40px rgba(15,23,42,.22)"}):S.sidebar;
   var topbarStyle=isMobile?Object.assign({},S.topbar,{padding:"0 12px",gap:8}):S.topbar;
   var contentStyle=isMobile?Object.assign({},S.content,{padding:12}):S.content;
@@ -888,12 +1013,12 @@ export default function App(){
 }
 
 /* ═══ ADMIN DASHBOARD ═══ */
-function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,vendorOrdersOpenVendor,suppliers}){
+function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setConsolidatedRequest}){
   var todayKey=cycleBaseKey(new Date());
   var cycleOrders=Object.values(orders).filter(function(o){if(!o||!o.date)return false;return cycleBaseKey(new Date(o.date))===todayKey;});
   var sub=cycleOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
   var proc=cycleOrders.filter(function(o){return o.status==="processed";}).length;
-  var activeVendorName=((suppliers||[]).find(function(v){return v.id===vendorOrdersOpenVendor;})||{}).name||vendorOrdersOpenVendor||"None";
+  var vendorSummary=summarizeVendorKeys(activeVendorOrderIds,suppliers);
   // Pending reminders: managers who haven't submitted for active order
   var isStoreOrderSent=function(o){
     if(!o) return false;
@@ -901,8 +1026,25 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
   };
   var pendingAlerts=[];
   if(aot){stores.forEach(function(st){var o=getCurrentOrderForStoreType(orders,st.id,aot,"vegetables",null,manualOpenOrder,manualOpenSeq);if(!isStoreOrderSent(o)){var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});pendingAlerts.push({storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A",phone:mgr?mgr.phone:"N/A"});}});}
-  var vendorPendingAlerts=[];
-  if(vendorOrdersOpenVendor){stores.forEach(function(st){var o=getCurrentOrderForStoreType(orders,st.id,"VENDOR","vendor_orders",vendorOrdersOpenVendor,manualOpenOrder,manualOpenSeq);if(!isStoreOrderSent(o)){var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});vendorPendingAlerts.push({storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A"});}});}
+  var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
+    var vendorName=vendorDisplayName(suppliers,vendorKey);
+    var pending=[];
+    stores.forEach(function(st){
+      var o=getCurrentOrderForStoreType(orders,st.id,"VENDOR","vendor_orders",vendorKey,manualOpenOrder,manualOpenSeq);
+      if(!isStoreOrderSent(o)){
+        var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});
+        pending.push({storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A"});
+      }
+    });
+    return {vendorKey:vendorKey,vendorName:vendorName,pendingAlerts:pending};
+  });
+  var vendorStatValue=!vendorGroups.length?"Locked":(vendorGroups.length===1?vendorGroups[0].vendorName:(vendorGroups.length+" Open"));
+  var openVendorOrdersPage=function(vendorKey){
+    if(vendorKey&&setConsolidatedRequest){
+      setConsolidatedRequest({category:"vendor_orders",vendorKey:vendorKey});
+    }
+    setPage("consolidated");
+  };
   var sendOneReminder=async function(row){
     try{
       if(!aot) return;
@@ -929,10 +1071,10 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
       }
     }catch(e){toast(e.message,true);}
   };
-  var sendOneVendorReminder=async function(row){
+  var sendOneVendorReminder=async function(row,vendorKey){
     try{
-      if(!vendorOrdersOpenVendor) return;
-      var resp=await apiClient.orders.sendReminder("VENDOR",row.storeId,"vendor_orders",vendorOrdersOpenVendor);
+      if(!vendorKey) return;
+      var resp=await apiClient.orders.sendReminder("VENDOR",row.storeId,"vendor_orders",vendorKey);
       if((resp.sent||0)>0){toast("SMS sent: "+(resp.sent||0));}
       else if((resp.failed||0)>0){
         var msg=(resp.errors&&resp.errors[0]&&resp.errors[0].error)?resp.errors[0].error:"SMS failed";
@@ -942,10 +1084,10 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
       }
     }catch(e){toast(e.message,true);}
   };
-  var sendAllVendorReminders=async function(){
+  var sendAllVendorReminders=async function(vendorKey){
     try{
-      if(!vendorOrdersOpenVendor) return;
-      var resp=await apiClient.orders.sendReminder("VENDOR",null,"vendor_orders",vendorOrdersOpenVendor);
+      if(!vendorKey) return;
+      var resp=await apiClient.orders.sendReminder("VENDOR",null,"vendor_orders",vendorKey);
       if((resp.sent||0)>0){toast("SMS sent: "+(resp.sent||0)+" / "+(resp.total||0));}
       else if((resp.failed||0)>0){
         var msg=(resp.errors&&resp.errors[0]&&resp.errors[0].error)?resp.errors[0].error:"SMS failed";
@@ -963,8 +1105,24 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
       <div style={S.sc}><div style={S.sL}>Processed</div><div style={Object.assign({},S.sV,{color:"#0F766E"})}>{proc}</div></div>
       <div style={S.sc}><div style={S.sL}>Pending</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{aot?pendingAlerts.length:"-"}</div></div>
       <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{aot?"Order "+aot:"None"}</div></div>
-      <div style={S.sc}><div style={S.sL}>Vendor Orders</div><div style={Object.assign({},S.sV,{color:vendorOrdersOpenVendor?"#16A34A":"#6B7280",fontSize:18})}>{vendorOrdersOpenVendor?activeVendorName:"Locked"}</div></div>
+      <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
+    {vendorGroups.map(function(group){return(<div key={group.vendorKey} style={S.card}>
+      <div style={S.cH}>
+        <div>
+          <div style={Object.assign({},S.t,{color:"#166534"})}>{group.vendorName} Order Active</div>
+          <div style={S.d}>{group.pendingAlerts.length} stores still need to place this vendor order.</div>
+        </div>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {group.pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){sendAllVendorReminders(group.vendorKey);}}>Send Reminder to All</button>}
+          <button style={Object.assign({},S.b,S.bP)} onClick={function(){openVendorOrdersPage(group.vendorKey);}}>Open {group.vendorName}</button>
+        </div>
+      </div>
+      {group.pendingAlerts.length>0&&<div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Manager</th><th style={S.th}>Action</th></tr></thead><tbody>
+        {group.pendingAlerts.map(function(row){return <tr key={row.storeId}><td style={S.td}>{row.store}</td><td style={S.td}>{row.manager}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){sendOneVendorReminder(row,group.vendorKey);}}>Send SMS</button></td></tr>;})}
+      </tbody></table></div>}
+      {group.pendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted the active vendor order.</div>}
+    </div>);})}
     {aot&&(<div style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Order {aot}</div><div style={S.d}>These stores have not submitted yet. Auto SMS runs in final 1 hour window every 30 minutes.</div></div>{pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={sendAllReminders}>Send Reminder to All</button>}</div>
       {pendingAlerts.length>0&&<div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Manager</th><th style={S.th}>Phone</th><th style={S.th}>Action</th></tr></thead><tbody>
         {pendingAlerts.map(function(a,i){return <tr key={i}><td style={S.td}>{a.store}</td><td style={S.td}>{a.manager}</td><td style={S.tm}>{a.phone}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){sendOneReminder(a);}}>Send SMS</button></td></tr>;})}
@@ -972,25 +1130,10 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
       {pendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted Order {aot}.</div>}
     </div>)}
     {notifs.map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
-    {vendorOrdersOpenVendor&&(<div style={S.card}>
-      <div style={S.cH}>
-        <div>
-          <div style={Object.assign({},S.t,{color:"#166534"})}>Vendor Orders Active - {activeVendorName}</div>
-          <div style={S.d}>{vendorPendingAlerts.length} stores still need to place this vendor order.</div>
-        </div>
-        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-          {vendorPendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={sendAllVendorReminders}>Send Reminder to All</button>}
-          <button style={Object.assign({},S.b,S.bP)} onClick={function(){setPage("consolidated");}}>Open Vendor Orders</button>
-        </div>
-      </div>
-      {vendorPendingAlerts.length>0&&<div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Manager</th><th style={S.th}>Action</th></tr></thead><tbody>
-        {vendorPendingAlerts.map(function(row){return <tr key={row.storeId}><td style={S.td}>{row.store}</td><td style={S.td}>{row.manager}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){sendOneVendorReminder(row);}}>Send SMS</button></td></tr>;})}
-      </tbody></table></div>}
-      {vendorPendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted the active vendor order.</div>}
-    </div>)}
     <div style={S.card}><div style={S.cH}><div style={S.t}>Quick Actions</div></div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
         <button style={Object.assign({},S.b,S.bP)} onClick={function(){setPage("consolidated");}}>Consolidated</button>
+        {vendorGroups.map(function(group){return <button key={group.vendorKey} style={Object.assign({},S.b,S.bS)} onClick={function(){openVendorOrdersPage(group.vendorKey);}}>{group.vendorName}</button>;})}
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("supplier-orders");}}>Supplier Orders</button>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("reports");}}>Reports</button>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("items");}}>Items</button>
@@ -1003,22 +1146,30 @@ function AdminDash({orders,users,items,notifs,aot,setPage,stores,schedule,toast,
 }
 
 /* ═══ MANAGER DASHBOARD ═══ */
-function MgrDash({user,orders,notifs,aot,setPage,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,vendorOrdersOpenVendor,suppliers,setEntryType}){
+function MgrDash({user,orders,notifs,aot,setPage,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setDraftRequest}){
   var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId;
   var my=Object.keys(orders).filter(function(k){return k.indexOf(user.storeId)===0;});
   var sub=my.filter(function(k){return orders[k].status==="submitted"||orders[k].status==="processed";}).length;
   var curOrder=aot?getCurrentOrderForStoreType(orders,user.storeId,aot,"vegetables",null,manualOpenOrder,manualOpenSeq):null;
   var curStatus=curOrder?curOrder.status:null;
-  var activeVendor=((suppliers||[]).find(function(v){return v.id===vendorOrdersOpenVendor;})||null);
-  var vendorOrder=vendorOrdersOpenVendor?getCurrentOrderForStoreType(orders,user.storeId,"VENDOR","vendor_orders",vendorOrdersOpenVendor,manualOpenOrder,manualOpenSeq):null;
-  var vendorStatus=vendorOrder?vendorOrder.status:null;
+  var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
+    var vendorName=vendorDisplayName(suppliers,vendorKey);
+    var vendorOrder=getCurrentOrderForStoreType(orders,user.storeId,"VENDOR","vendor_orders",vendorKey,manualOpenOrder,manualOpenSeq);
+    return {vendorKey:vendorKey,vendorName:vendorName,vendorStatus:vendorOrder?vendorOrder.status:null};
+  });
+  var vendorSummary=summarizeVendorKeys(activeVendorOrderIds,suppliers);
+  var vendorStatValue=!vendorGroups.length?"Locked":(vendorGroups.length===1?vendorGroups[0].vendorName:(vendorGroups.length+" Open"));
+  var openVendorOrder=function(vendorKey){
+    if(setDraftRequest) setDraftRequest({type:"VENDOR",category:"vendor_orders",vendorKey:vendorKey});
+    setPage("order-entry");
+  };
   return(<div>
     {notifs.map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={S.sg}>
       <div style={S.sc}><div style={S.sL}>Your Store</div><div style={Object.assign({},S.sV,{color:"#166534",fontSize:16})}>{sName}</div></div>
       <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:aot?"#34D399":"#6B7186",fontSize:18})}>{aot?"Order "+aot:"None"}</div></div>
       <div style={S.sc}><div style={S.sL}>Completed</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div><div style={S.sS}>{my.length} total</div></div>
-      <div style={S.sc}><div style={S.sL}>Vendor Order</div><div style={Object.assign({},S.sV,{color:vendorOrdersOpenVendor?"#16A34A":"#6B7280",fontSize:18})}>{vendorOrdersOpenVendor?((activeVendor&&activeVendor.name)||vendorOrdersOpenVendor):"Locked"}</div></div>
+      <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
     {aot&&(<div style={S.card}>
       <div style={S.cH}>
@@ -1029,20 +1180,20 @@ function MgrDash({user,orders,notifs,aot,setPage,stores,schedule,orderMsgs,manua
         {curStatus!=="submitted"&&curStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){setPage("order-entry");}}>{curStatus==="draft"||curStatus==="draft_shared"?"Open Draft":"Place Order"}</button>}
       </div>
     </div>)}
-    {vendorOrdersOpenVendor&&(<div style={S.card}>
+    {vendorGroups.map(function(group){return(<div key={group.vendorKey} style={S.card}>
       <div style={S.cH}>
-        <div>{vendorStatus==="submitted"?(<Fragment><div style={Object.assign({},S.t,{color:"#34D399"})}>Vendor Order is Submitted</div><div style={S.d}>Your {((activeVendor&&activeVendor.name)||"active vendor")} order has been submitted.</div></Fragment>)
-          :vendorStatus==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>Vendor Order is Processed</div><div style={S.d}>Admin has processed this vendor order.</div></Fragment>)
-          :vendorStatus==="draft"||vendorStatus==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>Vendor Order is Draft</div><div style={S.d}>Draft saved for {((activeVendor&&activeVendor.name)||"the active vendor")}.</div></Fragment>)
-          :(<Fragment><div style={Object.assign({},S.t,{color:"#166534"})}>Vendor Order - Action Required</div><div style={S.d}>{((activeVendor&&activeVendor.name)||"Active vendor")} is open for ordering.</div></Fragment>)}</div>
-        {vendorStatus!=="submitted"&&vendorStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setEntryType)setEntryType("VENDOR");setPage("order-entry");}}>{vendorStatus==="draft"||vendorStatus==="draft_shared"?"Open Vendor Draft":"Place Vendor Order"}</button>}
+        <div>{group.vendorStatus==="submitted"?(<Fragment><div style={Object.assign({},S.t,{color:"#34D399"})}>{group.vendorName} is Submitted</div><div style={S.d}>Your {group.vendorName} order has been submitted.</div></Fragment>)
+          :group.vendorStatus==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>{group.vendorName} is Processed</div><div style={S.d}>Admin has processed this vendor order.</div></Fragment>)
+          :group.vendorStatus==="draft"||group.vendorStatus==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>{group.vendorName} is Draft</div><div style={S.d}>Draft saved for {group.vendorName}.</div></Fragment>)
+          :(<Fragment><div style={Object.assign({},S.t,{color:"#166534"})}>{group.vendorName} - Action Required</div><div style={S.d}>{group.vendorName} is open for ordering.</div></Fragment>)}</div>
+        {group.vendorStatus!=="submitted"&&group.vendorStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){openVendorOrder(group.vendorKey);}}>{group.vendorStatus==="draft"||group.vendorStatus==="draft_shared"?("Open "+group.vendorName+" Draft"):("Place "+group.vendorName+" Order")}</button>}
       </div>
-    </div>)}
+    </div>);})}
   </div>);
 }
 
 /* ═══ ORDER ENTRY ═══ */
-function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,manualOpenLeaves,vendorOrdersOpenVendor,categoryTemplates,entryType,setEntryType,draftRequest,setDraftRequest,notifs,suppliers}){
+function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,schedule,orderMsgs,manualOpenOrder,manualOpenSeq,manualOpenLeaves,activeVendorOrderIds,categoryTemplates,entryType,setEntryType,draftRequest,setDraftRequest,notifs,suppliers}){
   var _s=useState(entryType||aot||"A"),sel=_s[0],setSel=_s[1];
   var _cat=useState("vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
   var _vk=useState(null),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
@@ -1052,7 +1203,9 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
   var unsavedByOrderKeyRef=useRef({});
   var isAdmin=!!(user&&user.role==="admin");
   var vendorOptions=Array.isArray(suppliers)?suppliers:[];
-  var visibleVendorOptions=isAdmin?vendorOptions:vendorOptions.filter(function(v){return !vendorOrdersOpenVendor||v.id===vendorOrdersOpenVendor;});
+  var activeVendorIds=normalizeVendorOrderList(activeVendorOrderIds);
+  var activeVendorIdsKey=activeVendorIds.join("|");
+  var visibleVendorOptions=isAdmin?vendorOptions:vendorOptions.filter(function(v){return activeVendorIds.indexOf(v.id)>=0;});
   useEffect(function(){
     if(selCategory==="vendor_orders"){
       return;
@@ -1061,23 +1214,27 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
     }
   },[selCategory,selectedVendorKey]);
   useEffect(function(){
-    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"&&!isAdmin){
+    if(!activeVendorIds.length&&selCategory==="vendor_orders"&&!isAdmin){
       setSelCategory("vegetables");
       setSelectedVendorKey(null);
     }
-  },[vendorOrdersOpenVendor,selCategory,isAdmin]);
+  },[activeVendorIdsKey,selCategory,isAdmin]);
   useEffect(function(){
     if(isAdmin) return;
     if(selCategory!=="vendor_orders") return;
-    var activeVendorKey=String(vendorOrdersOpenVendor||"").trim()||null;
-    if(!activeVendorKey){
+    if(!activeVendorIds.length){
       if(selectedVendorKey) setSelectedVendorKey(null);
       return;
     }
-    if(selectedVendorKey!==activeVendorKey){
-      setSelectedVendorKey(activeVendorKey);
+    if(selectedVendorKey&&activeVendorIds.indexOf(selectedVendorKey)>=0) return;
+    if(activeVendorIds.length===1){
+      setSelectedVendorKey(activeVendorIds[0]);
+      return;
     }
-  },[vendorOrdersOpenVendor,selCategory,selectedVendorKey,isAdmin]);
+    if(selectedVendorKey){
+      setSelectedVendorKey(null);
+    }
+  },[activeVendorIdsKey,selCategory,selectedVendorKey,isAdmin]);
   var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
   var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
@@ -1087,7 +1244,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
   var currentType=selCategory==="vendor_orders"?"VENDOR":sel;
   var itemList=useMemo(function(){return sortItems(items.filter(function(it){return normalizeCategory(it.category)===normalizeCategory(selCategory)&&normalizeVendorKey(selCategory,it.vendorKey)===resolvedVendorKey;}));},[items,selCategory,resolvedVendorKey]);
   var oKey=user.storeId+"_"+dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);var lwKey=user.storeId+"_"+lastWeekKey(currentType,selCategory,resolvedVendorKey);
-  var vendorLocked=selCategory==="vendor_orders"&&(!vendorOrdersOpenVendor||!resolvedVendorKey||resolvedVendorKey!==vendorOrdersOpenVendor);
+  var vendorLocked=selCategory==="vendor_orders"&&!isAdmin&&(!resolvedVendorKey||activeVendorIds.indexOf(resolvedVendorKey)<0);
   var ex=getCurrentOrderForStoreType(orders,user.storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq);var lw=orders[lwKey];var locked=selCategory==="vendor_orders"?vendorLocked:!isCategoryOpenForType(selCategory,sel,aot,manualOpenLeaves);
   // Draft and draft_shared remain editable; only submitted/processed are read-only.
   var done=ex&&(ex.status==="submitted"||ex.status==="processed");
@@ -1131,12 +1288,13 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
   useEffect(function(){
     if(entryType==="VENDOR"){
       setSelCategory("vendor_orders");
-      if(!isAdmin&&vendorOrdersOpenVendor){setSelectedVendorKey(vendorOrdersOpenVendor);}
+      if(!isAdmin&&activeVendorIds.length===1){setSelectedVendorKey(activeVendorIds[0]);}
+      if(!isAdmin&&!activeVendorIds.length){setSelectedVendorKey(null);}
     }else if(entryType&&entryType!==sel){
       setSel(entryType);
     }
     if(entryType&&setEntryType){setEntryType(null);}
-  },[entryType,isAdmin,vendorOrdersOpenVendor,sel]);
+  },[entryType,isAdmin,activeVendorIdsKey,sel]);
   useEffect(function(){
     if(!draftRequest) return;
     var nextCategory=normalizeCategory(draftRequest.category||"vegetables");
@@ -1184,7 +1342,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
     });
   };
   var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||"";
-  var activeVendorName=((visibleVendorOptions||[]).find(function(v){return v.id===resolvedVendorKey;})||{}).name||resolvedVendorKey||"Vendor";
+  var activeVendorName=vendorDisplayName(suppliers,resolvedVendorKey);
   var downloadOrderExcel=async function(payload){
     try{
       var po=payload||{};
@@ -1218,6 +1376,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
   var filled=Object.values(qty).filter(function(v){return v>0;}).length;
   var totalCases=Object.values(qty).reduce(function(a,b){return a+(parseInt(b,10)||0);},0);
   var hasLines=Object.keys(Object.assign({},qty,notes)).some(function(code){return (Number(qty[code])||0)>0 || String(notes[code]||"").trim();});
+  var actionBlocked=locked||(selCategory==="vendor_orders"&&!resolvedVendorKey);
   var sorted=useMemo(function(){
     var known=itemList.slice();
     var knownCodes={};known.forEach(function(it){knownCodes[it.code]=true;});
@@ -1234,13 +1393,13 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
         setSelCategory={setSelCategory}
         orderType={sel}
         setOrderType={setSel}
-        getCategoryDisabled={function(catId){return catId==="vendor_orders"?(!vendorOrdersOpenVendor&&!isAdmin):!isCategoryOpenForType(catId,sel,aot,manualOpenLeaves);}}
+        getCategoryDisabled={function(catId){return catId==="vendor_orders"?(!activeVendorIds.length&&!isAdmin):!isCategoryOpenForType(catId,sel,aot,manualOpenLeaves);}}
         getOrderTypeDisabled={function(){return false;}}
         orderTypeSuffix={function(t){return t===aot?" *":"";}}
       />
     </div>
-    {selCategory==="vendor_orders"&&<div style={S.card}><div style={S.lb}>Vendor</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}} disabled={!!vendorOrdersOpenVendor&&!isAdmin}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>{!!vendorOrdersOpenVendor&&!isAdmin&&selectedVendorKey&&<div style={Object.assign({},S.d,{marginTop:6})}>Admin opened vendor orders for {activeVendorName}. This store can only place that vendor order right now.</div>}</div>}
-    {locked&&<div style={S.nP}>{selCategory==="vendor_orders"?"Vendor orders stay locked until admin/warehouse activates a vendor.":(CATEGORY_LABELS[selCategory]+" for Order "+sel+" is locked. "+(selCategory==="leaves"?"Leaves opens automatically with VEG Order B, or when Leaves manual override is enabled in Settings.":("Opens on "+(DAYS[schedule[sel]]||"Unset")+".")))}</div>}
+    {selCategory==="vendor_orders"&&<div style={S.card}><div style={S.lb}>Supplier</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}} disabled={!isAdmin&&visibleVendorOptions.length===1&&!!selectedVendorKey}><option value="">Select supplier</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>{!isAdmin&&visibleVendorOptions.length>0&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{visibleVendorOptions.map(function(v){var isSelected=selectedVendorKey===v.id;return <button key={v.id} style={Object.assign({},S.b,isSelected?S.bP:S.bS,{padding:"4px 10px",fontSize:10.5})} onClick={function(){setSelectedVendorKey(v.id);}}>{v.name}</button>;})}</div>}{!isAdmin&&activeVendorIds.length===1&&selectedVendorKey&&<div style={Object.assign({},S.d,{marginTop:6})}>Admin opened {activeVendorName}. This store can place that supplier order now.</div>}{!isAdmin&&activeVendorIds.length>1&&<div style={Object.assign({},S.d,{marginTop:6})}>Admin opened multiple supplier orders. Select one of the open suppliers: {summarizeVendorKeys(activeVendorIds,suppliers)}.</div>}</div>}
+    {locked&&<div style={S.nP}>{selCategory==="vendor_orders"?"Vendor orders stay locked until admin/warehouse activates vendor access for stores.":(CATEGORY_LABELS[selCategory]+" for Order "+sel+" is locked. "+(selCategory==="leaves"?"Leaves opens automatically with VEG Order B, or when Leaves manual override is enabled in Settings.":("Opens on "+(DAYS[schedule[sel]]||"Unset")+".")))}</div>}
     {selCategory==="vendor_orders"&&!resolvedVendorKey&&<div style={S.nP}>Select a vendor to work with vendor-specific orders.</div>}
     {done&&<div style={S.nG}>{selCategory==="vendor_orders"?("Vendor Order for "+activeVendorName):(""+CATEGORY_LABELS[selCategory]+" Order "+sel)} has been {ex.status}. Read only.</div>}
     {isDraftOrder&&!isEditingDraft&&<div style={S.nP}>Draft saved only. It has not been sent yet. Click Edit Draft to modify it, or click Submit to send it to admin/consolidated and lock editing.</div>}
@@ -1249,7 +1408,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
       <div><div style={S.t}>{selCategory==="vendor_orders"?("Vendor Orders - "+activeVendorName+" - "+sName):(CATEGORY_LABELS[selCategory]+" - Order "+sel+" - "+sName)}</div><div style={S.d}>{filled} items | {ex?ex.status:"New"}</div></div>
       <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadOrderExcel({items:qty,notes:notes,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Download Document</button>
-        {done?null:(isDraftOrder&&!isEditingDraft?<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={function(){setIsEditingDraft(true);}}>Edit Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}}>Submit</button></Fragment>:<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={save}>Save Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}}>Submit</button></Fragment>)}
+        {done?null:(isDraftOrder&&!isEditingDraft?<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={function(){setIsEditingDraft(true);}} disabled={locked}>Edit Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}} disabled={actionBlocked}>Submit</button></Fragment>:<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={save} disabled={actionBlocked}>Save Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}} disabled={actionBlocked}>Submit</button></Fragment>)}
       </div>
     </div>
     <div style={Object.assign({},S.card,{padding:"10px 14px"})}>
@@ -1274,7 +1433,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
       <div style={{fontSize:13,color:"#64748B",marginBottom:20,lineHeight:1.6}}>Are you sure you want to submit this order?<br/>This will send it to admin/consolidated and you will <strong style={{color:"#F87171"}}>not be able to edit</strong> it after submission.</div>
       <div style={{display:"flex",gap:8,justifyContent:"center"}}>
         <button style={Object.assign({},S.b,S.bS,{padding:"9px 24px"})} onClick={function(){setShowConfirm(false);}}>No, Go Back & Edit</button>
-        <button style={Object.assign({},S.b,S.bP,{padding:"9px 24px"})} onClick={doSubmit}>Yes, Submit</button>
+        <button style={Object.assign({},S.b,S.bP,{padding:"9px 24px"})} onClick={doSubmit} disabled={actionBlocked}>Yes, Submit</button>
       </div>
     </div></div>)}
   </div>);
@@ -1341,7 +1500,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
 }
 
 /* ═══ ORDER MONITOR (with time + process button) ═══ */
-function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,setPage,setConsolidatedType,setReopenedFromId,suppliers}){
+function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,setPage,setConsolidatedType,setConsolidatedRequest,setReopenedFromId,suppliers}){
   var _f=useState("all"),ft=_f[0],sFt=_f[1];
   var _cl=useState([]),completedLogs=_cl[0],setCompletedLogs=_cl[1];
   var _sd=useState(null),selDone=_sd[0],setSelDone=_sd[1];
@@ -1425,7 +1584,9 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     try{
       await apiClient.supplierOrders.reopen(log._id);
       await refreshCompletedLogs();
-      if(setConsolidatedType) setConsolidatedType(log.type);
+      var isVendorLog=normalizeCategory(log&&log.category||"vegetables")==="vendor_orders";
+      if(setConsolidatedRequest) setConsolidatedRequest(isVendorLog?{category:"vendor_orders",vendorKey:log.vendorKey||null}:null);
+      if(setConsolidatedType) setConsolidatedType(isVendorLog?null:log.type);
       if(setReopenedFromId) setReopenedFromId(log._id||null);
       if(setPage) setPage("consolidated");
       toast("Completed order reopened. You can edit and resend from Consolidated.");
@@ -1557,7 +1718,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
 }
 
 /* ═══ CONSOLIDATED ═══ */
-function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendor,setVendorOrdersOpenVendor,consolidatedType,setConsolidatedType,reopenedFromId,setReopenedFromId}){
+function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendors,setVendorOrdersOpenVendors,vendorOrderConfigs,setVendorOrderConfigs,consolidatedType,setConsolidatedType,consolidatedRequest,setConsolidatedRequest,reopenedFromId,setReopenedFromId}){
   var _v=useState(consolidatedType||aot||"A"),vt=_v[0],sVt=_v[1];
   var _cat=useState("vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
   var _vk=useState(null),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
@@ -1631,7 +1792,28 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         || supplierEmailsText(s).toLowerCase().indexOf(q)>=0;
     });
   },[supplierList,supplierSearch]);
-  var visibleVendorOptions=supplierList.filter(function(v){return !resolvedVendorKey||v.id===resolvedVendorKey||selCategory!=="vendor_orders"||v.id===selectedVendorKey;});
+  var configuredVendorOrderIds=normalizeVendorOrderList(vendorOrdersOpenVendors);
+  var configuredVendorOrderIdsKey=configuredVendorOrderIds.join("|");
+  var visibleVendorOptions=supplierList.filter(function(v){
+    if(selCategory!=="vendor_orders") return true;
+    return configuredVendorOrderIds.indexOf(v.id)>=0||v.id===selectedVendorKey;
+  });
+  var syncVendorStateFromResponse=function(resp){
+    if(!resp) return;
+    if(setVendorOrdersOpenVendors&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendors")){
+      setVendorOrdersOpenVendors(normalizeVendorOrderList(resp.vendorOrdersOpenVendors||[]));
+    }
+    if(setVendorOrderConfigs&&Object.prototype.hasOwnProperty.call(resp,"vendorOrderConfigs")){
+      setVendorOrderConfigs(normalizeVendorOrderConfigs(resp.vendorOrderConfigs,resp.vendorOrdersOpenVendors));
+      return;
+    }
+    if(setVendorOrderConfigs&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendors")){
+      var nextVendorIds=normalizeVendorOrderList(resp.vendorOrdersOpenVendors||[]);
+      setVendorOrderConfigs(function(prev){
+        return normalizeVendorOrderConfigs(prev).filter(function(config){return nextVendorIds.indexOf(config.vendorKey)>=0;});
+      });
+    }
+  };
   useEffect(function(){
     if(selCategory==="vendor_orders"){
       return;
@@ -1640,12 +1822,21 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     }
   },[selCategory,selectedVendorKey]);
   useEffect(function(){
-    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"){
-      setSelCategory("vegetables");
-      setSelectedVendorKey(null);
-      setStep(1);
+    if(selCategory!=="vendor_orders") return;
+    if(selectedVendorKey) return;
+    if(configuredVendorOrderIds.length===1){
+      setSelectedVendorKey(configuredVendorOrderIds[0]);
     }
-  },[vendorOrdersOpenVendor,selCategory]);
+  },[selCategory,selectedVendorKey,configuredVendorOrderIdsKey]);
+  useEffect(function(){
+    if(!consolidatedRequest) return;
+    var nextCategory=normalizeCategory(consolidatedRequest.category||"vegetables");
+    var nextVendorKey=normalizeVendorKey(nextCategory,consolidatedRequest.vendorKey||null);
+    setSelCategory(nextCategory);
+    setSelectedVendorKey(nextVendorKey);
+    setStep(1);
+    if(setConsolidatedRequest) setConsolidatedRequest(null);
+  },[consolidatedRequest]);
   var supplierById=useMemo(function(){var m={};supplierList.forEach(function(s){m[s.id]=s;});return m;},[supplierList]);
   var selectedVendor=supplierById[resolvedVendorKey]||null;
   var primaryOpenType=(consolidatedType||aot||null);
@@ -2051,8 +2242,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var latestLogs=await apiClient.supplierOrders.getAll();
       setLogs(latestLogs||[]);
       setSentSplitBySupplier(nextSent);
-      if(isSingleVendorFlow&&setVendorOrdersOpenVendor&&resp&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendor")){
-        setVendorOrdersOpenVendor(resp.vendorOrdersOpenVendor||null);
+      if(isSingleVendorFlow){
+        syncVendorStateFromResponse(resp);
       }
       if(isFinal){
         setForceCompletedLock(true);
@@ -2155,9 +2346,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var resp=await apiClient.orders.emailVendorIndividual(selectedVendor.id,recipientEmails,selectedVendor.name);
       var latestLogs=await apiClient.supplierOrders.getAll();
       setLogs(latestLogs||[]);
-      if(setVendorOrdersOpenVendor&&resp&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendor")){
-        setVendorOrdersOpenVendor(resp.vendorOrdersOpenVendor||null);
-      }
+      syncVendorStateFromResponse(resp);
       if(setReopenedFromId) setReopenedFromId(null);
       toast("Individual store documents sent to "+selectedVendor.name);
       setStep(1);
@@ -2257,6 +2446,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     </div>
     {selCategory!=="vendor_orders"&&primaryOpenType&&<div style={S.nI}>{manualOpenOrder?("Manual override active: only Order "+primaryOpenType+" is open right now."):("Schedule mode active: only Order "+primaryOpenType+" is open right now.")}</div>}
     {selCategory!=="vendor_orders"&&carryOpenType&&carryOpenType!==primaryOpenType&&<div style={S.nI}>Order {carryOpenType} remains available for up to 24 hours because supplier email has not been sent yet.</div>}
+    {selCategory==="vendor_orders"&&!selectedVendorKey&&visibleVendorOptions.length===0&&<div style={S.nP}>No vendor orders are currently configured. Reopen a vendor order from Order Monitor to edit or resend it.</div>}
     {selCategory==="leaves"&&vt==="B"&&!leavesSentThisWeek&&<div style={S.nP}>Leaves Order B is pending. Send supplier email to complete it.</div>}
     {!latestTypeLog&&unsentHoursLeft!==null&&unsentHoursLeft>0&&<div style={S.nI}>This consolidated order remains open for {unsentHoursLeft} more hour(s) because supplier email has not been sent yet.</div>}
     {!latestTypeLog&&unsentHoursLeft===0&&<div style={S.nP}>This consolidated order is now locked because 24 hours elapsed without sending supplier email.</div>}
@@ -2420,7 +2610,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     </div></div>)}
   </div>);
 }
-function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendor}){
+function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,activeVendorOrderIds}){
   var _v=useState(aot||"A"),vt=_v[0],sVt=_v[1];
   var _cat=useState("vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
   var _vk=useState(null),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
@@ -2444,6 +2634,8 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   },[]);
   // Compute totals per item across all stores
   const supList = suppliersForCategory(suppliers,selCategory);
+  var preferredVendorIds=normalizeVendorOrderList(activeVendorOrderIds);
+  var preferredVendorIdsKey=preferredVendorIds.join("|");
   useEffect(function(){
     if(selCategory==="vendor_orders"){
       return;
@@ -2452,11 +2644,12 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
     }
   },[selCategory,selectedVendorKey]);
   useEffect(function(){
-    if(!vendorOrdersOpenVendor&&selCategory==="vendor_orders"){
-      setSelCategory("vegetables");
-      setSelectedVendorKey(null);
+    if(selCategory!=="vendor_orders") return;
+    if(selectedVendorKey) return;
+    if(preferredVendorIds.length===1){
+      setSelectedVendorKey(preferredVendorIds[0]);
     }
-  },[vendorOrdersOpenVendor,selCategory]);
+  },[selCategory,selectedVendorKey,preferredVendorIdsKey]);
   const itemList = Array.isArray(items) ? items.filter(function(it){return normalizeCategory(it.category)===normalizeCategory(selCategory)&&normalizeVendorKey(selCategory,it.vendorKey)===resolvedVendorKey;}) : [];
   var totals=useMemo(function(){var t={};itemList.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;});if(sum>0)t[it.code]=sum;});return t;},[itemList,stores,orders,dk]);
   // Group by supplier
@@ -3118,15 +3311,58 @@ function Reports({orders,items,stores}){
 }
 
 /* ═══ SETTINGS (editable schedule + order messages) ═══ */
-function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrder,manualOpenSeq,setManualOpenSeq,manualOpenLeaves,setManualOpenLeaves,vendorOrdersOpenVendor,setVendorOrdersOpenVendor,setReopenedFromId,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo,suppliers}){
+function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrder,manualOpenSeq,setManualOpenSeq,manualOpenLeaves,setManualOpenLeaves,vendorOrderConfigs,setVendorOrderConfigs,setVendorOrdersOpenVendors,scheduleToday,setReopenedFromId,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo,suppliers}){
   var _e=useState(null),ed=_e[0],sEd=_e[1];var _v=useState(0),eV=_v[0],sEV=_v[1];
   var _em=useState(null),emT=_em[0],sEmT=_em[1];var _emV=useState(""),emV=_emV[0],sEmV=_emV[1];
   var _mo=useState(manualOpenOrder||""),moType=_mo[0],sMoType=_mo[1];
   var _mol=useState(!!manualOpenLeaves),moLeaves=_mol[0],sMoLeaves=_mol[1];
-  var _vov=useState(vendorOrdersOpenVendor||""),vendorOpenValue=_vov[0],setVendorOpenValue=_vov[1];
+  var _svk=useState(""),selectedVendorSettingKey=_svk[0],setSelectedVendorSettingKey=_svk[1];
+  var _vws=useState(null),vendorWindowStartValue=_vws[0],setVendorWindowStartValue=_vws[1];
+  var _vwe=useState(null),vendorWindowEndValue=_vwe[0],setVendorWindowEndValue=_vwe[1];
+  var normalizedVendorConfigs=normalizeVendorOrderConfigs(vendorOrderConfigs);
+  var vendorConfigsKey=JSON.stringify(normalizedVendorConfigs);
+  var effectiveToday=Number.isInteger(scheduleToday)?scheduleToday:new Date().getDay();
+  var selectedVendorConfig=normalizedVendorConfigs.find(function(config){return config.vendorKey===selectedVendorSettingKey;})||null;
+  var selectedVendorIsOpenToday=!!(selectedVendorConfig&&isDayWithinRange(effectiveToday,selectedVendorConfig.startDay,selectedVendorConfig.endDay));
+  var configuredVendorRows=normalizedVendorConfigs.slice().sort(function(a,b){
+    return String(vendorDisplayName(suppliers,a.vendorKey)).localeCompare(String(vendorDisplayName(suppliers,b.vendorKey)),undefined,{sensitivity:"base"});
+  }).map(function(config){
+    return {
+      vendorKey:config.vendorKey,
+      vendorName:vendorDisplayName(suppliers,config.vendorKey),
+      startDay:config.startDay,
+      endDay:config.endDay,
+      windowText:vendorWindowText(config.startDay,config.endDay),
+      openToday:isDayWithinRange(effectiveToday,config.startDay,config.endDay),
+    };
+  });
   useEffect(function(){ sMoType(manualOpenOrder||""); },[manualOpenOrder]);
   useEffect(function(){ sMoLeaves(!!manualOpenLeaves); },[manualOpenLeaves]);
-  useEffect(function(){ setVendorOpenValue(vendorOrdersOpenVendor||""); },[vendorOrdersOpenVendor]);
+  useEffect(function(){
+    if(selectedVendorConfig){
+      setVendorWindowStartValue(parseOptionalDay(selectedVendorConfig.startDay));
+      setVendorWindowEndValue(parseOptionalDay(selectedVendorConfig.endDay));
+      return;
+    }
+    setVendorWindowStartValue(null);
+    setVendorWindowEndValue(null);
+  },[selectedVendorSettingKey,vendorConfigsKey]);
+  useEffect(function(){
+    if(vendorWindowStartValue==="closed"&&vendorWindowEndValue!=="closed"){
+      setVendorWindowEndValue("closed");
+      return;
+    }
+    if(vendorWindowStartValue!=="closed"&&vendorWindowEndValue==="closed"){
+      setVendorWindowEndValue(null);
+    }
+  },[vendorWindowStartValue,vendorWindowEndValue]);
+  var applyVendorConfigState=function(nextConfigs){
+    var normalized=normalizeVendorOrderConfigs(nextConfigs);
+    if(setVendorOrderConfigs) setVendorOrderConfigs(normalized);
+    if(setVendorOrdersOpenVendors){
+      setVendorOrdersOpenVendors(normalizeVendorOrderList(normalized.filter(function(config){return config.enabled!==false;}).map(function(config){return config.vendorKey;})));
+    }
+  };
   var saveDay=async function(){
       if (eV === '' || eV === null) {
         toast('Please select a day', true);
@@ -3174,15 +3410,52 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       }catch(e){toast(e.message,true);}  };
   var saveVendorOrdersOpen=async function(){
       try{
-        var resp=await apiClient.settings.updateVendorOrdersOpen(vendorOpenValue||null);
-        if(setVendorOrdersOpenVendor) setVendorOrdersOpenVendor(resp.vendorOrdersOpenVendor||null);
-        if(setReopenedFromId) setReopenedFromId(resp.reopenedSupplierOrderId||null);
-        if(resp.vendorOrdersOpenVendor){
-          toast(resp.reopenedSupplierOrderId?("Vendor order reopened for "+resp.vendorOrdersOpenVendor):("Vendor orders open for "+resp.vendorOrdersOpenVendor));
-        }else{
-          toast("Vendor orders locked");
+        if(!selectedVendorSettingKey){
+          toast("Select a supplier first",true);
+          return;
         }
+        if(vendorWindowStartValue==="closed"){
+          await closeVendorSetting(selectedVendorSettingKey);
+          return;
+        }
+        var saveStartDay=parseOptionalDay(vendorWindowStartValue);
+        var saveEndDay=parseOptionalDay(vendorWindowEndValue);
+        if((saveStartDay===null)!==(saveEndDay===null)){
+          toast("Select both From and To days, or leave both blank",true);
+          return;
+        }
+        var resp=await apiClient.settings.updateVendorOrdersOpen({
+          vendorKey:selectedVendorSettingKey,
+          enabled:true,
+          startDay:saveStartDay,
+          endDay:saveEndDay,
+        });
+        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs,resp.vendorOrdersOpenVendors,resp.vendorOrdersWindowStartDay,resp.vendorOrdersWindowEndDay);
+        applyVendorConfigState(nextConfigs);
+        if(setReopenedFromId){
+          var reopenedIds=Array.isArray(resp.reopenedSupplierOrderIds)?resp.reopenedSupplierOrderIds:[];
+          setReopenedFromId(reopenedIds.length===1?reopenedIds[0]:null);
+        }
+        toast("Vendor settings saved for "+vendorDisplayName(suppliers,selectedVendorSettingKey)+" ("+vendorWindowText(saveStartDay,saveEndDay)+")");
       }catch(e){toast(e.message,true);}  };
+  var closeVendorSetting=async function(vendorKey){
+      var targetVendorKey=String(vendorKey||selectedVendorSettingKey||"").trim();
+      if(!targetVendorKey){
+        toast("Select a supplier first",true);
+        return;
+      }
+      try{
+        var resp=await apiClient.settings.updateVendorOrdersOpen({vendorKey:targetVendorKey,enabled:false});
+        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs,resp.vendorOrdersOpenVendors,resp.vendorOrdersWindowStartDay,resp.vendorOrdersWindowEndDay);
+        applyVendorConfigState(nextConfigs);
+        if(setReopenedFromId) setReopenedFromId(null);
+        if(selectedVendorSettingKey===targetVendorKey){
+          setVendorWindowStartValue(null);
+          setVendorWindowEndValue(null);
+        }
+        toast("Vendor closed for "+vendorDisplayName(suppliers,targetVendorKey));
+      }catch(e){toast(e.message,true);}
+    };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>
       <div style={Object.assign({},S.tw,{marginTop:4})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Day</th><th style={Object.assign({},S.th,{width:120})}>Actions</th></tr></thead><tbody>
@@ -3230,14 +3503,65 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       </div>
       <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(148,163,184,.24)"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#0F172A",marginBottom:4}}>Vendor Orders Activation</div>
-        <div style={{fontSize:11,color:"#64748B",marginBottom:8}}>Vendor orders stay locked until one vendor is activated. Stores will only see the active vendor.</div>
-        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          <select style={Object.assign({},S.inp,{width:260})} value={vendorOpenValue} onChange={function(e){setVendorOpenValue(e.target.value);}}>
-            <option value="">Lock all vendor orders</option>
+        <div style={{fontSize:11,color:"#64748B",marginBottom:8}}>Pick one supplier from the dropdown and set a From day and To day. Leave both blank to keep that supplier open until changed. If you pick Closed in the first field, the second field will close automatically. You can save multiple suppliers separately.</div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
+          <select style={Object.assign({},S.inp,{width:260})} value={selectedVendorSettingKey} onChange={function(e){setSelectedVendorSettingKey(e.target.value||"");}}>
+            <option value="">Select supplier</option>
             {(suppliers||[]).map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}
           </select>
-          <button style={Object.assign({},S.b,S.bG)} onClick={saveVendorOrdersOpen}>Save Vendor Access</button>
-          {vendorOrdersOpenVendor&&<span style={Object.assign({},S.bg,S.bgW)}>Open Vendor: {vendorOrdersOpenVendor}</span>}
+          {selectedVendorSettingKey&&<span style={Object.assign({},S.bg,selectedVendorIsOpenToday?S.bgG:S.bgY)}>{selectedVendorIsOpenToday?"Open today":"Ready to save"}</span>}
+        </div>
+        {selectedVendorSettingKey&&<div style={Object.assign({},S.card,{marginBottom:10,padding:"12px 14px",background:"rgba(248,250,252,.8)"})}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:8}}>
+            <div><div style={S.t}>{vendorDisplayName(suppliers,selectedVendorSettingKey)}</div><div style={S.d}>{selectedVendorConfig?"Editing saved supplier window":"Create a supplier-specific vendor order window"}</div></div>
+            {selectedVendorConfig&&<span style={Object.assign({},S.bg,S.bgW)}>Current: {vendorWindowText(selectedVendorConfig.startDay,selectedVendorConfig.endDay)}</span>}
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
+            <select style={Object.assign({},S.inp,{width:190})} value={vendorWindowStartValue==null?"":String(vendorWindowStartValue)} onChange={function(e){
+              var value=e.target.value;
+              if(value==="closed"){
+                setVendorWindowStartValue("closed");
+                setVendorWindowEndValue("closed");
+                return;
+              }
+              setVendorWindowStartValue(value===""?null:parseInt(value,10));
+              if(vendorWindowEndValue==="closed") setVendorWindowEndValue(null);
+            }}>
+              <option value="">Today / start day</option>
+              <option value="closed">Closed</option>
+              {DAYS.map(function(day,idx){return <option key={day} value={idx}>{day}</option>;})}
+            </select>
+            <select style={Object.assign({},S.inp,{width:190})} value={vendorWindowEndValue==null?"":String(vendorWindowEndValue)} disabled={vendorWindowStartValue==="closed"} onChange={function(e){
+              var value=e.target.value;
+              if(value==="closed"){
+                setVendorWindowStartValue("closed");
+                setVendorWindowEndValue("closed");
+                return;
+              }
+              setVendorWindowEndValue(value===""?null:parseInt(value,10));
+            }}>
+              <option value="">Close / end day</option>
+              <option value="closed">Closed</option>
+              {DAYS.map(function(day,idx){return <option key={day} value={idx}>{day}</option>;})}
+            </select>
+            <button style={Object.assign({},S.b,S.bG)} onClick={saveVendorOrdersOpen}>Save Supplier Setting</button>
+            <button style={Object.assign({},S.b,S.bD)} onClick={function(){closeVendorSetting(selectedVendorSettingKey);}} disabled={!selectedVendorConfig}>Close Supplier</button>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={Object.assign({},S.bg,vendorWindowStartValue==="closed"?S.bgY:S.bgW)}>Window: {vendorWindowStartValue==="closed"?"Closed":vendorWindowText(vendorWindowStartValue,vendorWindowEndValue)}</span>
+            <span style={Object.assign({},S.bg,S.bgW)}>Saved suppliers: {configuredVendorRows.length}</span>
+          </div>
+        </div>}
+        <div style={Object.assign({},S.tw,{marginTop:6})}>
+          <table style={S.tbl}>
+            <thead><tr><th style={S.th}>Supplier</th><th style={S.th}>Window</th><th style={S.th}>Status</th><th style={S.th}>Action</th></tr></thead>
+            <tbody>
+              {configuredVendorRows.map(function(row){
+                return <tr key={row.vendorKey}><td style={Object.assign({},S.td,{fontWeight:600})}>{row.vendorName}</td><td style={S.td}>{row.windowText}</td><td style={S.td}><span style={Object.assign({},S.bg,row.openToday?S.bgG:S.bgY)}>{row.openToday?"Open today":"Closed today"}</span></td><td style={S.td}><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSelectedVendorSettingKey(row.vendorKey);}}>Edit</button><button style={Object.assign({},S.b,S.bD,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeVendorSetting(row.vendorKey);}}>Close</button></div></td></tr>;
+              })}
+              {configuredVendorRows.length===0&&<tr><td colSpan={4} style={Object.assign({},S.td,{textAlign:"center",padding:20,color:"#64748B"})}>No supplier-specific vendor settings saved yet.</td></tr>}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

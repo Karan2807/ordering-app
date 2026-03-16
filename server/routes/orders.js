@@ -14,19 +14,158 @@ import { sendManualReminders } from '../services/reminderScheduler.js';
 import { sendGraphMail } from '../services/msSendMail.js';
 import { renderVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
+function listifyVendorInputs(input) {
+  if (Array.isArray(input)) return input.slice();
+  if (input && typeof input.values === 'function' && typeof input.size === 'number') {
+    try {
+      return Array.from(input.values());
+    } catch (_err) {
+      return [];
+    }
+  }
+  if (input && typeof input === 'object') {
+    if (input.vendorKey || input.id) return [input];
+    return Object.keys(input).map((key) => {
+      const value = input[key];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return { vendorKey: value.vendorKey || key, ...value };
+      }
+      return { vendorKey: key };
+    });
+  }
+  return input == null || input === '' ? [] : [input];
+}
+
+function extractVendorIdentifier(input) {
+  if (input == null) return '';
+  if (typeof input === 'string' || typeof input === 'number') {
+    const value = String(input).trim();
+    if (!value) return '';
+    const lowered = value.toLowerCase();
+    if (lowered === '[object object]' || lowered === '[object set]') return '';
+    return value;
+  }
+  if (Array.isArray(input)) return extractVendorIdentifier(input[0]);
+  if (typeof input === 'object') {
+    const direct = extractVendorIdentifier(input.vendorKey);
+    if (direct) return direct;
+    const byId = extractVendorIdentifier(input.id);
+    if (byId) return byId;
+    const bySupplierId = extractVendorIdentifier(input.supplierId);
+    if (bySupplierId) return bySupplierId;
+    const byValue = extractVendorIdentifier(input.value);
+    if (byValue) return byValue;
+    const byKey = extractVendorIdentifier(input.key);
+    if (byKey) return byKey;
+  }
+  return '';
+}
+
+function normalizeVendorKeys(input) {
+  const list = listifyVendorInputs(input);
+  const merged = list.map((value) => {
+    return extractVendorIdentifier(value);
+  }).filter(Boolean);
+  return [...new Set(merged)];
+}
+
+function parseOptionalDay(value) {
+  if (value == null || value === '') return null;
+  const day = parseInt(value, 10);
+  return Number.isNaN(day) || day < 0 || day > 6 ? null : day;
+}
+
+function normalizeVendorOrderConfigs(input, fallbackVendorKeys = [], fallbackStartDay = null, fallbackEndDay = null) {
+  let list = listifyVendorInputs(input);
+  const legacyVendorKeys = normalizeVendorKeys(fallbackVendorKeys);
+  if (!list.length && legacyVendorKeys.length) {
+    list = legacyVendorKeys.map((vendorKey) => ({
+      vendorKey,
+      startDay: fallbackStartDay,
+      endDay: fallbackEndDay,
+      enabled: true,
+    }));
+  }
+  const byVendorKey = new Map();
+  list.forEach((entry) => {
+    const raw = entry && typeof entry === 'object' ? entry : { vendorKey: entry };
+    const vendorKey = extractVendorIdentifier(raw);
+    if (!vendorKey) return;
+    let startDay = parseOptionalDay(raw.startDay);
+    let endDay = parseOptionalDay(raw.endDay);
+    if ((startDay == null) !== (endDay == null)) {
+      startDay = null;
+      endDay = null;
+    }
+    byVendorKey.set(vendorKey, {
+      vendorKey,
+      startDay,
+      endDay,
+      enabled: raw.enabled !== false,
+    });
+  });
+  return Array.from(byVendorKey.values());
+}
+
+async function persistVendorOrderConfigs(configs) {
+  const normalizedConfigs = normalizeVendorOrderConfigs(configs);
+  const vendorKeys = normalizeVendorKeys(
+    normalizedConfigs
+      .filter((config) => config.enabled !== false)
+      .map((config) => config.vendorKey)
+  );
+  if (normalizedConfigs.length) {
+    await Setting.updateOne(
+      { key: 'vendorOrderConfigs' },
+      { value: normalizedConfigs },
+      { upsert: true }
+    );
+  } else {
+    await Setting.deleteOne({ key: 'vendorOrderConfigs' });
+  }
+  if (vendorKeys.length) {
+    await Setting.updateOne({ key: 'vendorOrdersOpenVendors' }, { value: vendorKeys }, { upsert: true });
+    await Setting.updateOne({ key: 'vendorOrdersOpenVendor' }, { value: vendorKeys[0] }, { upsert: true });
+  } else {
+    await Setting.deleteMany({ key: { $in: ['vendorOrdersOpenVendor', 'vendorOrdersOpenVendors'] } });
+  }
+  await Setting.deleteMany({ key: { $in: ['vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'] } });
+  return normalizedConfigs;
+}
+
 async function clearVendorOrdersOpenIfMatching(vendorKey) {
   const normalizedVendorKey = String(vendorKey || '').trim();
-  if (!normalizedVendorKey) return null;
-
-  const currentSetting = await Setting.findOne({ key: 'vendorOrdersOpenVendor' }).lean();
-  const currentVendorKey = currentSetting && currentSetting.value ? String(currentSetting.value).trim() : null;
-
-  if (currentVendorKey && currentVendorKey === normalizedVendorKey) {
-    await Setting.deleteOne({ key: 'vendorOrdersOpenVendor' });
-    return null;
+  if (!normalizedVendorKey) {
+    return { vendorOrdersOpenVendor: null, vendorOrdersOpenVendors: [], vendorOrderConfigs: [] };
   }
-
-  return currentVendorKey;
+  const docs = await Setting.find({ key: { $in: ['vendorOrderConfigs', 'vendorOrdersOpenVendor', 'vendorOrdersOpenVendors', 'vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'] } }).lean();
+  let configsRaw = [];
+  let configured = [];
+  let singleVendor = null;
+  let legacyStartDay = null;
+  let legacyEndDay = null;
+  docs.forEach((doc) => {
+    if (!doc) return;
+    if (doc.key === 'vendorOrderConfigs') configsRaw = doc.value;
+    else if (doc.key === 'vendorOrdersOpenVendors') configured = normalizeVendorKeys(doc.value);
+    else if (doc.key === 'vendorOrdersOpenVendor') singleVendor = String(doc.value || '').trim() || null;
+    else if (doc.key === 'vendorOrdersWindowStartDay') legacyStartDay = parseOptionalDay(doc.value);
+    else if (doc.key === 'vendorOrdersWindowEndDay') legacyEndDay = parseOptionalDay(doc.value);
+  });
+  if (!configured.length && singleVendor) configured = [singleVendor];
+  const configs = normalizeVendorOrderConfigs(configsRaw, configured, legacyStartDay, legacyEndDay);
+  const nextConfigs = configs.filter((config) => config.vendorKey !== normalizedVendorKey);
+  const persistedConfigs = await persistVendorOrderConfigs(nextConfigs);
+  const nextVendors = normalizeVendorKeys(
+    persistedConfigs
+      .filter((config) => config.enabled !== false)
+      .map((config) => config.vendorKey)
+  );
+  return {
+    vendorOrdersOpenVendor: nextVendors[0] || null,
+    vendorOrdersOpenVendors: nextVendors,
+    vendorOrderConfigs: persistedConfigs,
+  };
 }
 
 // create a simple transporter; prefer Outlook settings, then generic SMTP URL,
@@ -523,82 +662,35 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
   const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
   const normalizedType = String(type || '').toUpperCase();
   const normalizedWeek = String(week || '').trim();
+  const latestSentLog = await SupplierOrder.findOne({
+    week: normalizedWeek,
+    type: normalizedType,
+    category: normalizedCategory,
+    vendorKey: normalizedVendorKey,
+  })
+    .sort({ sentAt: -1, _id: -1 })
+    .lean();
 
-  const [orders, stores, itemDocs, sentLogs] = await Promise.all([
-    Order.find({
-      week: normalizedWeek,
-      type: normalizedType,
-      category: normalizedCategory,
-      vendorKey: normalizedVendorKey,
-    }).lean(),
-    Store.find().lean(),
-    Item.find({ category: normalizedCategory, vendorKey: normalizedVendorKey }).lean(),
-    SupplierOrder.find({
-      week: normalizedWeek,
-      type: normalizedType,
-      category: normalizedCategory,
-      vendorKey: normalizedVendorKey,
-    })
-      .sort({ sentAt: -1 })
-      .lean(),
-  ]);
+  // When a consolidated email was already sent, return the exact workbook that
+  // was attached to the email so history matches what the supplier received.
+  if (latestSentLog && latestSentLog.excelBase64) {
+    return {
+      excelBuffer: Buffer.from(latestSentLog.excelBase64, 'base64'),
+      excelFilename:
+        latestSentLog.excelFilename ||
+        `consolidated-order-${normalizedCategory}${normalizedVendorKey ? `-${normalizedVendorKey}` : ''}-${normalizedType}-${normalizedWeek}.xlsx`,
+    };
+  }
 
-  const storeNameById = Object.fromEntries(stores.map((s) => [String(s.id || ''), s.name || s.id || '']));
-  const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [String(it.code || ''), it.name || it.code || '']));
-  const sentCount = sentLogs.length;
-  const lastSentAt = sentLogs[0] ? sentLogs[0].sentAt : null;
-  const sentLabel = sentCount > 0 ? 'Yes' : 'No';
-
-  const rows = [];
-  rows.push(['Consolidated Order History']);
-  rows.push(['Week', normalizedWeek, 'Type', normalizedType, 'Category', normalizedCategory, 'Vendor', normalizedVendorKey || '-']);
-  rows.push(['Sent', sentLabel, 'Sent Count', sentCount, 'Last Sent At', lastSentAt ? new Date(lastSentAt).toISOString() : '-']);
-  rows.push([]);
-  rows.push(['Store ID', 'Store Name', 'Order Status', 'Order Date', 'Item Code', 'Item Name', 'Quantity', 'Note']);
-
-  const sortedOrders = (orders || []).slice().sort((a, b) => {
-    const byStore = String(storeNameById[String(a.storeId || '')] || a.storeId || '').localeCompare(
-      String(storeNameById[String(b.storeId || '')] || b.storeId || '')
-    );
-    if (byStore !== 0) return byStore;
-    return new Date(a.submittedAt || a.createdAt || 0) - new Date(b.submittedAt || b.createdAt || 0);
-  });
-
-  sortedOrders.forEach((order) => {
-    const storeId = order.storeId || '-';
-    const storeName = storeNameById[String(order.storeId || '')] || order.storeId || '-';
-    const orderDate = order.submittedAt || order.createdAt || null;
-    const lines = orderItemsToList(order.items)
-      .filter((entry) => (Number(entry.quantity) || 0) > 0 || String(entry.note || '').trim())
-      .map((entry) => ({
-        itemCode: entry.itemCode,
-        itemName: itemNameByCode[String(entry.itemCode || '')] || displayOrderItemCode(entry.itemCode),
-        quantity: Number(entry.quantity) || 0,
-        note: String(entry.note || '').trim(),
-      }));
-
-    if (lines.length === 0) {
-      rows.push([storeId, storeName, order.status || 'draft', orderDate ? new Date(orderDate).toISOString() : '-', '', '', '', '']);
-      return;
-    }
-
-    lines.forEach((line) => {
-      rows.push([
-        storeId,
-        storeName,
-        order.status || 'draft',
-        orderDate ? new Date(orderDate).toISOString() : '-',
-        line.itemCode,
-        line.itemName,
-        line.quantity,
-        line.note,
-      ]);
-    });
-  });
-
-  const excelBuffer = await rowsToPlainExcelBuffer(rows);
-  const safeWeek = normalizedWeek.replace(/[^A-Za-z0-9_-]/g, '_');
-  const excelFilename = `consolidated-history-${normalizedType}-${normalizedCategory}${normalizedVendorKey ? `-${normalizedVendorKey}` : ''}-${safeWeek}.xlsx`;
+  // For not-yet-sent groups (or older records without a stored workbook),
+  // generate the same consolidated template workbook the email flow would use.
+  const { excelBuffer, excelFilename } = await buildConsolidatedExcelPayload(
+    normalizedType,
+    normalizedCategory,
+    normalizedVendorKey,
+    null,
+    normalizedWeek
+  );
   return { excelBuffer, excelFilename };
 }
 
@@ -1231,7 +1323,9 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      vendorOrdersOpenVendor: vendorOrdersOpenVendorState,
+      vendorOrdersOpenVendor: vendorOrdersOpenVendorState ? vendorOrdersOpenVendorState.vendorOrdersOpenVendor : null,
+      vendorOrdersOpenVendors: vendorOrdersOpenVendorState ? vendorOrdersOpenVendorState.vendorOrdersOpenVendors : undefined,
+      vendorOrderConfigs: vendorOrdersOpenVendorState ? vendorOrdersOpenVendorState.vendorOrderConfigs : undefined,
       supplierOrder: supplierOrder
         ? {
             _id: supplierOrder._id,
@@ -1443,7 +1537,9 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
     res.json({
       success: true,
       attachmentsCount: attachments.length,
-      vendorOrdersOpenVendor: vendorOrdersOpenVendorState,
+      vendorOrdersOpenVendor: vendorOrdersOpenVendorState.vendorOrdersOpenVendor,
+      vendorOrdersOpenVendors: vendorOrdersOpenVendorState.vendorOrdersOpenVendors,
+      vendorOrderConfigs: vendorOrdersOpenVendorState.vendorOrderConfigs,
       supplierOrder: supplierOrder
         ? {
             _id: supplierOrder._id,

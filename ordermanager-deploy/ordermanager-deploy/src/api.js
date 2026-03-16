@@ -435,10 +435,13 @@ export const apiClient = {
         body: JSON.stringify({ enabled: !!enabled }),
       });
     },
-    updateVendorOrdersOpen(vendorKey) {
+    updateVendorOrdersOpen(vendorKeys, startDay, endDay) {
+      var payload = vendorKeys && typeof vendorKeys === 'object' && !Array.isArray(vendorKeys)
+        ? vendorKeys
+        : { vendorKeys: Array.isArray(vendorKeys) ? vendorKeys : [], startDay, endDay };
       return apiClient.request('/settings/vendor-orders-open', {
         method: 'PATCH',
-        body: JSON.stringify({ vendorKey }),
+        body: JSON.stringify(payload),
       });
     },
   },
