@@ -8,15 +8,22 @@
 // 2. If frontend runs on localhost/127.0.0.1, default to local backend.
 // 3. For any non-localhost deployment, require VITE_API_URL.
 const API_BASE_URL = (() => {
-  const configuredUrl = (import.meta.env.VITE_API_URL || '').trim();
-  if (configuredUrl) {
-    return configuredUrl.replace(/\/+$/, '');
-  }
-
   const origin = window.location.origin;
   const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+  const configuredUrl = (import.meta.env.VITE_API_URL || '').trim();
+
   if (isLocalOrigin) {
+    if (configuredUrl && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredUrl)) {
+      console.warn('Ignoring non-local VITE_API_URL on localhost and using local backend API instead.');
+    }
+    if (configuredUrl && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredUrl)) {
+      return configuredUrl.replace(/\/+$/, '');
+    }
     return 'http://localhost:5000/api';
+  }
+
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, '');
   }
 
   throw new Error(

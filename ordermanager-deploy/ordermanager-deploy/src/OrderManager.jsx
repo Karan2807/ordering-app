@@ -608,6 +608,28 @@ function stopNumberWheelChange(e){
   e.preventDefault();
   if(e.currentTarget&&typeof e.currentTarget.blur==="function") e.currentTarget.blur();
 }
+function focusGridCell(navGroup,row,col){
+  if(typeof document==="undefined") return;
+  var selector='input[data-nav-group="'+String(navGroup)+'"][data-nav-row="'+String(row)+'"][data-nav-col="'+String(col)+'"]';
+  var node=document.querySelector(selector);
+  if(node&&typeof node.focus==="function"){
+    node.focus();
+    if(typeof node.select==="function") node.select();
+  }
+}
+function handleGridNavigation(e,navGroup,row,col,maxRow,maxCol){
+  var key=String(e&&e.key||"");
+  var nextRow=row;
+  var nextCol=col;
+  if(key==="ArrowRight") nextCol=Math.min(maxCol,col+1);
+  else if(key==="ArrowLeft") nextCol=Math.max(0,col-1);
+  else if(key==="ArrowDown"||key==="Enter") nextRow=Math.min(maxRow,row+1);
+  else if(key==="ArrowUp") nextRow=Math.max(0,row-1);
+  else return;
+  if(nextRow===row&&nextCol===col) return;
+  e.preventDefault();
+  focusGridCell(navGroup,nextRow,nextCol);
+}
 function downloadBase64File(fileBase64, filename, contentType){
   if(!fileBase64) throw new Error("No file data returned");
   var bin=atob(fileBase64);
@@ -632,23 +654,23 @@ var S={
   sidebar:{width:240,minWidth:240,background:"rgba(250,250,247,.78)",backdropFilter:"blur(10px)",WebkitBackdropFilter:"blur(10px)",borderRight:"1px solid rgba(148,163,184,.28)",display:"flex",flexDirection:"column",height:"100vh",position:"sticky",top:0,overflowY:"auto"},
   sideHdr:{padding:"18px 14px",borderBottom:"1px solid rgba(148,163,184,.22)",display:"flex",alignItems:"center",gap:8},
   logo:{width:34,height:34,borderRadius:8,background:"linear-gradient(135deg,#22C55E,#15803D)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,color:"#fff",flexShrink:0},
-  navItem:{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:6,cursor:"pointer",fontSize:12.5,fontWeight:500,marginBottom:1},
+  navItem:{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:6,cursor:"pointer",fontSize:13.5,fontWeight:500,marginBottom:1},
   navA:{background:"#DCFCE7",color:"#166534"},navI:{color:"#475569"},
   main:{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"},
   topbar:{height:52,minHeight:52,borderBottom:"1px solid rgba(148,163,184,.22)",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 20px",background:"rgba(252,252,250,.72)",backdropFilter:"blur(10px)",WebkitBackdropFilter:"blur(10px)"},
   content:{flex:1,overflowY:"auto",padding:20},
   card:{background:"rgba(255,255,255,.72)",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)",border:"1px solid rgba(148,163,184,.24)",borderRadius:12,padding:18,marginBottom:14,boxShadow:"0 8px 20px rgba(15,23,42,.06)"},
   cH:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8},
-  t:{fontSize:15,fontWeight:700,color:"#0F172A"},d:{fontSize:12,color:"#64748B",marginTop:2},
+  t:{fontSize:16,fontWeight:700,color:"#0F172A"},d:{fontSize:13,color:"#64748B",marginTop:2},
   sg:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10,marginBottom:16},
   sc:{background:"rgba(255,255,255,.72)",border:"1px solid rgba(148,163,184,.24)",borderRadius:12,padding:14,backdropFilter:"blur(6px)",WebkitBackdropFilter:"blur(6px)"},
   sL:{fontSize:10,color:"#64748B",fontWeight:600,textTransform:"uppercase",letterSpacing:.5},
   sV:{fontSize:24,fontWeight:700,marginTop:3,fontFamily:"monospace",color:"#0F172A"},sS:{fontSize:11,color:"#64748B",marginTop:2},
   tw:{overflow:"auto",borderRadius:8,border:"1px solid rgba(148,163,184,.25)",maxHeight:"62vh",background:"rgba(255,255,255,.58)"},
-  th:{padding:"9px 10px",textAlign:"left",fontWeight:600,color:"#334155",fontSize:11,textTransform:"uppercase",letterSpacing:.5,whiteSpace:"nowrap",borderBottom:"1px solid rgba(148,163,184,.24)",background:"rgba(241,245,249,.8)",position:"sticky",top:0,zIndex:5},
-  td:{padding:"9px 10px",borderBottom:"1px solid rgba(148,163,184,.22)",fontSize:13,color:"#0F172A"},
-  tm:{padding:"9px 10px",borderBottom:"1px solid rgba(148,163,184,.22)",fontFamily:"monospace",fontSize:12,color:"#475569"},
-  b:{display:"inline-flex",alignItems:"center",gap:4,padding:"7px 12px",borderRadius:6,fontSize:11.5,fontWeight:600,cursor:"pointer",border:"none",whiteSpace:"nowrap",fontFamily:"inherit"},
+  th:{padding:"9px 10px",textAlign:"left",fontWeight:600,color:"#334155",fontSize:12,textTransform:"uppercase",letterSpacing:.5,whiteSpace:"nowrap",borderBottom:"1px solid rgba(148,163,184,.24)",background:"rgba(241,245,249,.8)",position:"sticky",top:0,zIndex:5},
+  td:{padding:"9px 10px",borderBottom:"1px solid rgba(148,163,184,.22)",fontSize:14,color:"#0F172A"},
+  tm:{padding:"9px 10px",borderBottom:"1px solid rgba(148,163,184,.22)",fontFamily:"monospace",fontSize:13,color:"#475569"},
+  b:{display:"inline-flex",alignItems:"center",gap:4,padding:"7px 12px",borderRadius:6,fontSize:12.5,fontWeight:600,cursor:"pointer",border:"none",whiteSpace:"nowrap",fontFamily:"inherit"},
   bP:{background:"#16A34A",color:"#fff"},bS:{background:"rgba(255,255,255,.72)",color:"#0F172A",border:"1px solid rgba(148,163,184,.34)"},
   bD:{background:"rgba(248,113,113,0.1)",color:"#F87171",border:"1px solid rgba(248,113,113,0.2)"},
   bG:{background:"rgba(22,163,74,0.1)",color:"#166534",border:"1px solid rgba(22,163,74,0.25)"},
@@ -657,36 +679,36 @@ var S={
   bgG:{background:"rgba(22,163,74,0.12)",color:"#166534"},bgY:{background:"rgba(251,191,36,0.14)",color:"#92400E"},
   bgR:{background:"rgba(248,113,113,0.12)",color:"#B91C1C"},bgB:{background:"rgba(34,197,94,0.12)",color:"#166534"},
   bgP:{background:"rgba(168,85,247,0.12)",color:"#0F766E"},
-  inp:{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid rgba(148,163,184,.34)",background:"rgba(255,255,255,.82)",color:"#0F172A",fontSize:13,outline:"none",fontFamily:"inherit"},
-  ni:{width:70,padding:"5px 3px",textAlign:"center",fontFamily:"monospace",fontSize:12,borderRadius:8,border:"1px solid rgba(148,163,184,.34)",background:"rgba(255,255,255,.82)",color:"#0F172A",outline:"none"},
-  ie:{width:60,padding:"4px",textAlign:"center",fontFamily:"monospace",fontSize:11.5,borderRadius:4,border:"1.5px solid #16A34A",background:"#FFFFFF",color:"#0F172A",outline:"none"},
-  lb:{display:"block",fontSize:10.5,fontWeight:600,color:"#475569",marginBottom:3,textTransform:"uppercase",letterSpacing:.4},
+  inp:{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid rgba(148,163,184,.34)",background:"rgba(255,255,255,.82)",color:"#0F172A",fontSize:14,outline:"none",fontFamily:"inherit"},
+  ni:{width:70,padding:"5px 3px",textAlign:"center",fontFamily:"monospace",fontSize:13,borderRadius:8,border:"1px solid rgba(148,163,184,.34)",background:"rgba(255,255,255,.82)",color:"#0F172A",outline:"none"},
+  ie:{width:60,padding:"4px",textAlign:"center",fontFamily:"monospace",fontSize:12.5,borderRadius:4,border:"1.5px solid #16A34A",background:"#FFFFFF",color:"#0F172A",outline:"none"},
+  lb:{display:"block",fontSize:11.5,fontWeight:600,color:"#475569",marginBottom:3,textTransform:"uppercase",letterSpacing:.4},
   ov:{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16},
   mo:{background:"rgba(255,255,255,.86)",backdropFilter:"blur(12px)",WebkitBackdropFilter:"blur(12px)",border:"1px solid rgba(148,163,184,.28)",borderRadius:14,padding:22,width:500,maxWidth:"95vw",maxHeight:"82vh",overflowY:"auto",color:"#0F172A",boxShadow:"0 20px 40px rgba(15,23,42,.14)"},
   mW:{width:750},mA:{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14},
   fg:{marginBottom:12},fr:{display:"flex",gap:10},
-  nI:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(22,163,74,0.08)",border:"1px solid rgba(22,163,74,0.2)",color:"#166534",fontSize:12.5},
-  nP:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(251,191,36,0.1)",border:"1px solid rgba(251,191,36,0.25)",color:"#92400E",fontSize:12.5},
-  nG:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(22,163,74,0.08)",border:"1px solid rgba(22,163,74,0.22)",color:"#166534",fontSize:12.5},
+  nI:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(22,163,74,0.08)",border:"1px solid rgba(22,163,74,0.2)",color:"#166534",fontSize:13.5},
+  nP:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(251,191,36,0.1)",border:"1px solid rgba(251,191,36,0.25)",color:"#92400E",fontSize:13.5},
+  nG:{padding:"10px 14px",borderRadius:6,marginBottom:10,background:"rgba(22,163,74,0.08)",border:"1px solid rgba(22,163,74,0.22)",color:"#166534",fontSize:13.5},
   tabs:{display:"flex",gap:2,marginBottom:14,padding:2,background:"rgba(241,245,249,.86)",borderRadius:8,width:"fit-content",border:"1px solid rgba(148,163,184,.28)",backdropFilter:"blur(6px)",WebkitBackdropFilter:"blur(6px)"},
-  tab:{padding:"5px 12px",borderRadius:5,fontSize:11.5,fontWeight:600,cursor:"pointer",border:"none",fontFamily:"inherit"},
+  tab:{padding:"5px 12px",borderRadius:5,fontSize:12.5,fontWeight:600,cursor:"pointer",border:"none",fontFamily:"inherit"},
   tA:{background:"#16A34A",color:"#fff"},tI:{background:"transparent",color:"#475569"},
   dWrap:{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-start"},
   dCard:{minWidth:200,background:"rgba(255,255,255,.72)",border:"1px solid rgba(148,163,184,.24)",borderRadius:10,padding:10,backdropFilter:"blur(6px)",WebkitBackdropFilter:"blur(6px)"},
   dTitle:{fontSize:11,color:"#64748B",fontWeight:700,textTransform:"uppercase",letterSpacing:.45,marginBottom:7},
-  dBtn:{display:"block",width:"100%",textAlign:"left",padding:"7px 9px",borderRadius:7,border:"none",background:"transparent",fontSize:12.5,fontWeight:600,color:"#334155",cursor:"pointer",marginBottom:4,fontFamily:"inherit"},
+  dBtn:{display:"block",width:"100%",textAlign:"left",padding:"7px 9px",borderRadius:7,border:"none",background:"transparent",fontSize:13.5,fontWeight:600,color:"#334155",cursor:"pointer",marginBottom:4,fontFamily:"inherit"},
   dBtnA:{background:"rgba(22,163,74,.12)",color:"#166534"},
   dBtnD:{opacity:.45,cursor:"not-allowed"},
   dSub:{paddingLeft:8,borderLeft:"2px solid rgba(148,163,184,.3)",marginLeft:4,marginTop:2},
   eB:{background:"none",border:"none",cursor:"pointer",color:"#64748B",padding:2,borderRadius:4,display:"inline-flex",alignItems:"center"},
   cE:{background:"rgba(22,163,74,0.08)"},
-  to:{position:"fixed",top:14,right:14,zIndex:2000,padding:"8px 16px",borderRadius:6,fontSize:12.5,fontWeight:500,color:"#34D399",background:"#065F46",border:"1px solid rgba(52,211,153,0.3)"},
+  to:{position:"fixed",top:14,right:14,zIndex:2000,padding:"8px 16px",borderRadius:6,fontSize:13.5,fontWeight:500,color:"#34D399",background:"#065F46",border:"1px solid rgba(52,211,153,0.3)"},
   toE:{color:"#F87171",background:"#7F1D1D",border:"1px solid rgba(248,113,113,0.3)"},
   lP:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#ECEFF3"},
   lC:{width:540,maxWidth:"94vw",background:"rgba(255,255,255,.74)",backdropFilter:"blur(14px)",WebkitBackdropFilter:"blur(14px)",border:"1px solid rgba(15,23,42,.12)",borderRadius:22,padding:"44px 42px",boxShadow:"0 24px 48px rgba(15,23,42,.14)"},
   lE:{padding:"6px 10px",borderRadius:6,fontSize:11.5,background:"rgba(248,113,113,0.1)",color:"#F87171",border:"1px solid rgba(248,113,113,0.2)",marginBottom:10,textAlign:"center"},
   sB:{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",background:"rgba(255,255,255,.8)",border:"1px solid rgba(148,163,184,.34)",borderRadius:8},
-  sI:{border:"none",background:"none",padding:0,fontSize:12.5,color:"#0F172A",outline:"none",width:130,fontFamily:"inherit"},
+  sI:{border:"none",background:"none",padding:0,fontSize:13.5,color:"#0F172A",outline:"none",width:130,fontFamily:"inherit"},
   ft:{padding:12,borderTop:"1px solid rgba(148,163,184,.22)"},
   uC:{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:8,background:"rgba(241,245,249,.72)"},
   av:{width:28,height:28,borderRadius:"50%",background:"linear-gradient(135deg,#34D399,#059669)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:11,color:"#fff",flexShrink:0},
@@ -1442,6 +1464,8 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
     return sortItems(known.concat(extras));
   },[itemList,items,qty,notes,selCategory]);
   var displayRows=useMemo(function(){return buildTemplateDisplayRows(activeTemplate,sorted);},[activeTemplate,sorted]);
+  var placeOrderNavGroup="place-order-"+oKey;
+  var placeOrderMaxRow=Math.max(0,sorted.length-1);
   return(<div>
     {(notifs||[]).map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={{marginBottom:12}}>
@@ -1475,13 +1499,18 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,toast,stores,
     </div>
     <div style={S.tw}><table style={S.tbl}>
       <thead><tr><th style={S.th}>{itemHeader}</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader}</th><th style={S.th}>{noteHeader}</th></tr></thead>
-      <tbody>{displayRows.map(function(row){
+      <tbody>{(function(){
+        var navRow=-1;
+        return displayRows.map(function(row){
         if(row.type==="heading"){
           return <tr key={row.key}><td colSpan={3} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
         }
         var it=row.item;
-        return(<tr key={row.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="text" inputMode="numeric" pattern="[0-9]*" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} onWheel={stopNumberWheelChange} disabled={ro}/></td><td style={S.td}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:11.5})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} placeholder="note" disabled={ro}/></td></tr>);
-      })}
+        navRow+=1;
+        var currentRow=navRow;
+        return(<tr key={row.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="text" inputMode="numeric" pattern="[0-9]*" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} onKeyDown={function(e){if(ro) return;handleGridNavigation(e,placeOrderNavGroup,currentRow,0,placeOrderMaxRow,1);}} data-nav-group={placeOrderNavGroup} data-nav-row={currentRow} data-nav-col={0} onWheel={stopNumberWheelChange} disabled={ro}/></td><td style={S.td}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:13})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} onKeyDown={function(e){if(ro) return;handleGridNavigation(e,placeOrderNavGroup,currentRow,1,placeOrderMaxRow,1);}} data-nav-group={placeOrderNavGroup} data-nav-row={currentRow} data-nav-col={1} placeholder="note" disabled={ro}/></td></tr>);
+      });
+      })()}
       {sorted.length===0&&<tr><td colSpan={3} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items in {CATEGORY_LABELS[selCategory]}.</td></tr>}</tbody>
     </table></div></div>
     {showConfirm&&(<div style={S.ov} onClick={function(){setShowConfirm(false);}}><div style={Object.assign({},S.mo,{width:420,textAlign:"center"})} onClick={function(e){e.stopPropagation();}}>
@@ -1896,7 +1925,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[consolidatedRequest]);
   var supplierById=useMemo(function(){var m={};supplierList.forEach(function(s){m[s.id]=s;});return m;},[supplierList]);
   var selectedVendor=supplierById[resolvedVendorKey]||null;
-  var primaryOpenType=(consolidatedType||aot||null);
+  var reopenedRequestedType=(reopenedFromId&&consolidatedType)?consolidatedType:null;
+  var primaryOpenType=(reopenedRequestedType||aot||null);
   var visibleStatus={submitted:true,draft_shared:true,processed:true};
   var hasFinishedLogForWeek=function(type,week){
     return (logs||[]).some(function(l){
@@ -1943,6 +1973,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(carryOpenType&&out.indexOf(carryOpenType)<0) out.push(carryOpenType);
     return out;
   },[primaryOpenType,carryOpenType]);
+  var hasAccessibleOpenType=selCategory==="vendor_orders"||allowedOpenTypes.length>0;
   useEffect(function(){ if(consolidatedType&&consolidatedType!==vt) sVt(consolidatedType); },[consolidatedType]);
   useEffect(function(){
     var onlyOpen = primaryOpenType;
@@ -1996,6 +2027,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       return {code:it.code,name:it.name,qtyByStoreId:qtyByStoreId,total:total,note:noteParts.join(" | ")};
     });
   },[items,orders,slots,currentType,selCategory,manualOpenOrder,manualOpenSeq,resolvedVendorKey,activeTemplate,activeWeekKey]);
+  var editableStoreSlots=useMemo(function(){
+    return (slots||[]).filter(function(sl){return !!(sl&&sl.store&&sl.store.id);});
+  },[slots]);
+  var editableStoreIndexById=useMemo(function(){
+    var out={};
+    editableStoreSlots.forEach(function(sl,idx){out[sl.store.id]=idx;});
+    return out;
+  },[editableStoreSlots]);
   var vendorStoreDocs=useMemo(function(){
     if(!isSingleVendorFlow||!resolvedVendorKey) return [];
     return (slots||[]).filter(function(sl){return !!(sl&&sl.store);}).map(function(sl){
@@ -2035,6 +2074,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[vendorStoreDialogRow,vendorStoreDialogEditing,vendorStoreDialogQty,vendorStoreDialogNotes,baseRows,activeTemplate]);
 
   var startEditAll=function(){
+    if(selCategory!=="vendor_orders"&&!hasAccessibleOpenType){toast("No consolidated order is open right now",true);return;}
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
     var next={};var nextNotes={};
     slots.forEach(function(sl){
@@ -2139,7 +2179,19 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(remainMs<=0) return 0;
     return Math.ceil(remainMs/(60*60*1000));
   },[latestTypeLog,latestVisibleOrderAt]);
-  var isCompletedLocked=(!reopenedFromId)&&(forceCompletedLock||!!(latestTypeLog&&latestTypeLog.finished===true)||unsentLockExpired);
+  var reopenedForCurrentGroup=useMemo(function(){
+    if(!reopenedFromId) return false;
+    var reopenedLog=(logs||[]).find(function(l){return String(l&&l._id||"")===String(reopenedFromId);});
+    if(!reopenedLog) return false;
+    return String(reopenedLog.type||"")===String(currentType||"")
+      && normalizeCategory(reopenedLog.category||"vegetables")===normalizeCategory(selCategory)
+      && String(reopenedLog.week||"")===String(activeWeekKey||"")
+      && String(reopenedLog.vendorKey||"")===String(resolvedVendorKey||"");
+  },[reopenedFromId,logs,currentType,selCategory,activeWeekKey,resolvedVendorKey]);
+  var isCompletedLocked=(forceCompletedLock||!!(latestTypeLog&&latestTypeLog.finished===true)||unsentLockExpired)&&!reopenedForCurrentGroup;
+  var consolidatedNavGroup="consolidated-edit-"+activeGroupKey;
+  var consolidatedNavMaxRow=Math.max(0,baseRows.length-1);
+  var consolidatedNavMaxCol=Math.max(0,(editableStoreSlots.length*2)-1);
   useEffect(function(){ setForceCompletedLock(false); },[currentType,selCategory,activeWeekKey]);
   useEffect(function(){ if(isCompletedLocked&&step!==1){ setStep(1); } },[isCompletedLocked,step]);
   var parsePct=function(v){
@@ -2208,6 +2260,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     saveSplitPreset(itemOverrides);
   },[itemOverrides,selCategory,vt,splitSupplierIds,savedRows]);
   var beginSplit=function(){
+    if(selCategory!=="vendor_orders"&&!hasAccessibleOpenType){toast("No consolidated order is open right now",true);return;}
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
     if(editingAll){toast("Save edited quantities before continuing",true);return;}
     if(isSingleVendorFlow&&(!resolvedVendorKey||!selectedVendor)){toast("Select a vendor first",true);return;}
@@ -2294,7 +2347,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var payloadRows=rows.map(function(r){return {itemCode:r.code,itemName:r.name,note:r.note||"",total:r.total||0,qtyByStoreId:r.qtyByStoreId};});
       var nextSent=Object.assign({},sentSplitBySupplier);nextSent[sid]=true;
       var isFinal=splitSupplierIds.length>0 && splitSupplierIds.every(function(id){return nextSent[id];});
-      var resp=await apiClient.orders.emailConsolidated(currentType,selCategory,resolvedVendorKey,recipientEmails,supplier.name,reopenedFromId,{rows:payloadRows,finished:isFinal},activeWeekKey);
+      var resp=await apiClient.orders.emailConsolidated(currentType,selCategory,resolvedVendorKey,recipientEmails,supplier.name,reopenedForCurrentGroup?reopenedFromId:null,{rows:payloadRows,finished:isFinal},activeWeekKey);
       toast("Email sent to "+recipientEmails.join(", "));
       var latestLogs=await apiClient.supplierOrders.getAll();
       setLogs(latestLogs||[]);
@@ -2467,7 +2520,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     }
   };
 
-  var tCellBase={border:"1px solid #B9BEC9",padding:"6px 8px",fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:"#111827",lineHeight:1.2,height:26};
+  var tCellBase={border:"1px solid #B9BEC9",padding:"5px 6px",fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:"#111827",lineHeight:1.2,height:24};
   var tHeadTop=Object.assign({},tCellBase,{fontWeight:700,background:"#FFFFFF",textAlign:"left",position:"sticky",top:0,zIndex:8});
   var tHeadTopCenter=Object.assign({},tHeadTop,{textAlign:"center"});
   var tHeadSub=Object.assign({},tCellBase,{fontWeight:700,background:"#D9D9D9",textAlign:"center",textTransform:"uppercase",position:"sticky",top:26,zIndex:9});
@@ -2484,7 +2537,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         orderType={vt}
         setOrderType={function(t){if(editingAll){toast("Save quantities before switching order type",true);return;}sVt(t);if(setConsolidatedType)setConsolidatedType(t);}}
         getCategoryDisabled={function(catId){return catId==="vendor_orders"?false:!isCategoryOpenForType(catId,vt,onlyOpen||vt,manualOpenLeaves);}}
-        getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:false;}}
+        getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:true;}}
         onCategoryChanged={function(){setStep(1);}}
       />
       {selCategory==="vendor_orders"&&<select style={Object.assign({},S.inp,{width:220})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setStep(1);}}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>}
@@ -2501,14 +2554,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         </Fragment>)}
       </div>
     </div>
-    {selCategory!=="vendor_orders"&&primaryOpenType&&<div style={S.nI}>{manualOpenOrder?("Manual override active: only Order "+primaryOpenType+" is open right now."):("Schedule mode active: only Order "+primaryOpenType+" is open right now.")}</div>}
-    {selCategory!=="vendor_orders"&&carryOpenType&&carryOpenType!==primaryOpenType&&<div style={S.nI}>Order {carryOpenType} remains available for up to 24 hours because supplier email has not been sent yet.</div>}
+    {selCategory!=="vendor_orders"&&primaryOpenType&&<div style={S.nI}>{manualOpenOrder?("Manual override active: only Order "+primaryOpenType+" is open right now."):(reopenedRequestedType?("Reopened mode active for Order "+primaryOpenType+"."):("Schedule mode active: only Order "+primaryOpenType+" is open right now."))}</div>}
+    {selCategory!=="vendor_orders"&&carryOpenType&&carryOpenType!==primaryOpenType&&<div style={S.nI}>Order {carryOpenType} remains available for up to 48 hours because supplier email has not been sent yet.</div>}
+    {selCategory!=="vendor_orders"&&!primaryOpenType&&!carryOpenType&&<div style={S.nP}>No consolidated order is open right now. The next order will open on its scheduled day unless an override or reopen is used.</div>}
     {selCategory==="vendor_orders"&&!selectedVendorKey&&visibleVendorOptions.length===0&&<div style={S.nP}>No vendor orders are currently configured. Reopen a vendor order from Order Monitor to edit or resend it.</div>}
     {selCategory==="leaves"&&vt==="B"&&!leavesSentThisWeek&&<div style={S.nP}>Leaves Order B is pending. Send supplier email to complete it.</div>}
     {!latestTypeLog&&unsentHoursLeft!==null&&unsentHoursLeft>0&&<div style={S.nI}>This consolidated order remains open for {unsentHoursLeft} more hour(s) because supplier email has not been sent yet.</div>}
-    {!latestTypeLog&&unsentHoursLeft===0&&<div style={S.nP}>This consolidated order is now locked because 24 hours elapsed without sending supplier email.</div>}
+    {!latestTypeLog&&unsentHoursLeft===0&&<div style={S.nP}>This consolidated order is now locked because 48 hours elapsed without sending supplier email.</div>}
     {isCompletedLocked&&<div style={S.nG}>{selCategory==="vendor_orders"?"Vendor Orders":"Consolidated Order "+vt} is completed and locked. {selCategory==="vendor_orders"?"Reopen from Settings to edit/send again.":"Reopen from Order Monitor to edit/send again."}</div>}
-    {reopenedFromId&&<div style={Object.assign({},S.nP,{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10})}><span>Resend mode active. This send will be stored as a reopened resend history entry.</span><button style={Object.assign({},S.b,S.bS,{padding:"4px 10px",fontSize:11})} onClick={function(){if(setReopenedFromId) setReopenedFromId(null);}}>Clear</button></div>}
+    {reopenedForCurrentGroup&&<div style={Object.assign({},S.nP,{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10})}><span>Resend mode active. This send will be stored as a reopened resend history entry.</span><button style={Object.assign({},S.b,S.bS,{padding:"4px 10px",fontSize:11})} onClick={function(){if(setReopenedFromId) setReopenedFromId(null);}}>Clear</button></div>}
     {editingAll&&<div style={S.nI}>Editing quantities and notes for all stores. Click Save when finished.</div>}
 
     {step===1&&(isSingleVendorFlow?(<div style={Object.assign({},S.card,{padding:0})}>
@@ -2533,16 +2587,16 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(148,163,184,.24)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div><div style={S.t}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" Consolidated"):(""+CATEGORY_LABELS[selCategory]+" Consolidated Order "+vt)}</div><div style={S.d}>Review store quantities, then save and continue to supplier split.</div></div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
-          {!editingAll&&<button style={Object.assign({},S.b,S.bS)} onClick={startEditAll} disabled={isCompletedLocked}>Edit All Stores</button>}
-          {editingAll&&<button style={Object.assign({},S.b,S.bP)} onClick={saveAllEdits} disabled={savingAll||isCompletedLocked}>{savingAll?"Saving...":"Save"}</button>}
-          <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked||editingAll||savingAll}>Next</button>
+          {!editingAll&&<button style={Object.assign({},S.b,S.bS)} onClick={startEditAll} disabled={isCompletedLocked||!hasAccessibleOpenType}>Edit All Stores</button>}
+          {editingAll&&<button style={Object.assign({},S.b,S.bP)} onClick={saveAllEdits} disabled={savingAll||isCompletedLocked||!hasAccessibleOpenType}>{savingAll?"Saving...":"Save"}</button>}
+          <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked||editingAll||savingAll||!hasAccessibleOpenType}>Next</button>
         </div>
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-        <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:120})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:360})}></th></tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:120})}>{selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header?activeTemplate.storeColumns[idx].header:(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QUANTITY (case qty)")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
-      </thead><tbody>{baseRows.map(function(it){
-        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{it.total||""}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var editQ=sid&&editingAll?Number((editQtyByStore[sid]||{})[it.code])||0:baseQ;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={editQ} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:baseQ>0?"#0F172A":"#64748B"}}>{baseQ||""}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{slots.filter(function(sl){return !!sl.store;}).map(function(sl){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"6px 8px",fontSize:12.5,minHeight:32})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
+        <tr><th style={Object.assign({},tHeadTop,{minWidth:200})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:80})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:92})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:220})}></th></tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:80})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:92})}>{selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header?activeTemplate.storeColumns[idx].header:(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QUANTITY (case qty)")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+      </thead><tbody>{baseRows.map(function(it,rowIdx){
+        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{it.total||""}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var editQ=sid&&editingAll?Number((editQtyByStore[sid]||{})[it.code])||0:baseQ;var storeCol=sid!=null?editableStoreIndexById[sid]:null;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={editQ} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){if(storeCol==null) return;handleGridNavigation(e,consolidatedNavGroup,rowIdx,storeCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={storeCol} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:baseQ>0?"#0F172A":"#64748B"}}>{baseQ||""}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{editableStoreSlots.map(function(sl,noteIdx){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");var noteCol=editableStoreSlots.length+noteIdx;return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"5px 7px",fontSize:12.5,minHeight:28})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,noteCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={noteCol} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
       })}</tbody></table></div>
     </div>))}
 
