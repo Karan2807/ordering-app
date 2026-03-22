@@ -5,6 +5,8 @@ const itemSchema = new mongoose.Schema({
   name: { type: String, required: true },
   category: { type: String, default: 'vegetables' },
   vendorKey: { type: String, default: null },
+  subheading: { type: String, default: '' },
+  sortOrder: { type: Number, default: null },
   unit: { type: String },
   createdAt: { type: Date, default: Date.now },
 });

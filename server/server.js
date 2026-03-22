@@ -115,9 +115,8 @@ async function start(port = PORT) {
 
     serverInstance.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        console.warn(`Port ${listenPort} in use, trying ${listenPort + 1}...`);
-        // try next port
-        start(listenPort + 1);
+        console.error(`Port ${listenPort} is already in use. Stop the old server process and restart.`);
+        process.exit(1);
       } else {
         console.error('Server error:', err);
         process.exit(1);

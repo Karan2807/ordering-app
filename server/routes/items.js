@@ -98,6 +98,20 @@ function normalizeTemplatePayload(template) {
         }
       : null,
     rows: template.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? '')) : [])),
+    outline: Array.isArray(template.outline)
+      ? template.outline
+          .map((entry) => ({
+            type: String(entry && entry.type || '').trim(),
+            text: String(entry && entry.text || '').trim(),
+            code: String(entry && entry.code || '').trim(),
+            rowIndex: Number.isInteger(entry && entry.rowIndex) ? entry.rowIndex : null,
+            colIndex: Number.isInteger(entry && entry.colIndex) ? entry.colIndex : null,
+          }))
+          .filter((entry) => (
+            (entry.type === 'heading' && entry.text) ||
+            (entry.type === 'item' && entry.code)
+          ))
+      : [],
     itemRows: template.itemRows
       .map((row) => ({
         code: String(row && row.code || '').trim(),
@@ -178,7 +192,7 @@ router.post('/template/parse', authMiddleware, async (req, res) => {
 // Get all items
 router.get('/', async (req, res) => {
   try {
-    const items = await Item.find().sort({ category: 1, name: 1 }).lean();
+    const items = await Item.find().sort({ category: 1, vendorKey: 1, sortOrder: 1, createdAt: 1, name: 1 }).lean();
     res.json(items.map((item) => ({
       ...item,
       category: normalizeCategory(item.category),
@@ -197,7 +211,7 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
-    const { code, name, category, vendorKey, unit } = req.body;
+    const { code, name, category, vendorKey, unit, subheading, sortOrder } = req.body;
 
     if (!code || !name) {
       return res.status(400).json({ error: 'Code and name required' });
@@ -214,6 +228,8 @@ router.post('/', authMiddleware, async (req, res) => {
       name,
       category: resolvedCategory,
       vendorKey: normalizeVendorKey(resolvedCategory, vendorKey),
+      subheading: String(subheading || '').trim(),
+      sortOrder: Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : null,
       unit: unit || '',
     });
     res.json({ success: true });
@@ -264,7 +280,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
     const toInsert = [];
     const seenCodes = new Set();
     for (const item of items) {
-      const { code, name, category: itemCategory, vendorKey: itemVendorKey, unit } = item;
+      const { code, name, category: itemCategory, vendorKey: itemVendorKey, unit, subheading, sortOrder } = item;
       if (code && name) {
         const normalizedCode = String(code).trim();
         if (!normalizedCode || seenCodes.has(normalizedCode)) {
@@ -277,6 +293,8 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
           name,
           category: nextCategory,
           vendorKey: normalizeVendorKey(nextCategory, itemVendorKey || resolvedVendorKey),
+          subheading: String(subheading || '').trim(),
+          sortOrder: Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : null,
           unit: unit || '',
         });
       }

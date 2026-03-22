@@ -33,8 +33,52 @@ export async function parseVendorDocxTemplate({ buffer, filename, contentType })
     await fs.writeFile(inputPath, buffer);
     const stdout = await runPython(['parse', inputPath]);
     const parsed = JSON.parse(String(stdout || '{}'));
+    const parsedItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const itemByCode = new Map();
+    parsedItems.forEach((item, index) => {
+      const code = String(item && item.code || '').trim();
+      if (!code || itemByCode.has(code)) return;
+      itemByCode.set(code, {
+        ...item,
+        sortOrder: index,
+        subheading: '',
+      });
+    });
+    const outline = parsed && parsed.docxMap && Array.isArray(parsed.docxMap.outline)
+      ? parsed.docxMap.outline
+      : [];
+    const ordered = [];
+    const seen = new Set();
+    let currentHeading = '';
+    outline.forEach((entry) => {
+      if (!entry || typeof entry !== 'object') return;
+      if (entry.type === 'heading') {
+        currentHeading = String(entry.text || '').trim();
+        return;
+      }
+      if (entry.type !== 'item') return;
+      const code = String(entry.code || '').trim();
+      if (!code || seen.has(code) || !itemByCode.has(code)) return;
+      seen.add(code);
+      const base = itemByCode.get(code);
+      ordered.push({
+        ...base,
+        subheading: currentHeading,
+      });
+    });
+    parsedItems.forEach((item) => {
+      const code = String(item && item.code || '').trim();
+      if (!code || seen.has(code) || !itemByCode.has(code)) return;
+      seen.add(code);
+      ordered.push(itemByCode.get(code));
+    });
+    const normalizedItems = ordered.map((item, index) => ({
+      ...item,
+      sortOrder: index,
+      subheading: String(item && item.subheading || '').trim(),
+    }));
     return {
-      items: Array.isArray(parsed.items) ? parsed.items : [],
+      items: normalizedItems,
       template: {
         kind: 'docx_vendor_form',
         sourceFilename: String(filename || '').trim(),

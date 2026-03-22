@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "cleanup:vendor-legacy": "node scripts/cleanup_vendor_legacy_settings.mjs",
+    "cleanup:vendor-legacy:apply": "node scripts/cleanup_vendor_legacy_settings.mjs --apply"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
