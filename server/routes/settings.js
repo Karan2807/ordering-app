@@ -86,17 +86,8 @@ function isDayWithinRange(day, startDay, endDay) {
   return day >= startDay || day <= endDay;
 }
 
-function normalizeVendorOrderConfigs(input, fallbackVendorKeys = [], fallbackStartDay = null, fallbackEndDay = null) {
-  let list = listifyVendorInputs(input);
-  const legacyVendorKeys = normalizeVendorKeys(fallbackVendorKeys);
-  if (!list.length && legacyVendorKeys.length) {
-    list = legacyVendorKeys.map((vendorKey) => ({
-      vendorKey,
-      startDay: fallbackStartDay,
-      endDay: fallbackEndDay,
-      enabled: true,
-    }));
-  }
+function normalizeVendorOrderConfigs(input) {
+  const list = listifyVendorInputs(input);
   const byVendorKey = new Map();
   list.forEach((entry) => {
     const raw = entry && typeof entry === 'object' ? entry : { vendorKey: entry };
@@ -122,6 +113,12 @@ function normalizeVendorOrderConfigs(input, fallbackVendorKeys = [], fallbackSta
     });
   });
   return Array.from(byVendorKey.values());
+}
+
+async function clearLegacyVendorOrderSettings() {
+  await Setting.deleteMany({
+    key: { $in: ['vendorOrdersOpenVendor', 'vendorOrdersOpenVendors', 'vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'] },
+  });
 }
 
 function isVendorConfigActive(config, now, today) {
@@ -161,43 +158,28 @@ async function persistVendorOrderConfigs(configs) {
 }
 
 function buildVendorOrdersState({ docs, today, now }) {
-  let singleVendor = null;
-  let vendorKeys = [];
-  let windowStartDay = null;
-  let windowEndDay = null;
   let vendorOrderConfigs = [];
 
   (docs || []).forEach((row) => {
     if (!row) return;
     if (row.key === 'vendorOrderConfigs') {
       vendorOrderConfigs = normalizeVendorOrderConfigs(row.value);
-    } else if (row.key === 'vendorOrdersOpenVendor') {
-      singleVendor = String(row.value || '').trim() || null;
-    } else if (row.key === 'vendorOrdersOpenVendors') {
-      vendorKeys = normalizeVendorKeys(row.value);
-    } else if (row.key === 'vendorOrdersWindowStartDay') {
-      windowStartDay = parseOptionalDay(row.value);
-    } else if (row.key === 'vendorOrdersWindowEndDay') {
-      windowEndDay = parseOptionalDay(row.value);
     }
   });
 
-  if (!vendorKeys.length && singleVendor) vendorKeys = [singleVendor];
-  vendorOrderConfigs = normalizeVendorOrderConfigs(vendorOrderConfigs, vendorKeys, windowStartDay, windowEndDay);
   const configuredVendorConfigs = vendorOrderConfigs.filter((config) => config.enabled !== false);
   const configuredVendorKeys = normalizeVendorKeys(configuredVendorConfigs.map((config) => config.vendorKey));
   const activeVendorOrders = configuredVendorConfigs
     .filter((config) => isVendorConfigActive(config, now, today))
     .map((config) => config.vendorKey);
   const windowOpen = activeVendorOrders.length > 0;
-  const singleConfig = configuredVendorConfigs.length === 1 ? configuredVendorConfigs[0] : null;
   return {
     vendorOrderConfigs,
     vendorOrdersOpenVendors: activeVendorOrders,
     vendorOrdersConfiguredVendors: configuredVendorKeys,
     vendorOrdersOpenVendor: activeVendorOrders[0] || null,
-    vendorOrdersWindowStartDay: singleConfig ? singleConfig.startDay : null,
-    vendorOrdersWindowEndDay: singleConfig ? singleConfig.endDay : null,
+    vendorOrdersWindowStartDay: null,
+    vendorOrdersWindowEndDay: null,
     vendorOrdersWindowOpen: windowOpen,
     activeVendorOrders,
   };
@@ -306,6 +288,10 @@ router.get('/', async (req, res) => {
     const vendorOrdersStateRaw = buildVendorOrdersState({ docs, today, now });
     let vendorOrdersState = vendorOrdersStateRaw;
     const sanitizedVendorConfigs = filterVendorConfigsBySuppliers(vendorOrdersStateRaw.vendorOrderConfigs, supplierIdSet);
+    const hasLegacyVendorDocs = docs.some((row) => row && ['vendorOrdersOpenVendor', 'vendorOrdersOpenVendors', 'vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'].includes(row.key));
+    if (!vendorOrdersStateRaw.vendorOrderConfigs.length && hasLegacyVendorDocs) {
+      await clearLegacyVendorOrderSettings();
+    }
     if (sanitizedVendorConfigs.length !== vendorOrdersStateRaw.vendorOrderConfigs.length) {
       const persistedConfigs = await persistVendorOrderConfigs(sanitizedVendorConfigs);
       vendorOrdersState = buildVendorOrdersState({

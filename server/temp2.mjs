@@ -1,0 +1,1 @@
+import('./db.js').then(() => import('./models/setting.js')).then(({default: Setting}) => Setting.deleteMany({key: {$regex: /vendor/, $ne: 'vendorOrderConfigs'}}).then(d => {console.log(d); process.exit()}))

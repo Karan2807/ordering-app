@@ -76,7 +76,7 @@ function normalizeVendorOrderList(input){
   var normalized=listifyVendorInputs(input).map(function(v){
     return extractVendorIdentifier(v);
   }).filter(Boolean);
-  return [].concat(new Set(normalized));
+  return Array.from(new Set(normalized));
 }
 function parseOptionalDay(value){
   if(value==null||value==="") return null;
@@ -89,14 +89,8 @@ function parseOptionalTimestamp(value){
   var d=new Date(value);
   return Number.isNaN(d.getTime())?null:d.toISOString();
 }
-function normalizeVendorOrderConfigs(input, legacyVendorKeys, legacyStartDay, legacyEndDay){
+function normalizeVendorOrderConfigs(input){
   var values=listifyVendorInputs(input);
-  var fallbackKeys=normalizeVendorOrderList(legacyVendorKeys);
-  if(!values.length&&fallbackKeys.length){
-    values=fallbackKeys.map(function(vendorKey){
-      return {vendorKey:vendorKey,startDay:legacyStartDay,endDay:legacyEndDay,enabled:true};
-    });
-  }
   var byVendorKey={};
   values.forEach(function(entry){
     var raw=entry&&typeof entry==="object"?entry:{vendorKey:entry};
@@ -170,7 +164,7 @@ function vendorConfigWindowText(config){
 function normalizeSupplierCategories(input){
   var values=Array.isArray(input)?input:[];
   var normalized=values.map(function(v){return String(v||"").trim().toLowerCase();}).filter(function(v){return SUPPLIER_CATEGORY_OPTIONS.some(function(opt){return opt.id===v;});});
-  normalized=[].concat(new Set(normalized));
+  normalized=Array.from(new Set(normalized));
   return normalized;
 }
 function suppliersForCategory(list, category){
@@ -1041,9 +1035,8 @@ export default function App(){
         var serverManualOpen = settings.manualOpenOrder || null;
         var serverManualOpenSeq = settings.manualOpenSeq != null ? Number(settings.manualOpenSeq) : null;
         var serverManualOpenLeaves = !!settings.manualOpenLeaves;
-        var legacyVendorKeys=settings.vendorOrdersOpenVendors&&settings.vendorOrdersOpenVendors.length?settings.vendorOrdersOpenVendors:(settings.vendorOrdersOpenVendor?[settings.vendorOrdersOpenVendor]:[]);
-        var serverVendorOrderConfigs=normalizeVendorOrderConfigs(settings.vendorOrderConfigs,legacyVendorKeys,settings.vendorOrdersWindowStartDay,settings.vendorOrdersWindowEndDay);
-        var serverVendorOrdersOpenVendors = normalizeVendorOrderList(serverVendorOrderConfigs.filter(function(config){return config.enabled!==false;}).map(function(config){return config.vendorKey;}));
+        var serverVendorOrderConfigs=normalizeVendorOrderConfigs(settings.vendorOrderConfigs);
+        var serverVendorOrdersOpenVendors = normalizeVendorOrderList(settings.vendorOrdersOpenVendors||[]);
         var serverActiveVendorIds = normalizeVendorOrderList(settings.activeVendorOrders||[]);
         var serverVendorOrdersWindowStartDay = parseOptionalDay(settings.vendorOrdersWindowStartDay);
         var serverVendorOrdersWindowEndDay = parseOptionalDay(settings.vendorOrdersWindowEndDay);
@@ -2046,7 +2039,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setServerActiveVendorOrderIds(normalizeVendorOrderList(resp.activeVendorOrders||[]));
     }
     if(setVendorOrderConfigs&&Object.prototype.hasOwnProperty.call(resp,"vendorOrderConfigs")){
-      setVendorOrderConfigs(normalizeVendorOrderConfigs(resp.vendorOrderConfigs,resp.vendorOrdersOpenVendors));
+      setVendorOrderConfigs(normalizeVendorOrderConfigs(resp.vendorOrderConfigs));
       return;
     }
     if(setVendorOrderConfigs&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendors")){
@@ -3641,7 +3634,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
     var normalized=normalizeVendorOrderConfigs(nextConfigs);
     if(setVendorOrderConfigs) setVendorOrderConfigs(normalized);
     if(setVendorOrdersOpenVendors){
-      setVendorOrdersOpenVendors(normalizeVendorOrderList(normalized.filter(function(config){return config.enabled!==false;}).map(function(config){return config.vendorKey;})));
+      setVendorOrdersOpenVendors(Array.isArray(activeVendorIds)?normalizeVendorOrderList(activeVendorIds):[]);
     }
     if(setServerActiveVendorOrderIds&&Array.isArray(activeVendorIds)){
       setServerActiveVendorOrderIds(normalizeVendorOrderList(activeVendorIds));
@@ -3712,7 +3705,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
           startDay:saveStartDay,
           endDay:saveEndDay,
         });
-        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs,resp.vendorOrdersOpenVendors,resp.vendorOrdersWindowStartDay,resp.vendorOrdersWindowEndDay);
+        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs);
         applyVendorConfigState(nextConfigs,resp.activeVendorOrders);
         if(setReopenedFromId){
           var reopenedIds=Array.isArray(resp.reopenedSupplierOrderIds)?resp.reopenedSupplierOrderIds:[];
@@ -3731,7 +3724,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
           enabled:true,
           openToday24h:true,
         });
-        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs,resp.vendorOrdersOpenVendors,resp.vendorOrdersWindowStartDay,resp.vendorOrdersWindowEndDay);
+        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs);
         applyVendorConfigState(nextConfigs,resp.activeVendorOrders);
         if(setReopenedFromId){
           var reopenedIds=Array.isArray(resp.reopenedSupplierOrderIds)?resp.reopenedSupplierOrderIds:[];
@@ -3747,7 +3740,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       }
       try{
         var resp=await apiClient.settings.updateVendorOrdersOpen({vendorKey:targetVendorKey,enabled:false});
-        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs,resp.vendorOrdersOpenVendors,resp.vendorOrdersWindowStartDay,resp.vendorOrdersWindowEndDay);
+        var nextConfigs=normalizeVendorOrderConfigs(resp.vendorOrderConfigs);
         applyVendorConfigState(nextConfigs,resp.activeVendorOrders);
         if(setReopenedFromId) setReopenedFromId(null);
         if(selectedVendorSettingKey===targetVendorKey){

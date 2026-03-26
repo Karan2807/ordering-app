@@ -75,17 +75,8 @@ function parseOptionalDay(value) {
   return Number.isNaN(day) || day < 0 || day > 6 ? null : day;
 }
 
-function normalizeVendorOrderConfigs(input, fallbackVendorKeys = [], fallbackStartDay = null, fallbackEndDay = null) {
-  let list = listifyVendorInputs(input);
-  const legacyVendorKeys = normalizeVendorKeys(fallbackVendorKeys);
-  if (!list.length && legacyVendorKeys.length) {
-    list = legacyVendorKeys.map((vendorKey) => ({
-      vendorKey,
-      startDay: fallbackStartDay,
-      endDay: fallbackEndDay,
-      enabled: true,
-    }));
-  }
+function normalizeVendorOrderConfigs(input) {
+  const list = listifyVendorInputs(input);
   const byVendorKey = new Map();
   list.forEach((entry) => {
     const raw = entry && typeof entry === 'object' ? entry : { vendorKey: entry };
@@ -140,20 +131,11 @@ async function clearVendorOrdersOpenIfMatching(vendorKey) {
   }
   const docs = await Setting.find({ key: { $in: ['vendorOrderConfigs', 'vendorOrdersOpenVendor', 'vendorOrdersOpenVendors', 'vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'] } }).lean();
   let configsRaw = [];
-  let configured = [];
-  let singleVendor = null;
-  let legacyStartDay = null;
-  let legacyEndDay = null;
   docs.forEach((doc) => {
     if (!doc) return;
     if (doc.key === 'vendorOrderConfigs') configsRaw = doc.value;
-    else if (doc.key === 'vendorOrdersOpenVendors') configured = normalizeVendorKeys(doc.value);
-    else if (doc.key === 'vendorOrdersOpenVendor') singleVendor = String(doc.value || '').trim() || null;
-    else if (doc.key === 'vendorOrdersWindowStartDay') legacyStartDay = parseOptionalDay(doc.value);
-    else if (doc.key === 'vendorOrdersWindowEndDay') legacyEndDay = parseOptionalDay(doc.value);
   });
-  if (!configured.length && singleVendor) configured = [singleVendor];
-  const configs = normalizeVendorOrderConfigs(configsRaw, configured, legacyStartDay, legacyEndDay);
+  const configs = normalizeVendorOrderConfigs(configsRaw);
   const nextConfigs = configs.filter((config) => config.vendorKey !== normalizedVendorKey);
   const persistedConfigs = await persistVendorOrderConfigs(nextConfigs);
   const nextVendors = normalizeVendorKeys(
