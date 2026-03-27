@@ -83,8 +83,22 @@ function normalizeTemplatePayload(template) {
     };
   }
   if (!Array.isArray(template.rows) || !Array.isArray(template.itemRows) || !Array.isArray(template.storeColumns)) {
-    return null;
+    if (String(template.kind || '').trim() !== 'raw_grid') {
+      return null;
+    }
   }
+  const normalizedRawGrid = template.rawGrid && typeof template.rawGrid === 'object' && Array.isArray(template.rawGrid.sheets)
+    ? {
+        sheets: template.rawGrid.sheets
+          .map((sheet, idx) => ({
+            name: String(sheet && sheet.name || `Sheet ${idx + 1}`).trim() || `Sheet ${idx + 1}`,
+            rows: Array.isArray(sheet && sheet.rows)
+              ? sheet.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? '')) : []))
+              : [],
+          }))
+          .filter((sheet) => Array.isArray(sheet.rows) && sheet.rows.length > 0),
+      }
+    : null;
   return {
     kind: String(template.kind || 'matrix'),
     sourceFilename: String(template.sourceFilename || '').trim(),
@@ -120,6 +134,18 @@ function normalizeTemplatePayload(template) {
         colIndex: Number.isInteger(row && row.colIndex) ? row.colIndex : 0,
       }))
       .filter((row) => row.code && row.name && row.rowIndex != null),
+    multiSheetItemRows: Array.isArray(template.multiSheetItemRows) && template.multiSheetItemRows.length > 0
+      ? template.multiSheetItemRows
+          .map((row) => ({
+            code: String(row && row.code || '').trim(),
+            name: String(row && row.name || '').trim(),
+            rowIndex: Number.isInteger(row && row.rowIndex) ? row.rowIndex : null,
+            colIndex: Number.isInteger(row && row.colIndex) ? row.colIndex : 0,
+            sheetIndex: Number.isInteger(row && row.sheetIndex) ? row.sheetIndex : 0,
+            sheetName: String(row && row.sheetName || '').trim(),
+          }))
+          .filter((row) => row.code && row.name && row.rowIndex != null)
+      : null,
     storeColumns: template.storeColumns
       .map((col) => ({
         slotKey: String(col && col.slotKey || '').trim(),
@@ -148,6 +174,7 @@ function normalizeTemplatePayload(template) {
           date: String(template.uiHeaders.date || '').trim(),
         }
       : null,
+    rawGrid: normalizedRawGrid,
     originalFile: template.originalFile && typeof template.originalFile === 'object'
       ? {
           filename: String(template.originalFile.filename || '').trim(),
@@ -192,7 +219,7 @@ router.post('/template/parse', authMiddleware, async (req, res) => {
 // Get all items
 router.get('/', async (req, res) => {
   try {
-    const items = await Item.find().sort({ category: 1, vendorKey: 1, sortOrder: 1, createdAt: 1, name: 1 }).lean();
+    const items = await Item.find().sort({ category: 1, vendorKey: 1, sortOrder: 1, createdAt: 1 }).lean();
     res.json(items.map((item) => ({
       ...item,
       category: normalizeCategory(item.category),

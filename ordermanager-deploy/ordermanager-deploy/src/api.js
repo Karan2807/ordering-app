@@ -119,7 +119,7 @@ export const apiClient = {
     },
 
     delete(code) {
-      return apiClient.request(`/items/${code}`, { method: 'DELETE' });
+      return apiClient.request(`/items/${encodeURIComponent(String(code || ''))}`, { method: 'DELETE' });
     },
 
     bulkImport(items, mode = 'merge', category = 'vegetables', template = null, vendorKey = null) {
@@ -208,6 +208,18 @@ export const apiClient = {
       };
       if (vendorKey) body.vendorKey = vendorKey;
       return apiClient.request('/orders/consolidated-history/excel', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+    consolidatedHistorySheetPreview(week, type, category, vendorKey) {
+      const body = {
+        week,
+        type,
+        category: category || 'vegetables',
+      };
+      if (vendorKey) body.vendorKey = vendorKey;
+      return apiClient.request('/orders/consolidated-history/sheet-preview', {
         method: 'POST',
         body: JSON.stringify(body),
       });
@@ -400,6 +412,9 @@ export const apiClient = {
     },
     downloadExcel(id, filename) {
       return apiClient.download(`/orders/supplier-orders/${id}/excel`, filename);
+    },
+    previewExcel(id) {
+      return apiClient.request(`/orders/supplier-orders/${id}/excel-preview`);
     },
   },
 

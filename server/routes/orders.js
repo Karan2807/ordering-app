@@ -318,36 +318,59 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(Buffer.from(template.originalFile.base64, 'base64'));
-  const worksheet = template.sheetName
-    ? workbook.getWorksheet(template.sheetName) || workbook.worksheets[0]
-    : workbook.worksheets[0];
-  if (!worksheet) return null;
 
   const slotByKey = Object.fromEntries((slots || []).map((slot) => [slot.apna, slot]));
-  if (template.dateCell && template.dateCell.rowIndex != null && template.dateCell.colIndex != null) {
-    worksheet.getCell(template.dateCell.rowIndex + 1, template.dateCell.colIndex + 1).value = `${template.dateCell.prefix || ''}${dateText}`;
-  }
-  (template.itemRows || []).forEach((itemRow) => {
-    const code = String(itemRow.code || '').trim();
-    const name = itemNameByCode[code] || itemRow.name || displayOrderItemCode(code);
-    worksheet.getCell(itemRow.rowIndex + 1, (itemRow.colIndex || 0) + 1).value = name;
-    if (template.kind === 'tabular') {
-      const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
-      if (template.quantityColumn && template.quantityColumn.colIndex != null) {
-        worksheet.getCell(itemRow.rowIndex + 1, template.quantityColumn.colIndex + 1).value = qtyTotal > 0 ? qtyTotal : null;
-      }
-      if (template.noteColumn && template.noteColumn.colIndex != null) {
-        worksheet.getCell(itemRow.rowIndex + 1, template.noteColumn.colIndex + 1).value = noteByCode[code] || null;
-      }
-      return;
-    }
-    (template.storeColumns || []).forEach((col) => {
-      const slot = slotByKey[col.slotKey];
-      const storeId = slot && slot.store ? slot.store.id : null;
-      const qty = storeId && qtyByCodeStoreId[code] ? Number(qtyByCodeStoreId[code][storeId]) || 0 : 0;
-      worksheet.getCell(itemRow.rowIndex + 1, col.colIndex + 1).value = qty > 0 ? qty : null;
-    });
+
+  // Use multiSheetItemRows if present (multi-sheet support), else fall back to itemRows
+  const allItemRows = Array.isArray(template.multiSheetItemRows) && template.multiSheetItemRows.length > 0
+    ? template.multiSheetItemRows
+    : (Array.isArray(template.itemRows) ? template.itemRows.map((ir) => Object.assign({}, ir, {
+        sheetIndex: 0,
+        sheetName: String(template.sheetName || ''),
+      })) : []);
+
+  // Group items by sheet
+  const itemsBySheet = {};
+  allItemRows.forEach((itemRow) => {
+    const shKey = String(itemRow.sheetName || itemRow.sheetIndex || 0);
+    if (!itemsBySheet[shKey]) itemsBySheet[shKey] = { sheetName: itemRow.sheetName, sheetIndex: Number(itemRow.sheetIndex) || 0, rows: [] };
+    itemsBySheet[shKey].rows.push(itemRow);
   });
+
+  // Write to each sheet
+  for (const sheetGroup of Object.values(itemsBySheet)) {
+    const ws = sheetGroup.sheetName
+      ? workbook.getWorksheet(sheetGroup.sheetName) || workbook.worksheets[sheetGroup.sheetIndex] || workbook.worksheets[0]
+      : workbook.worksheets[sheetGroup.sheetIndex] || workbook.worksheets[0];
+    if (!ws) continue;
+
+    // Write date cell (only on first sheet)
+    if (sheetGroup.sheetIndex === 0 && template.dateCell && template.dateCell.rowIndex != null && template.dateCell.colIndex != null) {
+      ws.getCell(template.dateCell.rowIndex + 1, template.dateCell.colIndex + 1).value = `${template.dateCell.prefix || ''}${dateText}`;
+    }
+
+    sheetGroup.rows.forEach((itemRow) => {
+      const code = String(itemRow.code || '').trim();
+      const name = itemNameByCode[code] || itemRow.name || displayOrderItemCode(code);
+      ws.getCell(itemRow.rowIndex + 1, (itemRow.colIndex || 0) + 1).value = name;
+      if (template.kind === 'tabular') {
+        const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+        if (template.quantityColumn && template.quantityColumn.colIndex != null) {
+          ws.getCell(itemRow.rowIndex + 1, template.quantityColumn.colIndex + 1).value = qtyTotal > 0 ? qtyTotal : null;
+        }
+        if (template.noteColumn && template.noteColumn.colIndex != null) {
+          ws.getCell(itemRow.rowIndex + 1, template.noteColumn.colIndex + 1).value = noteByCode[code] || null;
+        }
+        return;
+      }
+      (template.storeColumns || []).forEach((col) => {
+        const slot = slotByKey[col.slotKey];
+        const storeId = slot && slot.store ? slot.store.id : null;
+        const qty = storeId && qtyByCodeStoreId[code] ? Number(qtyByCodeStoreId[code][storeId]) || 0 : 0;
+        ws.getCell(itemRow.rowIndex + 1, col.colIndex + 1).value = qty > 0 ? qty : null;
+      });
+    });
+  }
 
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);
@@ -785,6 +808,74 @@ async function rowsToPlainExcelBuffer(rows) {
   });
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);
+}
+
+function excelCellToPreviewText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+  if (Array.isArray(value.richText)) {
+    return value.richText.map((part) => String((part && part.text) || '')).join('');
+  }
+  if (value.text != null) {
+    return String(value.text);
+  }
+  if (value.result != null) {
+    return String(value.result);
+  }
+  if (value.formula) {
+    return `=${value.formula}`;
+  }
+  if (value.hyperlink) {
+    return String(value.hyperlink);
+  }
+  return String(value);
+}
+
+async function buildExcelPreviewFromBuffer(excelBuffer) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(excelBuffer);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) {
+    return { sheetName: 'Sheet1', rows: [] };
+  }
+
+  let maxRow = 0;
+  let maxCol = 0;
+  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    let rowHasValue = false;
+    const values = Array.isArray(row.values) ? row.values : [];
+    for (let col = 1; col < values.length; col += 1) {
+      const text = excelCellToPreviewText(values[col]);
+      if (text !== '') {
+        rowHasValue = true;
+        if (col > maxCol) maxCol = col;
+      }
+    }
+    if (rowHasValue && rowNumber > maxRow) {
+      maxRow = rowNumber;
+    }
+  });
+
+  const safeMaxRow = Math.min(maxRow, 300);
+  const safeMaxCol = Math.min(maxCol, 40);
+  const rows = [];
+  for (let row = 1; row <= safeMaxRow; row += 1) {
+    const outRow = [];
+    for (let col = 1; col <= safeMaxCol; col += 1) {
+      outRow.push(excelCellToPreviewText(worksheet.getCell(row, col).value));
+    }
+    rows.push(outRow);
+  }
+
+  return {
+    sheetName: worksheet.name || 'Sheet1',
+    rows,
+  };
 }
 
 async function buildConsolidatedExcelPayload(type, category, vendorKey, splitData, requestedWeekKey = null) {
@@ -1586,6 +1677,29 @@ router.post('/consolidated-history/excel', authMiddleware, async (req, res) => {
   }
 });
 
+router.post('/consolidated-history/sheet-preview', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const { week, type, category, vendorKey } = req.body || {};
+    if (!week || !type) {
+      return res.status(400).json({ error: 'week and type are required' });
+    }
+    const { excelBuffer } = await buildConsolidatedHistoryExcelPayload({
+      week: String(week),
+      type: String(type),
+      category: normalizeCategory(category),
+      vendorKey: normalizeVendorKey(category, vendorKey),
+    });
+    const preview = await buildExcelPreviewFromBuffer(excelBuffer);
+    res.json(preview);
+  } catch (err) {
+    console.error('Consolidated history sheet preview error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // supplier order history endpoints (admin only)
 router.get('/supplier-orders', authMiddleware, async (req, res) => {
   try {
@@ -1678,6 +1792,29 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
     res.send(excelBuffer);
   } catch (err) {
     console.error('Download supplier order Excel error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const doc = await SupplierOrder.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
+    if (!doc.excelBase64) return res.status(404).json({ error: 'Excel file not stored for this record' });
+
+    const excelBuffer = Buffer.from(doc.excelBase64, 'base64');
+    const preview = await buildExcelPreviewFromBuffer(excelBuffer);
+    res.json({
+      success: true,
+      filename: doc.excelFilename || null,
+      sheetName: preview.sheetName,
+      rows: preview.rows,
+    });
+  } catch (err) {
+    console.error('Supplier order Excel preview error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
