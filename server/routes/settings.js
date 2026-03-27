@@ -1,7 +1,6 @@
 import express from 'express';
 import { authMiddleware } from '../auth.js';
 import Setting from '../models/setting.js';
-import SupplierOrder from '../models/supplierOrder.js';
 import Supplier from '../models/supplier.js';
 import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
@@ -102,6 +101,7 @@ function normalizeVendorOrderConfigs(input) {
       startDay = null;
       endDay = null;
     }
+    const rawSeq = parseInt(raw.seq, 10);
     byVendorKey.set(vendorKey, {
       vendorKey,
       startDay,
@@ -110,6 +110,7 @@ function normalizeVendorOrderConfigs(input) {
       temporaryOpenUntil,
       temporaryOpenCreatedAt,
       temporaryOpenOnly,
+      seq: rawSeq > 0 ? rawSeq : 1,
     });
   });
   return Array.from(byVendorKey.values());
@@ -495,7 +496,6 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin only' });
     }
-    const reopenedSupplierOrderIds = [];
     const now = nowInTimezone(ORDER_TIMEZONE);
     const today = now.getDay();
     const docs = await Setting.find({
@@ -528,10 +528,13 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
       if (enabled && !openToday24h && startDay == null && endDay == null) {
         return res.status(400).json({ error: 'Select both start and end day for vendor order range, or use 24-hour open' });
       }
+      const existingVendorConfig = nextConfigs.find((config) => config.vendorKey === vendorKey) || null;
+      const existingVendorSeq = existingVendorConfig ? (parseInt(existingVendorConfig.seq, 10) || 0) : 0;
       nextConfigs = nextConfigs.filter((config) => config.vendorKey !== vendorKey);
       if (enabled) {
         const temporaryOpenUntil = openToday24h ? new Date(now.getTime() + (24 * 60 * 60 * 1000)).toISOString() : null;
         const temporaryOpenCreatedAt = openToday24h ? now.toISOString() : null;
+        const newSeq = existingVendorSeq + 1;
         nextConfigs.push({
           vendorKey,
           startDay: openToday24h ? null : startDay,
@@ -540,17 +543,18 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
           temporaryOpenUntil,
           temporaryOpenCreatedAt,
           temporaryOpenOnly: openToday24h,
+          seq: newSeq,
         });
-        const latestVendorOrder = await SupplierOrder.findOne({
-          type: 'VENDOR',
-          category: 'vendor_orders',
-          vendorKey,
-        }).sort({ sentAt: -1, _id: -1 });
-        if (latestVendorOrder && latestVendorOrder.finished !== false) {
-          latestVendorOrder.finished = false;
-          await latestVendorOrder.save();
+      } else {
+        // Preserve config with enabled:false so seq survives across cancel/reopen cycles
+        if (existingVendorConfig) {
+          nextConfigs.push({
+            ...existingVendorConfig,
+            enabled: false,
+            temporaryOpenUntil: null,
+            temporaryOpenCreatedAt: null,
+          });
         }
-        if (latestVendorOrder) reopenedSupplierOrderIds.push(String(latestVendorOrder._id));
       }
     } else {
       const vendorKeys = normalizeVendorKeys(req.body && req.body.vendorKeys);
@@ -571,27 +575,20 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
       if (vendorKeys.length > 0 && startDay == null && endDay == null) {
         return res.status(400).json({ error: 'Select both start and end day for vendor order range, or use 24-hour open' });
       }
-      nextConfigs = vendorKeys.map((vendorKey) => ({
-        vendorKey,
-        startDay,
-        endDay,
-        enabled: true,
-        temporaryOpenUntil: null,
-        temporaryOpenCreatedAt: null,
-        temporaryOpenOnly: false,
-      }));
-      for (const vendorKey of vendorKeys) {
-        const latestVendorOrder = await SupplierOrder.findOne({
-          type: 'VENDOR',
-          category: 'vendor_orders',
+      nextConfigs = vendorKeys.map((vendorKey) => {
+        const prevConfig = currentState.vendorOrderConfigs.find((c) => c.vendorKey === vendorKey);
+        const prevSeq = prevConfig ? (parseInt(prevConfig.seq, 10) || 0) : 0;
+        return {
           vendorKey,
-        }).sort({ sentAt: -1, _id: -1 });
-        if (latestVendorOrder && latestVendorOrder.finished !== false) {
-          latestVendorOrder.finished = false;
-          await latestVendorOrder.save();
-        }
-        if (latestVendorOrder) reopenedSupplierOrderIds.push(String(latestVendorOrder._id));
-      }
+          startDay,
+          endDay,
+          enabled: true,
+          temporaryOpenUntil: null,
+          temporaryOpenCreatedAt: null,
+          temporaryOpenOnly: false,
+          seq: prevSeq + 1,
+        };
+      });
     }
     const persistedConfigs = await persistVendorOrderConfigs(nextConfigs);
     const result = buildVendorOrdersState({
@@ -608,8 +605,8 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
       vendorOrdersWindowEndDay: result.vendorOrdersWindowEndDay,
       vendorOrdersWindowOpen: result.vendorOrdersWindowOpen,
       activeVendorOrders: result.activeVendorOrders,
-      reopenedSupplierOrderId: reopenedSupplierOrderIds.length===1?reopenedSupplierOrderIds[0]:null,
-      reopenedSupplierOrderIds,
+      reopenedSupplierOrderId: null,
+      reopenedSupplierOrderIds: [],
     });
   } catch (err) {
     console.error('Update vendor orders open error:', err);

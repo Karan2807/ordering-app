@@ -88,11 +88,16 @@ function normalizeVendorOrderConfigs(input) {
       startDay = null;
       endDay = null;
     }
+    const rawSeq = parseInt(raw.seq, 10);
     byVendorKey.set(vendorKey, {
       vendorKey,
       startDay,
       endDay,
       enabled: raw.enabled !== false,
+      temporaryOpenUntil: raw.temporaryOpenUntil || null,
+      temporaryOpenCreatedAt: raw.temporaryOpenCreatedAt || null,
+      temporaryOpenOnly: raw.temporaryOpenOnly === true || raw.temporaryOpenOnly === 'true' || raw.temporaryOpenOnly === 1 || raw.temporaryOpenOnly === '1',
+      seq: rawSeq > 0 ? rawSeq : 1,
     });
   });
   return Array.from(byVendorKey.values());
@@ -136,7 +141,16 @@ async function clearVendorOrdersOpenIfMatching(vendorKey) {
     if (doc.key === 'vendorOrderConfigs') configsRaw = doc.value;
   });
   const configs = normalizeVendorOrderConfigs(configsRaw);
-  const nextConfigs = configs.filter((config) => config.vendorKey !== normalizedVendorKey);
+  const nextConfigs = configs.map((config) => {
+    if (String(config.vendorKey || '').trim() !== normalizedVendorKey) return config;
+    return {
+      ...config,
+      enabled: false,
+      temporaryOpenUntil: null,
+      temporaryOpenCreatedAt: null,
+      temporaryOpenOnly: false,
+    };
+  });
   const persistedConfigs = await persistVendorOrderConfigs(nextConfigs);
   const nextVendors = normalizeVendorKeys(
     persistedConfigs
@@ -418,7 +432,7 @@ function getIsoWeekKeyForDate(value) {
 function normalizeRequestedWeekKey(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
-  return /^\d{4}-\d{2}-\d{2}(?:-M\d+)?$/.test(raw) ? raw : null;
+  return /^\d{4}-\d{2}-\d{2}(?:-M\d+|-VS\d+)?$/.test(raw) ? raw : null;
 }
 
 async function getManualOpenState() {
@@ -438,6 +452,17 @@ function composeWeekKeyForType(baseWeekKey, type, manualOpenOrder, manualOpenSeq
     return `${baseWeekKey}-M${manualOpenSeq}`;
   }
   return baseWeekKey;
+}
+
+async function getVendorSeqForKey(vendorKey) {
+  if (!vendorKey) return 1;
+  const doc = await Setting.findOne({ key: 'vendorOrderConfigs' }).lean();
+  if (!doc || !Array.isArray(doc.value)) return 1;
+  const config = (doc.value || []).find(
+    (c) => c && String(c.vendorKey || '').trim() === String(vendorKey).trim()
+  );
+  const seq = config ? parseInt(config.seq, 10) : 0;
+  return seq > 0 ? seq : 1;
 }
 
 function escapeRegex(value) {
@@ -508,25 +533,9 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const exact = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey }).lean();
-  if (exact) return exact;
-  if (weekBase) {
-    const windowOrder = await Order.findOne({
-      storeId,
-      type,
-      category: resolvedCategory,
-      vendorKey: resolvedVendorKey,
-      ...weekWindowFilter(weekKey, weekBase),
-    })
-      .sort({ submittedAt: -1, createdAt: -1 })
-      .lean();
-    if (windowOrder) return windowOrder;
-  }
-  const latest = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey })
-    .sort({ submittedAt: -1, createdAt: -1 })
-    .lean();
-  if (!latest) return null;
-  const latestWeek = getIsoWeekKeyForDate(latest.submittedAt || latest.createdAt || new Date());
-  return latestWeek === weekKey ? latest : null;
+  // Strict match only. A new reopen/override cycle must start from a fresh default state
+  // and should not hydrate from prior week/order keys.
+  return exact || null;
 }
 
 function normalizeOrderItems(itemsInput, notesInput = {}) {
@@ -743,6 +752,56 @@ function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNam
   return rows;
 }
 
+function buildVendorRowsFromPreviewLayout(layout) {
+  if (!layout || typeof layout !== 'object') return null;
+  const slotHeadersRaw = Array.isArray(layout.slotHeaders) ? layout.slotHeaders : [];
+  const slotStoreIdsRaw = Array.isArray(layout.slotStoreIds) ? layout.slotStoreIds : [];
+  const slotQtyHeadersRaw = Array.isArray(layout.slotQtyHeaders) ? layout.slotQtyHeaders : [];
+  const slotCount = Math.max(slotHeadersRaw.length, slotStoreIdsRaw.length, slotQtyHeadersRaw.length);
+  if (slotCount < 1) return null;
+
+  const slotHeaders = Array.from({ length: slotCount }, (_, idx) => String(slotHeadersRaw[idx] || '').trim());
+  const slotStoreIds = Array.from({ length: slotCount }, (_, idx) => String(slotStoreIdsRaw[idx] || '').trim());
+  const slotQtyHeaders = Array.from({ length: slotCount }, (_, idx) => String(slotQtyHeadersRaw[idx] || '').trim() || 'QUANTITY (case qty)');
+
+  const dateLabel = String(layout.dateLabel || `Date: ${new Date().toLocaleDateString('en-US')}`).trim();
+  const itemHeader = String(layout.itemHeader || 'PRODUCT').trim() || 'PRODUCT';
+  const totalHeader = String(layout.totalHeader || 'TOTAL QTY').trim() || 'TOTAL QTY';
+  const noteHeader = String(layout.noteHeader || 'NOTE').trim() || 'NOTE';
+  const previewRows = Array.isArray(layout.rows) ? layout.rows : [];
+
+  const rows = [];
+  rows.push([dateLabel, '', ...slotHeaders, '']);
+  rows.push([itemHeader, totalHeader, ...slotQtyHeaders, noteHeader]);
+
+  previewRows.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    if (entry.type === 'heading') {
+      const heading = String(entry.text || '').trim();
+      if (!heading) return;
+      rows.push([heading, ...Array(slotCount + 2).fill('')]);
+      return;
+    }
+    if (entry.type !== 'item') return;
+    const itemName = String(entry.itemName || '').trim();
+    if (!itemName) return;
+    const qtyMap = entry.qtyByStoreId && typeof entry.qtyByStoreId === 'object' ? entry.qtyByStoreId : {};
+    const qtyCols = slotStoreIds.map((storeId) => {
+      if (!storeId) return '';
+      const qty = Number(qtyMap[storeId]) || 0;
+      return qty > 0 ? qty : '';
+    });
+    const totalFromPayload = Number(entry.total) || 0;
+    const total = totalFromPayload > 0
+      ? totalFromPayload
+      : qtyCols.reduce((acc, value) => acc + (Number(value) || 0), 0);
+    const note = String(entry.note || '').trim();
+    rows.push([itemName, total > 0 ? total : '', ...qtyCols, note]);
+  });
+
+  return rows;
+}
+
 function cloneTemplateRowStyle(ws, targetRowNumber, sourceRowNumber = 5, startCol = 2, endCol = 7) {
   const srcRow = ws.getRow(sourceRowNumber);
   const dstRow = ws.getRow(targetRowNumber);
@@ -884,8 +943,19 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   const weekBase = getWeekKey();
   const mo = await getManualOpenState();
   const resolvedRequestedWeekKey = normalizeRequestedWeekKey(requestedWeekKey);
-  const weekKey = resolvedRequestedWeekKey || composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
-  const stores = await getStoresForConsolidatedWindow(type, resolvedCategory, resolvedVendorKey, weekKey, weekBase);
+  let weekKey = resolvedRequestedWeekKey || composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+  if (!resolvedRequestedWeekKey && resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
+    const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
+    weekKey = weekBase + '-VS' + vendorSeq;
+  }
+  let stores;
+  if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
+    // When frontend sends split/consolidated payload rows, preserve the same full store layout
+    // used in preview rather than narrowing to only submitted stores.
+    stores = await Store.find().sort({ id: 1 }).lean();
+  } else {
+    stores = await getStoresForConsolidatedWindow(type, resolvedCategory, resolvedVendorKey, weekKey, weekBase);
+  }
   const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
   const itemNameByCode = Object.fromEntries(itemDocs.map((it) => [it.code, it.name]));
   const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
@@ -911,6 +981,10 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   let excelRows = [];
   let usePlainWorkbook = false;
   let excelBuffer = null;
+  const vendorPreviewRows =
+    resolvedCategory === 'vendor_orders' && splitData && splitData.previewLayout
+      ? buildVendorRowsFromPreviewLayout(splitData.previewLayout)
+      : null;
   const qtyByCodeStoreId = {};
   const noteByCode = {};
   if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
@@ -931,8 +1005,12 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     });
   }
 
+  // For vendor consolidated sends/downloads, prefer the exact preview layout from frontend so
+  // the attachment mirrors what users reviewed before sending.
+  if (vendorPreviewRows && vendorPreviewRows.length > 0) {
+    excelRows = vendorPreviewRows;
   // Leaves supplier exports should include only product + total qty (no store-wise columns).
-  if (resolvedCategory === 'leaves') {
+  } else if (resolvedCategory === 'leaves') {
     excelRows.push([`Date: ${dateText}`, '', '', '', '', '', '']);
     excelRows.push(['PRODUCT', 'TOTAL QTY', '', '', '', '', '']);
     const leavesRows = splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0
@@ -1185,10 +1263,15 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
-    const weekKey =
-      req.user.role === 'admin' && requestedWeekKey
-        ? requestedWeekKey
-        : composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+    let weekKey;
+    if (req.user.role === 'admin' && requestedWeekKey) {
+      weekKey = requestedWeekKey;
+    } else if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
+      const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
+      weekKey = weekBase + '-VS' + vendorSeq;
+    } else {
+      weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+    }
     const normalizedItems = normalizeOrderItems(items, notes);
     const now = new Date();
     const orderId = uuidv4();
@@ -1277,7 +1360,11 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     }
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
-    const weekKey = requestedWeekKey || composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
+    let weekKey = requestedWeekKey || composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
+    if (!requestedWeekKey && category === 'vendor_orders' && vendorKey) {
+      const vendorSeq = await getVendorSeqForKey(vendorKey);
+      weekKey = weekBase + '-VS' + vendorSeq;
+    }
     const stores = await getStoresForConsolidatedWindow(req.params.type, category, vendorKey, weekKey, weekBase);
     const response = [];
 
@@ -1538,7 +1625,11 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
     const type = 'VENDOR';
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
-    const weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+    let weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+    if (category === 'vendor_orders' && vendorKey) {
+      const vendorSeq = await getVendorSeqForKey(vendorKey);
+      weekKey = weekBase + '-VS' + vendorSeq;
+    }
     const stores = await getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase);
     const attachments = [];
     const snapshotLines = [];
