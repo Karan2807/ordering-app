@@ -1322,7 +1322,21 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
 
-    res.json({ success: true, orderId: order && order.id ? order.id : orderId });
+    // Return week key so frontend can recompute the correct order lookup key
+    // This is critical for vendor orders where the seq might have changed between API calls
+    const vendorSeqMatch = weekKey.match(/-VS(\d+)/);
+    const returnedVendorSeq = resolvedCategory === 'vendor_orders' && vendorSeqMatch ? parseInt(vendorSeqMatch[1], 10) : null;
+    
+    if (resolvedCategory === 'vendor_orders') {
+      console.log(`Vendor order created/updated: vendorKey=${resolvedVendorKey}, week=${weekKey}, seq=${returnedVendorSeq}, status=${status}`);
+    }
+    
+    res.json({ 
+      success: true, 
+      orderId: order && order.id ? order.id : orderId,
+      week: weekKey,
+      vendorSeq: returnedVendorSeq
+    });
   } catch (err) {
     console.error('Create order error:', err);
     res.status(500).json({ error: 'Server error' });

@@ -1432,6 +1432,19 @@ export default function App(){
     var raw=await apiClient.orders.getAll(isAdminUser?requestedStoreId:(user&&user.storeId?user.storeId:null));
     var orderMap=buildOrderStateMap(raw);
     setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
+    
+    // For vendor orders, also refresh settings to ensure vendorOrderConfigs are current
+    // This prevents seq mismatches from causing orders not to be found after submission
+    try{
+      var latestSettings=await apiClient.settings.getAll();
+      if(latestSettings){
+        var serverVendorOrderConfigs=normalizeVendorOrderConfigs(latestSettings.vendorOrderConfigs);
+        setVendorOrderConfigs(function(prev){return sameJson(prev,serverVendorOrderConfigs)?prev:serverVendorOrderConfigs;});
+      }
+    }catch(settingsErr){
+      console.warn("Settings refresh during order refresh failed (non-critical):", settingsErr);
+    }
+    
     return orderMap;
   },[userKey]);
   useEffect(function(){
@@ -1894,8 +1907,10 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   };
   var save=async function(){
     try{
-      await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"draft",storeId:user.storeId});
+      var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"draft",storeId:user.storeId});
       if(refreshOrders) await refreshOrders(user.storeId);
+      // For vendor orders, the backend-returned week key ensures we use the correct seq
+      // immediately without waiting for the next settings poll
       unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
       setDraftLockByKey(function(prev){var n=Object.assign({},prev);n[oKey]=true;return n;});
       setIsEditingDraft(false);
@@ -1904,9 +1919,16 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   };
   var doSubmit=async function(){
     try{
-      await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"submitted",storeId:user.storeId});
+      var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"submitted",storeId:user.storeId});
       if(refreshOrders) await refreshOrders(user.storeId);
-      unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
+      // For vendor orders, use the actual seq from the response to ensure correct key lookup
+      if(selCategory==="vendor_orders"&&resp&&resp.vendorSeq){
+        // Store the actual seq used so future lookups will find this order
+        // This handles the case where settings haven't been refreshed yet
+        unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes),_serverVendorSeq:resp.vendorSeq};
+      }else{
+        unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
+      }
       setDraftLockByKey(function(prev){if(!prev[oKey]) return prev;var n=Object.assign({},prev);delete n[oKey];return n;});
       setIsEditingDraft(false);
       setShowConfirm(false);
@@ -1960,7 +1982,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
       </div>
     </div>
     <div style={S.tw}><table style={Object.assign({},S.tbl,{tableLayout:"fixed"})}>
-      <thead><tr><th style={Object.assign({},S.th,{width:"38%"})}>{itemHeader}</th><th style={Object.assign({},S.th,{width:"12%"})}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center",width:"12%"})}>{qtyHeader}</th><th style={Object.assign({},S.th,{width:"38%"})}>{noteHeader}</th></tr></thead>
+      <thead><tr><th style={Object.assign({},S.th,{width:"38%"})}>{itemHeader}</th><th style={Object.assign({},S.th,{width:"12%"})}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center",width:"12%"})}>Qty</th><th style={Object.assign({},S.th,{width:"38%"})}>{noteHeader}</th></tr></thead>
       <tbody>{(function(){
         var navRow=-1;
         return displayRows.map(function(row){
@@ -2392,10 +2414,13 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     return slot.apna+vt;
   };
   var slotQtyHeaderForIndex=function(slot,idx){
-    if(selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header){
+    if(selCategory==="vendor_orders"){
+      return "QTY";
+    }
+    if(activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header){
       return activeTemplate.storeColumns[idx].header;
     }
-    return (templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QUANTITY (case qty)");
+    return (templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QTY");
   };
   var scheduledGroupKey=dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
   var isSingleVendorFlow=selCategory==="vendor_orders";
@@ -3268,7 +3293,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
         <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header?activeTemplate.storeColumns[idx].header:(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QUANTITY (case qty)")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
       </thead><tbody>
         {vendorConsolidatedDisplayRows.map(function(entry){
           if(entry.type==="heading"){
@@ -3296,7 +3321,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
         <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header?activeTemplate.storeColumns[idx].header:(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QUANTITY (case qty)")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
       </thead><tbody>{baseRows.map(function(it,rowIdx){
         return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{it.total||""}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var editQ=sid&&editingAll?Number((editQtyByStore[sid]||{})[it.code])||0:baseQ;var storeCol=sid!=null?editableStoreIndexById[sid]:null;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={editQ} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){if(storeCol==null) return;handleGridNavigation(e,consolidatedNavGroup,rowIdx,storeCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={storeCol} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:baseQ>0?"#0F172A":"#64748B"}}>{baseQ||""}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{editableStoreSlots.map(function(sl,noteIdx){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");var noteCol=editableStoreSlots.length+noteIdx;return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"5px 7px",fontSize:12.5,minHeight:28})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,noteCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={noteCol} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
       })}</tbody></table></div>
@@ -3392,7 +3417,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
             </div>
             <div style={Object.assign({},S.tw,{maxHeight:"40vh",border:"1px solid rgba(148,163,184,.25)"})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
               <tr><th style={Object.assign({},tHeadTop,{minWidth:200})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:100})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:280})}></th></tr>
-              <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:100})}>{selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header?activeTemplate.storeColumns[idx].header:(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QUANTITY (case qty)")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+              <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:100})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
             </thead><tbody>
               {displayRows.map(function(entry){
                 if(entry.type==="heading"){
