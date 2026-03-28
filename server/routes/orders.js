@@ -551,7 +551,7 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
   // Vendor orders can be submitted under earlier same-day VS sequences when settings
   // refresh lags behind UI state. Recover the latest same-day sequence record.
   if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
-    const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const submittedFallback = await Order.findOne({
       storeId,
       type,

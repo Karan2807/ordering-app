@@ -210,7 +210,7 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
     var bestSubmitted=null;
     var bestAny=null;
     var nowTs=Date.now();
-    var maxAgeMs=48*60*60*1000;
+    var maxAgeMs=7*24*60*60*1000;
     var keyPrefix=String(storeId||"")+"_";
     Object.keys(orderMap).forEach(function(k){
       if(k.indexOf(keyPrefix)!==0) return;
@@ -2503,10 +2503,23 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[supplierList,supplierSearch]);
   var configuredVendorOrderIds=normalizeVendorOrderList(vendorOrdersOpenVendors);
   var configuredVendorOrderIdsKey=configuredVendorOrderIds.join("|");
-  var visibleVendorOptions=supplierList.filter(function(v){
-    if(selCategory!=="vendor_orders") return true;
-    return configuredVendorOrderIds.indexOf(v.id)>=0||v.id===selectedVendorKey;
-  });
+    var recentOrderVendorIds=useMemo(function(){
+      var ids={};
+      var cutoff=Date.now()-7*24*60*60*1000;
+      Object.values(orders||{}).forEach(function(o){
+        if(!o||String(o.type||"")!=="VENDOR") return;
+        if(normalizeCategory(o.category||"vegetables")!=="vendor_orders") return;
+        if(orderTimestampMs(o)<cutoff) return;
+        var vk=normalizeVendorKey("vendor_orders",o.vendorKey);
+        if(vk) ids[vk]=true;
+      });
+      return ids;
+    },[orders]);
+    var visibleVendorOptions=supplierList.filter(function(v){
+      if(selCategory!=="vendor_orders") return true;
+      return configuredVendorOrderIds.indexOf(v.id)>=0||v.id===selectedVendorKey||!!recentOrderVendorIds[v.id];
+    });
+    var visibleVendorOptionsKey=visibleVendorOptions.map(function(v){return v.id;}).join("|");
   var syncVendorStateFromResponse=function(resp){
     if(!resp) return;
     if(setVendorOrdersOpenVendors&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendors")){
@@ -2538,8 +2551,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(selectedVendorKey) return;
     if(configuredVendorOrderIds.length===1){
       setSelectedVendorKey(configuredVendorOrderIds[0]);
+    } else if(configuredVendorOrderIds.length===0&&visibleVendorOptions.length===1){
+      setSelectedVendorKey(visibleVendorOptions[0].id);
     }
-  },[selCategory,selectedVendorKey,configuredVendorOrderIdsKey]);
+  },[selCategory,selectedVendorKey,configuredVendorOrderIdsKey,visibleVendorOptionsKey]);
   useEffect(function(){
     persistReopenTarget(reopenTarget);
   },[reopenTarget]);
@@ -2586,7 +2601,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     });
   };
   var latestCurrentTypeInfo=useMemo(function(){
-    return findLatestMatchingOrder(orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey,visibleStatus,48*60*60*1000);
+    return findLatestMatchingOrder(orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey,visibleStatus,7*24*60*60*1000);
   },[orders,visibleStoreIds,currentType,selCategory,resolvedVendorKey]);
   var reopenedLog=useMemo(function(){
     if(!reopenedFromId) return null;
@@ -2633,7 +2648,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     var bestTs=0;
     ["A","B","C"].forEach(function(t){
       if(primaryOpenType&&t===primaryOpenType) return;
-      var latestInfo=findLatestMatchingOrder(orders,visibleStoreIds,t,selCategory,resolvedVendorKey,visibleStatus,48*60*60*1000);
+      var latestInfo=findLatestMatchingOrder(orders,visibleStoreIds,t,selCategory,resolvedVendorKey,visibleStatus,7*24*60*60*1000);
       if(!latestInfo||!latestInfo.week) return;
       if(hasFinishedLogForWeek(t,latestInfo.week)) return;
       if(latestInfo.ts>bestTs){bestTs=latestInfo.ts;bestType=t;}
