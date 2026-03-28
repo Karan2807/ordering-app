@@ -1604,7 +1604,12 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
   // Build pending alerts across ALL open order categories for the current type.
   // For type B, leaves orders are also active so both should be tracked.
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
-  var pendingGroups=openTypes.map(function(openType){
+  var dashboardStatusMap={submitted:true,processed:true,draft_shared:true,draft:true};
+  var recentTypes=openTypes.length?openTypes:["A","B","C"].filter(function(openType){
+    return !!findLatestMatchingOrder(orders,stores.map(function(st){return st.id;}),openType,"vegetables",null,dashboardStatusMap,7*24*60*60*1000);
+  });
+  var dashboardTypes=openTypes.length?openTypes:recentTypes;
+  var pendingGroups=dashboardTypes.map(function(openType){
     var pendingByStore={};
     stores.forEach(function(st){
       var o=getDashboardOrderForStoreType(orders,st.id,todayKey,openType,"vegetables",null,manualOpenOrder,manualOpenSeq);
@@ -1705,8 +1710,8 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
       <div style={S.sc}><div style={S.sL}>Items</div><div style={Object.assign({},S.sV,{color:"#166534"})}>{items.length}</div></div>
       <div style={S.sc}><div style={S.sL}>Submitted</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div></div>
       <div style={S.sc}><div style={S.sL}>Processed</div><div style={Object.assign({},S.sV,{color:"#0F766E"})}>{proc}</div></div>
-      <div style={S.sc}><div style={S.sL}>Pending</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{openTypes.length?pendingTotal:"-"}</div></div>
-      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div></div>
+      <div style={S.sc}><div style={S.sL}>Pending</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{dashboardTypes.length?pendingTotal:"-"}</div></div>
+      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):(dashboardTypes.length?dashboardTypes.map(function(t){return "Order "+t;}).join(", "):"None")}</div><div style={S.sS}>{openTypes.length?"Currently open":(dashboardTypes.length?"Latest cycle status":"No active cycle")}</div></div>
       <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
     {pendingGroups.map(function(group){return(<div key={group.type} style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Order {group.type}</div><div style={S.d}>These stores have not submitted yet. Auto SMS runs in final 1 hour window every 30 minutes.</div></div>{group.pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){sendAllReminders(group.type);}}>Send Reminder to All</button>}</div>
@@ -1754,14 +1759,20 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
   var sub=my.filter(function(k){return orders[k].status==="submitted"||orders[k].status==="processed";}).length;
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
   var todayKey=cycleBaseKey(new Date());
-  var openTypeGroups=openTypes.map(function(type){
+  var dashboardStatusMap={submitted:true,processed:true,draft_shared:true,draft:true};
+  var dashboardTypes=openTypes.length?openTypes:["A","B","C"].filter(function(type){
+    return !!findLatestMatchingOrder(orders,[user.storeId],type,"vegetables",null,dashboardStatusMap,7*24*60*60*1000);
+  });
+  var openTypeGroups=dashboardTypes.map(function(type){
     var currentOrder=getDashboardOrderForStoreType(orders,user.storeId,todayKey,type,"vegetables",null,manualOpenOrder,manualOpenSeq);
-    return {type:type,status:currentOrder?currentOrder.status:null};
+    return {type:type,status:currentOrder?currentOrder.status:null,isCurrentlyOpen:openTypes.indexOf(type)>=0};
   });
   // Leaves order (only open on type B)
-  var leavesOrder=openTypes.indexOf("B")>=0?getDashboardOrderForStoreType(orders,user.storeId,todayKey,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
+  var hasRecentLeaves=!!findLatestMatchingOrder(orders,[user.storeId],"B","leaves",null,dashboardStatusMap,7*24*60*60*1000);
+  var leavesOrder=(openTypes.indexOf("B")>=0||hasRecentLeaves)?getDashboardOrderForStoreType(orders,user.storeId,todayKey,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
   var leavesStatus=leavesOrder?leavesOrder.status:null;
   var leavesOpen=isCategoryOpenForType("leaves","B",openTypes,manualOpenLeaves);
+  var showLeavesCard=leavesOpen||hasRecentLeaves;
   var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
     var vendorName=vendorDisplayName(suppliers,vendorKey);
     var vendorOrder=getCurrentOrderForStoreType(orders,user.storeId,"VENDOR","vendor_orders",vendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,vendorKey));
@@ -1777,7 +1788,7 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
     {notifs.map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={S.sg}>
       <div style={S.sc}><div style={S.sL}>Your Store</div><div style={Object.assign({},S.sV,{color:"#166534",fontSize:16})}>{sName}</div></div>
-      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:openTypes.length?"#34D399":"#6B7186",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div></div>
+      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:(openTypes.length||dashboardTypes.length)?"#34D399":"#6B7280",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):(dashboardTypes.length?dashboardTypes.map(function(t){return "Order "+t;}).join(", "):"None")}</div><div style={S.sS}>{openTypes.length?"Currently open":(dashboardTypes.length?"Latest cycle status":"No active cycle")}</div></div>
       <div style={S.sc}><div style={S.sL}>Completed</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div><div style={S.sS}>{my.length} total</div></div>
       <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
@@ -1787,16 +1798,16 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
           :group.status==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>Order {group.type} is Processed</div><div style={S.d}>Admin has processed this order.</div></Fragment>)
           :group.status==="draft"||group.status==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>Order {group.type} is Draft</div><div style={S.d}>Draft saved. Open Place Order to edit draft or submit final.</div></Fragment>)
           :(<Fragment><div style={Object.assign({},S.t,{color:"#FBBF24"})}>Order {group.type} - Action Required</div><div style={S.d}>{orderMsgs[group.type]||"Please submit your order."}</div></Fragment>)}</div>
-        {group.status!=="submitted"&&group.status!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setDraftRequest)setDraftRequest({type:group.type,category:"vegetables"});setPage("order-entry");}}>{group.status==="draft"||group.status==="draft_shared"?"Open Draft":"Place Order"}</button>}
+        {group.isCurrentlyOpen&&group.status!=="submitted"&&group.status!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setDraftRequest)setDraftRequest({type:group.type,category:"vegetables"});setPage("order-entry");}}>{group.status==="draft"||group.status==="draft_shared"?"Open Draft":"Place Order"}</button>}
       </div>
     </div>);})}
-    {leavesOpen&&(<div style={S.card}>
+    {showLeavesCard&&(<div style={S.card}>
       <div style={S.cH}>
         <div>{leavesStatus==="submitted"?(<Fragment><div style={Object.assign({},S.t,{color:"#34D399"})}>Leaves Order is Submitted</div><div style={S.d}>Your leaves order has been submitted successfully.</div></Fragment>)
           :leavesStatus==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>Leaves Order is Processed</div><div style={S.d}>Admin has processed this leaves order.</div></Fragment>)
           :leavesStatus==="draft"||leavesStatus==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>Leaves Order is Draft</div><div style={S.d}>Draft saved. Open to edit or submit final.</div></Fragment>)
           :(<Fragment><div style={Object.assign({},S.t,{color:"#16A34A"})}>Leaves Order - Action Required</div><div style={S.d}>Leaves order is open. Please submit your order.</div></Fragment>)}</div>
-        {leavesStatus!=="submitted"&&leavesStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setDraftRequest)setDraftRequest({type:"B",category:"leaves"});setPage("order-entry");}}>{leavesStatus==="draft"||leavesStatus==="draft_shared"?"Open Leaves Draft":"Place Leaves Order"}</button>}
+        {leavesOpen&&leavesStatus!=="submitted"&&leavesStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setDraftRequest)setDraftRequest({type:"B",category:"leaves"});setPage("order-entry");}}>{leavesStatus==="draft"||leavesStatus==="draft_shared"?"Open Leaves Draft":"Place Leaves Order"}</button>}
       </div>
     </div>)}
     {vendorGroups.map(function(group){return(<div key={group.vendorKey} style={S.card}>
