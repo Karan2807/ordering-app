@@ -201,8 +201,25 @@ function getVendorSeqFromConfigs(vendorOrderConfigs,vendorKey){
 function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
   var exactKey=storeId+"_"+dateKey(type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
   if(orderMap&&orderMap[exactKey]) return orderMap[exactKey];
-  // Do not hydrate from legacy/fuzzy keys.
-  // New open/reopen cycles (manual override sequence changes) must start fresh by default.
+
+  // Vendor orders can exist under an earlier same-day VS sequence if settings changed
+  // after some stores already submitted. Recover the latest same-day sequence record.
+  if(orderMap&&category==="vendor_orders"&&vendorKey){
+    var base=cycleBaseKey(new Date());
+    var suffix="-"+type+"-"+categoryKey(category,vendorKey);
+    var prefix=String(storeId||"")+"_"+base+"-VS";
+    var best=null;
+    Object.keys(orderMap).forEach(function(k){
+      if(k.indexOf(prefix)!==0) return;
+      if(!k.endsWith(suffix)) return;
+      var o=orderMap[k];
+      if(!o) return;
+      var ts=new Date(o.submittedAt||o.date||o.createdAt||0).getTime();
+      if(!best||ts>best.ts) best={order:o,ts:ts};
+    });
+    if(best&&best.order) return best.order;
+  }
+
   return null;
 }
 function lastWeekKey(type, category, vendorKey){

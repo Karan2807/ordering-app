@@ -478,13 +478,20 @@ function safeFilenamePart(value) {
 }
 
 async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase = null) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const isVendorOrders = resolvedCategory === 'vendor_orders' && !!resolvedVendorKey;
+  const resolvedWeekBase = weekBase || String(weekKey || '').split('-VS')[0] || String(weekKey || '').split('-M')[0];
+  const vendorWeekRegex = isVendorOrders && resolvedWeekBase
+    ? new RegExp(`^${escapeRegex(resolvedWeekBase)}-VS\\d+$`)
+    : null;
   const [stores, extraOrders] = await Promise.all([
     Store.find().sort({ id: 1 }).lean(),
     Order.find({
       type,
-      category,
-      vendorKey,
-      ...weekWindowFilter(weekKey, weekBase),
+      category: resolvedCategory,
+      vendorKey: resolvedVendorKey,
+      ...(vendorWeekRegex ? { week: { $regex: vendorWeekRegex } } : weekWindowFilter(weekKey, weekBase)),
     })
       .select({ storeId: 1, _id: 0 })
       .lean(),
@@ -533,9 +540,25 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const exact = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey }).lean();
-  // Strict match only. A new reopen/override cycle must start from a fresh default state
-  // and should not hydrate from prior week/order keys.
-  return exact || null;
+  if (exact) return exact;
+
+  // Vendor orders can be submitted under earlier same-day VS sequences when settings
+  // refresh lags behind UI state. Recover the latest same-day sequence record.
+  if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
+    const resolvedWeekBase = weekBase || String(weekKey || '').split('-VS')[0] || getWeekKey();
+    const fallback = await Order.findOne({
+      storeId,
+      type,
+      category: resolvedCategory,
+      vendorKey: resolvedVendorKey,
+      week: { $regex: new RegExp(`^${escapeRegex(resolvedWeekBase)}-VS\\d+$`) },
+    })
+      .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
+      .lean();
+    if (fallback) return fallback;
+  }
+
+  return null;
 }
 
 function normalizeOrderItems(itemsInput, notesInput = {}) {
@@ -1263,6 +1286,30 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
+
+    // Guardrail: once a store has submitted today's vendor order, block creating a new
+    // order in another VS sequence from Place Order. This prevents accidental re-ordering.
+    if (resolvedCategory === 'vendor_orders' && resolvedVendorKey && req.user.role !== 'admin') {
+      const submittedToday = await Order.findOne({
+        storeId,
+        type,
+        category: resolvedCategory,
+        vendorKey: resolvedVendorKey,
+        week: { $regex: new RegExp(`^${escapeRegex(weekBase)}-VS\\d+$`) },
+        status: { $in: ['submitted', 'processed'] },
+      })
+        .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
+        .lean();
+      if (submittedToday) {
+        return res.status(409).json({
+          error: 'Order already submitted for today',
+          existingWeek: submittedToday.week,
+          existingStatus: submittedToday.status,
+          orderId: submittedToday.id || null,
+        });
+      }
+    }
+
     let weekKey;
     if (req.user.role === 'admin' && requestedWeekKey) {
       weekKey = requestedWeekKey;
