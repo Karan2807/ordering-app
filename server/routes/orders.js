@@ -551,14 +551,17 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
   // Vendor orders can be submitted under earlier same-day VS sequences when settings
   // refresh lags behind UI state. Recover the latest same-day sequence record.
   if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
-    const resolvedWeekBase = weekBase || String(weekKey || '').split('-VS')[0] || getWeekKey();
+    const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const submittedFallback = await Order.findOne({
       storeId,
       type,
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
-      week: { $regex: new RegExp(`^${escapeRegex(resolvedWeekBase)}-VS\\d+$`) },
       status: { $in: ['submitted', 'processed', 'draft_shared'] },
+      $or: [
+        { submittedAt: { $gte: since } },
+        { createdAt: { $gte: since } },
+      ],
     })
       .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
       .lean();
@@ -569,7 +572,10 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
       type,
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
-      week: { $regex: new RegExp(`^${escapeRegex(resolvedWeekBase)}-VS\\d+$`) },
+      $or: [
+        { submittedAt: { $gte: since } },
+        { createdAt: { $gte: since } },
+      ],
     })
       .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
       .lean();
@@ -1308,13 +1314,17 @@ router.post('/', authMiddleware, async (req, res) => {
     // Guardrail: once a store has submitted today's vendor order, block creating a new
     // order in another VS sequence from Place Order. This prevents accidental re-ordering.
     if (resolvedCategory === 'vendor_orders' && resolvedVendorKey && req.user.role !== 'admin') {
+      const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
       const submittedToday = await Order.findOne({
         storeId,
         type,
         category: resolvedCategory,
         vendorKey: resolvedVendorKey,
-        week: { $regex: new RegExp(`^${escapeRegex(weekBase)}-VS\\d+$`) },
         status: { $in: ['submitted', 'processed'] },
+        $or: [
+          { submittedAt: { $gte: since } },
+          { createdAt: { $gte: since } },
+        ],
       })
         .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
         .lean();
@@ -1441,8 +1451,25 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     const mo = await getManualOpenState();
     let weekKey = requestedWeekKey || composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
     if (!requestedWeekKey && category === 'vendor_orders' && vendorKey) {
-      const vendorSeq = await getVendorSeqForKey(vendorKey);
-      weekKey = weekBase + '-VS' + vendorSeq;
+      const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      const latestVisible = await Order.findOne({
+        type: req.params.type,
+        category,
+        vendorKey,
+        status: { $in: ['submitted', 'processed', 'draft_shared'] },
+        $or: [
+          { submittedAt: { $gte: since } },
+          { createdAt: { $gte: since } },
+        ],
+      })
+        .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
+        .lean();
+      if (latestVisible && latestVisible.week) {
+        weekKey = String(latestVisible.week);
+      } else {
+        const vendorSeq = await getVendorSeqForKey(vendorKey);
+        weekKey = weekBase + '-VS' + vendorSeq;
+      }
     }
     const stores = await getStoresForConsolidatedWindow(req.params.type, category, vendorKey, weekKey, weekBase);
     const response = [];

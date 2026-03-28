@@ -201,21 +201,26 @@ function getVendorSeqFromConfigs(vendorOrderConfigs,vendorKey){
 function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
   var exactKey=storeId+"_"+dateKey(type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
   var exactOrder=orderMap&&orderMap[exactKey]?orderMap[exactKey]:null;
+  if(exactOrder) return exactOrder;
 
-  // Vendor orders can exist under an earlier same-day VS sequence if settings changed
-  // after some stores already submitted. Recover the latest same-day sequence record.
+  // Vendor orders can exist under a previous day/sequence near timezone boundaries
+  // (e.g. pre-5am local submissions under prior UTC day). Recover latest recent match.
   if(orderMap&&category==="vendor_orders"&&vendorKey){
-    var base=cycleBaseKey(new Date());
     var suffix="-"+type+"-"+categoryKey(category,vendorKey);
-    var prefix=String(storeId||"")+"_"+base+"-VS";
     var bestSubmitted=null;
     var bestAny=null;
+    var nowTs=Date.now();
+    var maxAgeMs=48*60*60*1000;
+    var keyPrefix=String(storeId||"")+"_";
     Object.keys(orderMap).forEach(function(k){
-      if(k.indexOf(prefix)!==0) return;
+      if(k.indexOf(keyPrefix)!==0) return;
+      if(k.indexOf("-VS")<0) return;
       if(!k.endsWith(suffix)) return;
       var o=orderMap[k];
       if(!o) return;
       var ts=new Date(o.submittedAt||o.date||o.createdAt||0).getTime();
+      if(!ts||Number.isNaN(ts)) return;
+      if((nowTs-ts)>maxAgeMs) return;
       if(!bestAny||ts>bestAny.ts) bestAny={order:o,ts:ts};
       var st=String(o.status||"").toLowerCase();
       if(st==="submitted"||st==="processed"||st==="draft_shared"){
@@ -223,11 +228,9 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
       }
     });
     if(bestSubmitted&&bestSubmitted.order) return bestSubmitted.order;
-    if(exactOrder) return exactOrder;
     if(bestAny&&bestAny.order) return bestAny.order;
   }
 
-  if(exactOrder) return exactOrder;
   return null;
 }
 function lastWeekKey(type, category, vendorKey){
@@ -2591,7 +2594,12 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[reopenTarget,reopenedLog,currentType,selCategory,resolvedVendorKey]);
   var activeWeekKey=useMemo(function(){
     if(reopenedWeekForCurrentGroup) return reopenedWeekForCurrentGroup;
-    if(isSingleVendorFlow) return scheduledWeekKey;
+    if(isSingleVendorFlow){
+      if(latestCurrentTypeInfo&&latestCurrentTypeInfo.week){
+        if(!hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)) return latestCurrentTypeInfo.week;
+      }
+      return scheduledWeekKey;
+    }
     if(!latestCurrentTypeInfo||!latestCurrentTypeInfo.week) return scheduledWeekKey;
     if(String(latestCurrentTypeInfo.week||"")===String(scheduledWeekKey||"")) return latestCurrentTypeInfo.week;
     if(hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)) return scheduledWeekKey;
