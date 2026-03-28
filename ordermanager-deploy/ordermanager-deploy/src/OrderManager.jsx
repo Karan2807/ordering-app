@@ -1591,11 +1591,20 @@ export default function App(){
 
 /* ═══ ADMIN DASHBOARD ═══ */
 function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setConsolidatedRequest,vendorOrderConfigs}){
+  var _adlogs=useState([]),adminLogs=_adlogs[0],setAdminLogs=_adlogs[1];
   var todayKey=cycleBaseKey(new Date());
   var cycleOrders=Object.values(orders).filter(function(o){return !!(o&&isSameOrAdjacentDateWeekKey(o.week,todayKey));});
   var sub=cycleOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
   var proc=cycleOrders.filter(function(o){return o.status==="processed";}).length;
   var vendorSummary=summarizeVendorKeys(activeVendorOrderIds,suppliers);
+  useEffect(function(){
+    var cancelled=false;
+    apiClient.supplierOrders.getAll().then(function(list){
+      if(cancelled) return;
+      setAdminLogs(Array.isArray(list)?list:[]);
+    }).catch(function(){});
+    return function(){cancelled=true;};
+  },[]);
   // Pending reminders: managers who haven't submitted for active order (vegetables AND leaves)
   var isStoreOrderSent=function(o){
     if(!o) return false;
@@ -1604,9 +1613,24 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
   // Build pending alerts across ALL open order categories for the current type.
   // For type B, leaves orders are also active so both should be tracked.
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
-  var dashboardStatusMap={submitted:true,processed:true,draft_shared:true,draft:true};
+  var visibleStatusMap={submitted:true,processed:true,draft_shared:true};
+  var hasFinishedLog=function(type,category,week){
+    return (adminLogs||[]).some(function(l){
+      return l
+        && String(l.type||"")===String(type||"")
+        && normalizeCategory(l.category||"vegetables")===normalizeCategory(category)
+        && String(l.week||"")===String(week||"")
+        && String(l.vendorKey||"")===""
+        && l.finished===true;
+    });
+  };
   var recentTypes=openTypes.length?openTypes:["A","B","C"].filter(function(openType){
-    return !!findLatestMatchingOrder(orders,stores.map(function(st){return st.id;}),openType,"vegetables",null,dashboardStatusMap,7*24*60*60*1000);
+    var vegLatest=findLatestMatchingOrder(orders,stores.map(function(st){return st.id;}),openType,"vegetables",null,visibleStatusMap,48*60*60*1000);
+    var vegPending=!!(vegLatest&&vegLatest.week&&!hasFinishedLog(openType,"vegetables",vegLatest.week));
+    if(openType!=="B") return vegPending;
+    var leavesLatest=findLatestMatchingOrder(orders,stores.map(function(st){return st.id;}),"B","leaves",null,visibleStatusMap,48*60*60*1000);
+    var leavesPending=!!(leavesLatest&&leavesLatest.week&&!hasFinishedLog("B","leaves",leavesLatest.week));
+    return vegPending||leavesPending;
   });
   var dashboardTypes=openTypes.length?openTypes:recentTypes;
   var pendingGroups=dashboardTypes.map(function(openType){
