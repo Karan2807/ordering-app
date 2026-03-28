@@ -200,7 +200,7 @@ function getVendorSeqFromConfigs(vendorOrderConfigs,vendorKey){
 }
 function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
   var exactKey=storeId+"_"+dateKey(type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
-  if(orderMap&&orderMap[exactKey]) return orderMap[exactKey];
+  var exactOrder=orderMap&&orderMap[exactKey]?orderMap[exactKey]:null;
 
   // Vendor orders can exist under an earlier same-day VS sequence if settings changed
   // after some stores already submitted. Recover the latest same-day sequence record.
@@ -208,18 +208,26 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
     var base=cycleBaseKey(new Date());
     var suffix="-"+type+"-"+categoryKey(category,vendorKey);
     var prefix=String(storeId||"")+"_"+base+"-VS";
-    var best=null;
+    var bestSubmitted=null;
+    var bestAny=null;
     Object.keys(orderMap).forEach(function(k){
       if(k.indexOf(prefix)!==0) return;
       if(!k.endsWith(suffix)) return;
       var o=orderMap[k];
       if(!o) return;
       var ts=new Date(o.submittedAt||o.date||o.createdAt||0).getTime();
-      if(!best||ts>best.ts) best={order:o,ts:ts};
+      if(!bestAny||ts>bestAny.ts) bestAny={order:o,ts:ts};
+      var st=String(o.status||"").toLowerCase();
+      if(st==="submitted"||st==="processed"||st==="draft_shared"){
+        if(!bestSubmitted||ts>bestSubmitted.ts) bestSubmitted={order:o,ts:ts};
+      }
     });
-    if(best&&best.order) return best.order;
+    if(bestSubmitted&&bestSubmitted.order) return bestSubmitted.order;
+    if(exactOrder) return exactOrder;
+    if(bestAny&&bestAny.order) return bestAny.order;
   }
 
+  if(exactOrder) return exactOrder;
   return null;
 }
 function lastWeekKey(type, category, vendorKey){

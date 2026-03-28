@@ -540,12 +540,30 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const exact = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey }).lean();
-  if (exact) return exact;
+  if (exact && !(
+    resolvedCategory === 'vendor_orders' &&
+    resolvedVendorKey &&
+    !['submitted', 'processed', 'draft_shared'].includes(String(exact.status || '').toLowerCase())
+  )) {
+    return exact;
+  }
 
   // Vendor orders can be submitted under earlier same-day VS sequences when settings
   // refresh lags behind UI state. Recover the latest same-day sequence record.
   if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
     const resolvedWeekBase = weekBase || String(weekKey || '').split('-VS')[0] || getWeekKey();
+    const submittedFallback = await Order.findOne({
+      storeId,
+      type,
+      category: resolvedCategory,
+      vendorKey: resolvedVendorKey,
+      week: { $regex: new RegExp(`^${escapeRegex(resolvedWeekBase)}-VS\\d+$`) },
+      status: { $in: ['submitted', 'processed', 'draft_shared'] },
+    })
+      .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
+      .lean();
+    if (submittedFallback) return submittedFallback;
+
     const fallback = await Order.findOne({
       storeId,
       type,
