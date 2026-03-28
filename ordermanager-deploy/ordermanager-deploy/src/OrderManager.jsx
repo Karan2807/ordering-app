@@ -239,6 +239,25 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
   if(exactOrder) return exactOrder;
   return null;
 }
+function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
+  var exact=getStoreOrderForWeek(orderMap,storeId,referenceWeekKey,type,category,vendorKey);
+  if(exact) return exact;
+  if(category==="vendor_orders"){
+    return getCurrentOrderForStoreType(orderMap,storeId,type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
+  }
+  var best=null;
+  Object.values(orderMap||{}).forEach(function(o){
+    if(!o) return;
+    if(String(o.store||"")!==String(storeId||"")) return;
+    if(String(o.type||"")!==String(type||"")) return;
+    if(normalizeCategory(o.category||"vegetables")!==normalizeCategory(category)) return;
+    if(normalizeVendorKey(category,o.vendorKey)!==normalizeVendorKey(category,vendorKey)) return;
+    if(!isSameOrAdjacentDateWeekKey(o.week,referenceWeekKey)) return;
+    var ts=orderTimestampMs(o);
+    if(!best||ts>best.ts) best={order:o,ts:ts};
+  });
+  return best&&best.order?best.order:null;
+}
 function lastWeekKey(type, category, vendorKey){
   var n=new Date();
   n.setDate(n.getDate()-7);
@@ -1573,7 +1592,7 @@ export default function App(){
 /* ═══ ADMIN DASHBOARD ═══ */
 function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setConsolidatedRequest,vendorOrderConfigs}){
   var todayKey=cycleBaseKey(new Date());
-  var cycleOrders=Object.values(orders).filter(function(o){if(!o||!o.date)return false;return cycleBaseKey(new Date(o.date))===todayKey;});
+  var cycleOrders=Object.values(orders).filter(function(o){return !!(o&&isSameOrAdjacentDateWeekKey(o.week,todayKey));});
   var sub=cycleOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
   var proc=cycleOrders.filter(function(o){return o.status==="processed";}).length;
   var vendorSummary=summarizeVendorKeys(activeVendorOrderIds,suppliers);
@@ -1588,7 +1607,7 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
   var pendingGroups=openTypes.map(function(openType){
     var pendingByStore={};
     stores.forEach(function(st){
-      var o=getCurrentOrderForStoreType(orders,st.id,openType,"vegetables",null,manualOpenOrder,manualOpenSeq);
+      var o=getDashboardOrderForStoreType(orders,st.id,todayKey,openType,"vegetables",null,manualOpenOrder,manualOpenSeq);
       if(!isStoreOrderSent(o)){
         var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});
         pendingByStore[st.id]={storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A",phone:mgr?mgr.phone:"N/A",missing:["vegetables"]};
@@ -1596,7 +1615,7 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
     });
     if(openType==="B"){
       stores.forEach(function(st){
-        var leavesOrder=getCurrentOrderForStoreType(orders,st.id,"B","leaves",null,manualOpenOrder,manualOpenSeq);
+        var leavesOrder=getDashboardOrderForStoreType(orders,st.id,todayKey,"B","leaves",null,manualOpenOrder,manualOpenSeq);
         if(!isStoreOrderSent(leavesOrder)){
           if(pendingByStore[st.id]) pendingByStore[st.id].missing.push("leaves");
           else {
@@ -1734,12 +1753,13 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
   var my=Object.keys(orders).filter(function(k){return k.indexOf(user.storeId)===0;});
   var sub=my.filter(function(k){return orders[k].status==="submitted"||orders[k].status==="processed";}).length;
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
+  var todayKey=cycleBaseKey(new Date());
   var openTypeGroups=openTypes.map(function(type){
-    var currentOrder=getCurrentOrderForStoreType(orders,user.storeId,type,"vegetables",null,manualOpenOrder,manualOpenSeq);
+    var currentOrder=getDashboardOrderForStoreType(orders,user.storeId,todayKey,type,"vegetables",null,manualOpenOrder,manualOpenSeq);
     return {type:type,status:currentOrder?currentOrder.status:null};
   });
   // Leaves order (only open on type B)
-  var leavesOrder=openTypes.indexOf("B")>=0?getCurrentOrderForStoreType(orders,user.storeId,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
+  var leavesOrder=openTypes.indexOf("B")>=0?getDashboardOrderForStoreType(orders,user.storeId,todayKey,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
   var leavesStatus=leavesOrder?leavesOrder.status:null;
   var leavesOpen=isCategoryOpenForType("leaves","B",openTypes,manualOpenLeaves);
   var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
