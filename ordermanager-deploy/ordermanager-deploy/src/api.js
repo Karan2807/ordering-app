@@ -78,7 +78,10 @@ export const apiClient = {
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
+        const err = new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
+        err.status = response.status;
+        err.responseData = data;
+        throw err;
       }
 
       return await response.json();

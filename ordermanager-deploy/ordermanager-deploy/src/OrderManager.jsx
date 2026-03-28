@@ -201,10 +201,10 @@ function getVendorSeqFromConfigs(vendorOrderConfigs,vendorKey){
 function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
   var exactKey=storeId+"_"+dateKey(type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
   var exactOrder=orderMap&&orderMap[exactKey]?orderMap[exactKey]:null;
-  if(exactOrder) return exactOrder;
-
-  // Vendor orders can exist under a previous day/sequence near timezone boundaries
-  // (e.g. pre-5am local submissions under prior UTC day). Recover latest recent match.
+  // For vendor orders: even if there is an exact-key match, it might be a plain
+  // draft created after the UTC day boundary while the REAL submitted order lives
+  // under a prior-day key. Always run the 48h window scan for vendor orders and
+  // prefer any submitted/processed/draft_shared result over a plain draft.
   if(orderMap&&category==="vendor_orders"&&vendorKey){
     var suffix="-"+type+"-"+categoryKey(category,vendorKey);
     var bestSubmitted=null;
@@ -227,10 +227,16 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
         if(!bestSubmitted||ts>bestSubmitted.ts) bestSubmitted={order:o,ts:ts};
       }
     });
+    // A submitted/processed/draft_shared order always wins over any draft.
     if(bestSubmitted&&bestSubmitted.order) return bestSubmitted.order;
+    // No visible order found in window — fall back to the exact-key result
+    // (could be a draft) so the form still populates correctly.
+    if(exactOrder) return exactOrder;
     if(bestAny&&bestAny.order) return bestAny.order;
+    return null;
   }
 
+  if(exactOrder) return exactOrder;
   return null;
 }
 function lastWeekKey(type, category, vendorKey){
@@ -1937,31 +1943,41 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     try{
       var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"draft",storeId:user.storeId});
       if(refreshOrders) await refreshOrders(user.storeId);
-      // For vendor orders, the backend-returned week key ensures we use the correct seq
-      // immediately without waiting for the next settings poll
       unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
       setDraftLockByKey(function(prev){var n=Object.assign({},prev);n[oKey]=true;return n;});
       setIsEditingDraft(false);
       toast("Draft saved");
-    }catch(e){toast(e.message,true);}
+    }catch(e){
+      // If the server blocked this because an order was already submitted, refresh
+      // orders immediately so the submitted order loads and the form locks.
+      if(selCategory==="vendor_orders"&&e&&e.status===409){
+        toast("Your order was already submitted. Loading it now...");
+        if(refreshOrders) await refreshOrders(user.storeId).catch(function(){});
+      }else{
+        toast(e.message,true);
+      }
+    }
   };
   var doSubmit=async function(){
     try{
       var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"submitted",storeId:user.storeId});
       if(refreshOrders) await refreshOrders(user.storeId);
-      // For vendor orders, use the actual seq from the response to ensure correct key lookup
-      if(selCategory==="vendor_orders"&&resp&&resp.vendorSeq){
-        // Store the actual seq used so future lookups will find this order
-        // This handles the case where settings haven't been refreshed yet
-        unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes),_serverVendorSeq:resp.vendorSeq};
-      }else{
-        unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
-      }
+      unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
       setDraftLockByKey(function(prev){if(!prev[oKey]) return prev;var n=Object.assign({},prev);delete n[oKey];return n;});
       setIsEditingDraft(false);
       setShowConfirm(false);
       toast("Order submitted!");
-    }catch(e){toast(e.message,true);setShowConfirm(false);}
+    }catch(e){
+      // If the server blocked a duplicate submission, refresh so the store sees its
+      // already-submitted order and the form locks automatically.
+      if(selCategory==="vendor_orders"&&e&&e.status===409){
+        toast("Your order was already submitted. Loading it now...");
+        if(refreshOrders) await refreshOrders(user.storeId).catch(function(){});
+      }else{
+        toast(e.message,true);
+      }
+      setShowConfirm(false);
+    }
   };
   var filled=Object.values(qty).filter(function(v){return v>0;}).length;
   var totalCases=Object.values(qty).reduce(function(a,b){return a+(parseInt(b,10)||0);},0);

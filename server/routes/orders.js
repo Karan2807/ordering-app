@@ -1311,11 +1311,25 @@ router.post('/', authMiddleware, async (req, res) => {
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
 
-    // Guardrail: once a store has submitted today's vendor order, block creating a new
-    // order in another VS sequence from Place Order. This prevents accidental re-ordering.
+    // Guardrail: once a store has submitted a vendor order within the past 48 h, block
+    // creating any new order (including drafts) under a DIFFERENT week key.
+    // This prevents the UTC-day boundary from creating a fresh draft that hides the
+    // already-submitted order from the admin consolidated view and unlocks the form.
+    // NOTE: place this AFTER computing weekKey so we can compare week keys.
+
+    let weekKey;
+    if (req.user.role === 'admin' && requestedWeekKey) {
+      weekKey = requestedWeekKey;
+    } else if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
+      const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
+      weekKey = weekBase + '-VS' + vendorSeq;
+    } else {
+      weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+    }
+
     if (resolvedCategory === 'vendor_orders' && resolvedVendorKey && req.user.role !== 'admin') {
       const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
-      const submittedToday = await Order.findOne({
+      const submittedRecently = await Order.findOne({
         storeId,
         type,
         category: resolvedCategory,
@@ -1328,24 +1342,16 @@ router.post('/', authMiddleware, async (req, res) => {
       })
         .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
         .lean();
-      if (submittedToday) {
+      // Only block if the request targets a DIFFERENT week than the existing submission.
+      // Targeting the SAME week is allowed: it covers "Reopen as Draft" on the same slot.
+      if (submittedRecently && String(submittedRecently.week) !== String(weekKey)) {
         return res.status(409).json({
-          error: 'Order already submitted for today',
-          existingWeek: submittedToday.week,
-          existingStatus: submittedToday.status,
-          orderId: submittedToday.id || null,
+          error: 'Order already submitted for this vendor. Reload the page to see your submitted order.',
+          existingWeek: submittedRecently.week,
+          existingStatus: submittedRecently.status,
+          orderId: submittedRecently.id || null,
         });
       }
-    }
-
-    let weekKey;
-    if (req.user.role === 'admin' && requestedWeekKey) {
-      weekKey = requestedWeekKey;
-    } else if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
-      const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
-      weekKey = weekBase + '-VS' + vendorSeq;
-    } else {
-      weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
     }
     const normalizedItems = normalizeOrderItems(items, notes);
     const now = new Date();
