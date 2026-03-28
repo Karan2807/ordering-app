@@ -948,6 +948,22 @@ function orderTimestampMs(order){
   var ts=new Date(raw||0).getTime();
   return Number.isNaN(ts)?0:ts;
 }
+function parseDateWeekKey(value){
+  var match=String(value||"").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!match) return null;
+  var year=parseInt(match[1],10);
+  var month=parseInt(match[2],10)-1;
+  var day=parseInt(match[3],10);
+  var ts=Date.UTC(year,month,day);
+  return Number.isNaN(ts)?null:ts;
+}
+function isSameOrAdjacentDateWeekKey(left,right){
+  if(String(left||"")===String(right||"")) return true;
+  var leftTs=parseDateWeekKey(left);
+  var rightTs=parseDateWeekKey(right);
+  if(leftTs==null||rightTs==null) return false;
+  return Math.abs(leftTs-rightTs)<=24*60*60*1000;
+}
 function findLatestMatchingOrder(orderMap, storeIds, type, category, vendorKey, statusMap, maxAgeMs){
   var ids=Array.isArray(storeIds)?storeIds.filter(Boolean).map(function(v){return String(v);}):[];
   var filterByStore=ids.length>0;
@@ -2637,10 +2653,35 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     return latestCurrentTypeInfo.week;
   },[reopenedWeekForCurrentGroup,isSingleVendorFlow,scheduledWeekKey,latestCurrentTypeInfo,currentType,logs,selCategory,resolvedVendorKey]);
   var activeGroupKey=activeWeekKey+logKeySuffix;
+  var storeOrderInfoById=useMemo(function(){
+    var out={};
+    (slots||[]).forEach(function(sl){
+      if(!sl||!sl.store||!sl.store.id) return;
+      var sid=sl.store.id;
+      var exact=getStoreOrderForWeek(orders,sid,activeWeekKey,currentType,selCategory,resolvedVendorKey);
+      if(exact){
+        out[sid]={order:exact,week:exact.week||activeWeekKey};
+        return;
+      }
+      if(isSingleVendorFlow){
+        var vendorOrder=getCurrentOrderForStoreType(orders,sid,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
+        out[sid]={order:vendorOrder,week:vendorOrder&&vendorOrder.week||activeWeekKey};
+        return;
+      }
+      var fallback=findLatestMatchingOrder(orders,[sid],currentType,selCategory,resolvedVendorKey,visibleStatus,7*24*60*60*1000);
+      if(fallback&&fallback.order&&isSameOrAdjacentDateWeekKey(fallback.week,activeWeekKey)){
+        out[sid]={order:fallback.order,week:fallback.week||activeWeekKey};
+        return;
+      }
+      out[sid]={order:null,week:activeWeekKey};
+    });
+    return out;
+  },[slots,orders,activeWeekKey,currentType,selCategory,resolvedVendorKey,isSingleVendorFlow,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
   var getStoreOrder=function(storeId){
-    var exact=getStoreOrderForWeek(orders,storeId,activeWeekKey,currentType,selCategory,resolvedVendorKey);
-    if(exact) return exact;
-    return getCurrentOrderForStoreType(orders,storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
+    return storeOrderInfoById[storeId]&&storeOrderInfoById[storeId].order?storeOrderInfoById[storeId].order:null;
+  };
+  var getStoreOrderWeek=function(storeId){
+    return storeOrderInfoById[storeId]&&storeOrderInfoById[storeId].week?storeOrderInfoById[storeId].week:activeWeekKey;
   };
   var carryOpenType=useMemo(function(){
     if(selCategory==="vendor_orders") return null;
@@ -2723,6 +2764,20 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     editableStoreSlots.forEach(function(sl,idx){out[sl.store.id]=idx;});
     return out;
   },[editableStoreSlots]);
+  var nonVendorStoreStatusRows=useMemo(function(){
+    if(isSingleVendorFlow) return [];
+    return (slots||[]).filter(function(sl){return !!(sl&&sl.store&&sl.store.id);}).map(function(sl){
+      var order=getStoreOrder(sl.store.id);
+      var rawStatus=String(order&&order.status||"").toLowerCase();
+      var status=rawStatus||"pending";
+      return {
+        store:sl.store,
+        order:order,
+        status:status,
+        label:status==="pending"?"pending":status
+      };
+    });
+  },[isSingleVendorFlow,slots,orders,currentType,selCategory,resolvedVendorKey,activeWeekKey]);
   var vendorStoreDocs=useMemo(function(){
     if(!isSingleVendorFlow||!resolvedVendorKey) return [];
     return (slots||[]).filter(function(sl){return !!(sl&&sl.store);}).map(function(sl){
@@ -2829,14 +2884,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         var qty=Object.assign({},editQtyByStore[sid]||{});
         var notes=Object.assign({},editNotesByStore[sid]||{});
         var existing=getStoreOrder(sid)||{};
+        var targetWeek=getStoreOrderWeek(sid);
         var nextStatus=(existing.status==="submitted"||existing.status==="processed"||existing.status==="draft_shared")?existing.status:"draft";
-        var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:sid,week:activeWeekKey});
-        return {sid:sid,orderId:resp&&resp.orderId,qty:qty,notes:notes,status:nextStatus,existing:existing};
+        var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:sid,week:targetWeek});
+        return {sid:sid,orderId:resp&&resp.orderId,qty:qty,notes:notes,status:nextStatus,existing:existing,targetWeek:targetWeek};
       }));
       setOrders(function(prev){
         var n=Object.assign({},prev);
         results.forEach(function(r){
-          var k=r.sid+"_"+activeGroupKey;
+          var k=orderStateKey(r.sid,r.targetWeek,currentType,selCategory,resolvedVendorKey);
           n[k]=Object.assign({},prev[k]||{},{
             id:r.orderId||(prev[k]||{}).id||((r.existing&&r.existing.id)||null),
             items:Object.assign({},r.qty),
@@ -2846,7 +2902,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
             type:currentType,
             category:selCategory,
             vendorKey:resolvedVendorKey,
-            week:activeWeekKey,
+            week:r.targetWeek,
             date:(prev[k]||{}).date||(r.existing&&r.existing.date)||new Date().toISOString(),
             submittedAt:(prev[k]||{}).submittedAt||((r.existing&&r.existing.submittedAt)||null),
             createdAt:(prev[k]||{}).createdAt||((r.existing&&r.existing.createdAt)||null)
@@ -3382,6 +3438,12 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           {editingAll&&<button style={Object.assign({},S.b,S.bP)} onClick={saveAllEdits} disabled={savingAll||isCompletedLocked||!hasAccessibleOpenType}>{savingAll?"Saving...":"Save"}</button>}
           <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked||editingAll||savingAll||!hasAccessibleOpenType}>Next</button>
         </div>
+      </div>
+      <div style={{padding:"10px 14px 0",display:"flex",gap:8,flexWrap:"wrap"}}>
+        {nonVendorStoreStatusRows.map(function(row){
+          var badgeStyle=row.status==="processed"?S.bgP:(row.status==="submitted"||row.status==="draft_shared")?S.bgG:(row.status==="draft"?S.bgY:S.bgY);
+          return <div key={row.store.id} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"6px 10px",borderRadius:999,border:"1px solid rgba(148,163,184,.28)",background:"rgba(255,255,255,.75)",fontSize:12.5,color:"#334155"}}><span style={{fontWeight:600}}>{row.store.name||row.store.id}</span><span style={Object.assign({},S.bg,badgeStyle)}>{row.label}</span></div>;
+        })}
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
         <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
