@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import zipfile
+import io
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 
@@ -17,8 +18,35 @@ def qn(tag):
     return "{%s}%s" % (W_NS, tag)
 
 
+def register_document_namespaces(xml_bytes):
+    seen = set()
+    for event, elem in ET.iterparse(io.BytesIO(xml_bytes), events=("start-ns",)):
+        if not elem:
+            continue
+        prefix, uri = elem
+        key = (prefix or "", uri or "")
+        if key in seen or not uri:
+            continue
+        seen.add(key)
+        try:
+            ET.register_namespace(prefix or "", uri)
+        except ValueError:
+            # Some DOCX files contain auto-generated prefixes like ns0/ns1 that
+            # ElementTree reserves for internal use. Skip those registrations
+            # and preserve the rest so rendering doesn't fail.
+            continue
+
+
 def paragraph_text(paragraph):
-    return "".join(node.text or "" for node in paragraph.findall(".//w:t", NS))
+    parts = []
+    for node in paragraph.iter():
+        if node.tag == qn("t"):
+            parts.append(node.text or "")
+        elif node.tag == qn("tab"):
+            parts.append("\t")
+        elif node.tag in (qn("br"), qn("cr")):
+            parts.append("\n")
+    return "".join(parts)
 
 
 def extract_paragraphs(root):
@@ -30,7 +58,9 @@ def extract_paragraphs(root):
 
 def parse_template(input_path):
     with zipfile.ZipFile(input_path, "r") as zf:
-        doc_root = ET.fromstring(zf.read("word/document.xml"))
+        document_xml = zf.read("word/document.xml")
+        register_document_namespaces(document_xml)
+        doc_root = ET.fromstring(document_xml)
 
     paragraphs = extract_paragraphs(doc_root)
     item_rows = []
@@ -130,7 +160,10 @@ def format_item_line(row, quantity):
 
     if qty_text == "":
         if orig_qty:
-            return f"{code}{sep1}{orig_qty}{sep2}{name}".replace(orig_qty, "".ljust(len(orig_qty), "_"))
+            # Only blank-out the quantity segment itself. Do not global-replace
+            # the digit token, otherwise matching digits inside item names get
+            # unintentionally replaced (e.g. "12" in names).
+            return f"{code}{sep1}{'_' * len(orig_qty)}{sep2}{name}"
         return f"{code}{sep1}{name}"
 
     if orig_qty:
@@ -155,7 +188,9 @@ def render_template(input_path, payload_path, output_path):
     with zipfile.ZipFile(input_path, "r") as zf:
         file_map = {name: zf.read(name) for name in zf.namelist()}
 
-    doc_root = ET.fromstring(file_map["word/document.xml"])
+    document_xml = file_map["word/document.xml"]
+    register_document_namespaces(document_xml)
+    doc_root = ET.fromstring(document_xml)
     paragraphs = extract_paragraphs(doc_root)
     docx_map = payload.get("docxMap") or {}
     store_name = str(payload.get("storeName") or "").strip()

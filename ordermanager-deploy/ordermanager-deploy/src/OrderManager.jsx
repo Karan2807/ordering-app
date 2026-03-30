@@ -203,10 +203,12 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
   var exactOrder=orderMap&&orderMap[exactKey]?orderMap[exactKey]:null;
   // For vendor orders: even if there is an exact-key match, it might be a plain
   // draft created after the UTC day boundary while the REAL submitted order lives
-  // under a prior-day key. Always run the 48h window scan for vendor orders and
-  // prefer any submitted/processed/draft_shared result over a plain draft.
+  // under a prior-day key. Recover only records for the SAME VS sequence so
+  // Settings-driven reopen/cancel/open-24h starts a fresh cycle; older sequences
+  // should only be revived by explicit reopen flows from Order Monitor.
   if(orderMap&&category==="vendor_orders"&&vendorKey){
     var suffix="-"+type+"-"+categoryKey(category,vendorKey);
+    var requestedSeq=parseInt(vendorSeq,10);
     var bestSubmitted=null;
     var bestAny=null;
     var nowTs=Date.now();
@@ -216,6 +218,11 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
       if(k.indexOf(keyPrefix)!==0) return;
       if(k.indexOf("-VS")<0) return;
       if(!k.endsWith(suffix)) return;
+      if(Number.isFinite(requestedSeq)&&requestedSeq>0){
+        var seqMatch=String(k).match(/-VS(\d+)-/i);
+        var foundSeq=seqMatch?parseInt(seqMatch[1],10):NaN;
+        if(!Number.isFinite(foundSeq)||foundSeq!==requestedSeq) return;
+      }
       var o=orderMap[k];
       if(!o) return;
       var ts=new Date(o.submittedAt||o.date||o.createdAt||0).getTime();
@@ -860,6 +867,40 @@ function displayNameForOrderKey(code, items){
   if(String(code||"").indexOf("XLS::")===0)return String(code).slice(5);
   return String(code||"");
 }
+function formatItemDetailName(name, unit){
+  var trimmedName=String(name||"").trim();
+  var trimmedUnit=String(unit||"").trim();
+  if(!trimmedUnit) return trimmedName;
+  if(!trimmedName) return trimmedUnit;
+  var lowerName=trimmedName.toLowerCase();
+  var lowerUnit=trimmedUnit.toLowerCase();
+  if(lowerName.endsWith("("+lowerUnit+")")||lowerName.endsWith("["+lowerUnit+"]")) return trimmedName;
+  return trimmedName+" ("+trimmedUnit+")";
+}
+function buildOrderItemDetails(codes, orderedRows, items, template){
+  var details={};
+  var codeToHeading={};
+  if(template){
+     var displayRows=buildTemplateDisplayRows(template,items);
+     var currentHeading="";
+     displayRows.forEach(function(r){
+       if(r&&r.type==="heading"&&r.text) currentHeading=String(r.text).trim();
+       else if(r&&r.type==="item"&&r.item&&r.item.code) codeToHeading[r.item.code]=currentHeading;
+     });
+  }
+  (orderedRows||[]).forEach(function(it){
+    if(!it||!it.code) return;
+    var itemUnit=String(it.unit||"").trim();
+    details[it.code]={name:formatItemDetailName(it.name||displayNameForOrderKey(it.code,items),itemUnit),unit:itemUnit,subheading:codeToHeading[it.code]||String(it.subheading||"").trim()};
+  });
+  (codes||[]).forEach(function(code){
+    if(!code||details[code]) return;
+    var found=(items||[]).find(function(it){return it.code===code;});
+    var unit=String(found&&found.unit||"").trim();
+    details[code]={name:formatItemDetailName(found&&found.name?found.name:displayNameForOrderKey(code,items),unit),unit:unit,subheading:codeToHeading[code]||String(found&&found.subheading||"").trim()};
+  });
+  return details;
+}
 function supplierEmailsArray(supplier){
   var arr=Array.isArray(supplier&&supplier.emails)?supplier.emails:[];
   var email=typeof (supplier&&supplier.email)==="string"?supplier.email:"";
@@ -968,7 +1009,7 @@ function orderTimestampMs(order){
   return Number.isNaN(ts)?0:ts;
 }
 function parseDateWeekKey(value){
-  var match=String(value||"").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  var match=String(value||"").trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:-(?:M\d+|VS\d+))?$/);
   if(!match) return null;
   var year=parseInt(match[1],10);
   var month=parseInt(match[2],10)-1;
@@ -1005,6 +1046,11 @@ function findLatestMatchingOrder(orderMap, storeIds, type, category, vendorKey, 
     }
   });
   return best;
+}
+function activeWeekLookupKey(type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
+  var fullKey=dateKey(type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
+  var suffix="-"+String(type||"")+"-"+categoryKey(category,vendorKey);
+  return fullKey.endsWith(suffix)?fullKey.slice(0,fullKey.length-suffix.length):fullKey;
 }
 function getTemplateForCategory(categoryTemplates, category, vendorKey){
   var cat=normalizeCategory(category);
@@ -1613,38 +1659,21 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
   // Build pending alerts across ALL open order categories for the current type.
   // For type B, leaves orders are also active so both should be tracked.
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
-  var visibleStatusMap={submitted:true,processed:true,draft_shared:true};
-  var hasFinishedLog=function(type,category,week){
-    return (adminLogs||[]).some(function(l){
-      return l
-        && String(l.type||"")===String(type||"")
-        && normalizeCategory(l.category||"vegetables")===normalizeCategory(category)
-        && String(l.week||"")===String(week||"")
-        && String(l.vendorKey||"")===""
-        && l.finished===true;
-    });
-  };
-  var recentTypes=openTypes.length?openTypes:["A","B","C"].filter(function(openType){
-    var vegLatest=findLatestMatchingOrder(orders,stores.map(function(st){return st.id;}),openType,"vegetables",null,visibleStatusMap,48*60*60*1000);
-    var vegPending=!!(vegLatest&&vegLatest.week&&!hasFinishedLog(openType,"vegetables",vegLatest.week));
-    if(openType!=="B") return vegPending;
-    var leavesLatest=findLatestMatchingOrder(orders,stores.map(function(st){return st.id;}),"B","leaves",null,visibleStatusMap,48*60*60*1000);
-    var leavesPending=!!(leavesLatest&&leavesLatest.week&&!hasFinishedLog("B","leaves",leavesLatest.week));
-    return vegPending||leavesPending;
-  });
-  var dashboardTypes=openTypes.length?openTypes:recentTypes;
+  var dashboardTypes=openTypes;
   var pendingGroups=dashboardTypes.map(function(openType){
     var pendingByStore={};
+    var vegetablesWeekKey=activeWeekLookupKey(openType,"vegetables",null,manualOpenOrder,manualOpenSeq);
     stores.forEach(function(st){
-      var o=getDashboardOrderForStoreType(orders,st.id,todayKey,openType,"vegetables",null,manualOpenOrder,manualOpenSeq);
+      var o=getDashboardOrderForStoreType(orders,st.id,vegetablesWeekKey,openType,"vegetables",null,manualOpenOrder,manualOpenSeq);
       if(!isStoreOrderSent(o)){
         var mgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});
         pendingByStore[st.id]={storeId:st.id,store:st.name,manager:mgr?mgr.name:"N/A",phone:mgr?mgr.phone:"N/A",missing:["vegetables"]};
       }
     });
     if(openType==="B"){
+      var leavesWeekKey=activeWeekLookupKey("B","leaves",null,manualOpenOrder,manualOpenSeq);
       stores.forEach(function(st){
-        var leavesOrder=getDashboardOrderForStoreType(orders,st.id,todayKey,"B","leaves",null,manualOpenOrder,manualOpenSeq);
+        var leavesOrder=getDashboardOrderForStoreType(orders,st.id,leavesWeekKey,"B","leaves",null,manualOpenOrder,manualOpenSeq);
         if(!isStoreOrderSent(leavesOrder)){
           if(pendingByStore[st.id]) pendingByStore[st.id].missing.push("leaves");
           else {
@@ -1735,7 +1764,7 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
       <div style={S.sc}><div style={S.sL}>Submitted</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div></div>
       <div style={S.sc}><div style={S.sL}>Processed</div><div style={Object.assign({},S.sV,{color:"#0F766E"})}>{proc}</div></div>
       <div style={S.sc}><div style={S.sL}>Pending</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{dashboardTypes.length?pendingTotal:"-"}</div></div>
-      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):(dashboardTypes.length?dashboardTypes.map(function(t){return "Order "+t;}).join(", "):"None")}</div><div style={S.sS}>{openTypes.length?"Currently open":(dashboardTypes.length?"Latest cycle status":"No active cycle")}</div></div>
+      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div><div style={S.sS}>{openTypes.length?"Currently open":"No active cycle"}</div></div>
       <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
     {pendingGroups.map(function(group){return(<div key={group.type} style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Order {group.type}</div><div style={S.d}>These stores have not submitted yet. Auto SMS runs in final 1 hour window every 30 minutes.</div></div>{group.pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){sendAllReminders(group.type);}}>Send Reminder to All</button>}</div>
@@ -1782,21 +1811,18 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
   var my=Object.keys(orders).filter(function(k){return k.indexOf(user.storeId)===0;});
   var sub=my.filter(function(k){return orders[k].status==="submitted"||orders[k].status==="processed";}).length;
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
-  var todayKey=cycleBaseKey(new Date());
-  var dashboardStatusMap={submitted:true,processed:true,draft_shared:true,draft:true};
-  var dashboardTypes=openTypes.length?openTypes:["A","B","C"].filter(function(type){
-    return !!findLatestMatchingOrder(orders,[user.storeId],type,"vegetables",null,dashboardStatusMap,7*24*60*60*1000);
-  });
+  var dashboardTypes=openTypes;
   var openTypeGroups=dashboardTypes.map(function(type){
-    var currentOrder=getDashboardOrderForStoreType(orders,user.storeId,todayKey,type,"vegetables",null,manualOpenOrder,manualOpenSeq);
+    var currentWeekKey=activeWeekLookupKey(type,"vegetables",null,manualOpenOrder,manualOpenSeq);
+    var currentOrder=getDashboardOrderForStoreType(orders,user.storeId,currentWeekKey,type,"vegetables",null,manualOpenOrder,manualOpenSeq);
     return {type:type,status:currentOrder?currentOrder.status:null,isCurrentlyOpen:openTypes.indexOf(type)>=0};
   });
   // Leaves order (only open on type B)
-  var hasRecentLeaves=!!findLatestMatchingOrder(orders,[user.storeId],"B","leaves",null,dashboardStatusMap,7*24*60*60*1000);
-  var leavesOrder=(openTypes.indexOf("B")>=0||hasRecentLeaves)?getDashboardOrderForStoreType(orders,user.storeId,todayKey,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
+  var leavesWeekKey=activeWeekLookupKey("B","leaves",null,manualOpenOrder,manualOpenSeq);
+  var leavesOrder=openTypes.indexOf("B")>=0?getDashboardOrderForStoreType(orders,user.storeId,leavesWeekKey,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
   var leavesStatus=leavesOrder?leavesOrder.status:null;
   var leavesOpen=isCategoryOpenForType("leaves","B",openTypes,manualOpenLeaves);
-  var showLeavesCard=leavesOpen||hasRecentLeaves;
+  var showLeavesCard=leavesOpen;
   var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
     var vendorName=vendorDisplayName(suppliers,vendorKey);
     var vendorOrder=getCurrentOrderForStoreType(orders,user.storeId,"VENDOR","vendor_orders",vendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,vendorKey));
@@ -1812,7 +1838,7 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
     {notifs.map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={S.sg}>
       <div style={S.sc}><div style={S.sL}>Your Store</div><div style={Object.assign({},S.sV,{color:"#166534",fontSize:16})}>{sName}</div></div>
-      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:(openTypes.length||dashboardTypes.length)?"#34D399":"#6B7280",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):(dashboardTypes.length?dashboardTypes.map(function(t){return "Order "+t;}).join(", "):"None")}</div><div style={S.sS}>{openTypes.length?"Currently open":(dashboardTypes.length?"Latest cycle status":"No active cycle")}</div></div>
+      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:openTypes.length?"#34D399":"#6B7280",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div><div style={S.sS}>{openTypes.length?"Currently open":"No active cycle"}</div></div>
       <div style={S.sc}><div style={S.sL}>Completed</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div><div style={S.sS}>{my.length} total</div></div>
       <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
@@ -1894,7 +1920,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
   var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"Item Name";
-  var qtyHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"Qty";
+  var qtyHeader=selCategory==="vendor_orders"?"Qty":(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"Qty");
   var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"Note";
   var currentType=selCategory==="vendor_orders"?"VENDOR":sel;
   var itemList=useMemo(function(){
@@ -2004,24 +2030,48 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var downloadOrderExcel=async function(payload){
     try{
       var po=payload||{};
+      var itemSource=po.items||qty;
+      var noteSource=po.notes||notes;
+      var activeCodes=Object.keys(Object.assign({},itemSource,noteSource)).filter(function(code){return (Number(itemSource[code])||0)>0 || String(noteSource[code]||"").trim();});
+      var itemDetailsByCode=buildOrderItemDetails(activeCodes,sorted,items,activeTemplate);
       var itemNamesByCode={};
-      sorted.forEach(function(it){itemNamesByCode[it.code]=it.name;});
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,po.items||qty,po.notes||notes,user.storeId,po.date||new Date().toISOString(),itemNamesByCode);
+      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,itemSource,noteSource,user.storeId,po.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
       downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
     }catch(e){toast(e.message||"Failed to generate document",true);}
   };
   var save=async function(){
+    var buildWritePayload=function(nextStatus,forcedWeek){
+      var payload={type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:user.storeId};
+      if(selCategory==="vendor_orders"){
+        var activeWeek=String(forcedWeek||((ex&&ex.week)||"")||"").trim();
+        if(activeWeek) payload.week=activeWeek;
+      }
+      return payload;
+    };
     try{
-      var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"draft",storeId:user.storeId});
+      var resp=await apiClient.orders.create(buildWritePayload("draft"));
       if(refreshOrders) await refreshOrders(user.storeId);
       unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
       setDraftLockByKey(function(prev){var n=Object.assign({},prev);n[oKey]=true;return n;});
       setIsEditingDraft(false);
       toast("Draft saved");
     }catch(e){
-      // If the server blocked this because an order was already submitted, refresh
-      // orders immediately so the submitted order loads and the form locks.
+      // Reopen flow can hit 409 if client week and existing submitted week diverge.
+      // Retry once against backend-provided week so reopened vendor orders submit normally.
       if(selCategory==="vendor_orders"&&e&&e.status===409){
+        var retryWeek=String(e&&e.responseData&&e.responseData.existingWeek||"").trim();
+        if(retryWeek){
+          try{
+            await apiClient.orders.create(buildWritePayload("draft",retryWeek));
+            if(refreshOrders) await refreshOrders(user.storeId);
+            unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
+            setDraftLockByKey(function(prev){var n=Object.assign({},prev);n[oKey]=true;return n;});
+            setIsEditingDraft(false);
+            toast("Draft saved");
+            return;
+          }catch(_retryErr){}
+        }
         toast("Your order was already submitted. Loading it now...");
         if(refreshOrders) await refreshOrders(user.storeId).catch(function(){});
       }else{
@@ -2030,8 +2080,16 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     }
   };
   var doSubmit=async function(){
+    var buildWritePayload=function(nextStatus,forcedWeek){
+      var payload={type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:user.storeId};
+      if(selCategory==="vendor_orders"){
+        var activeWeek=String(forcedWeek||((ex&&ex.week)||"")||"").trim();
+        if(activeWeek) payload.week=activeWeek;
+      }
+      return payload;
+    };
     try{
-      var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:"submitted",storeId:user.storeId});
+      var resp=await apiClient.orders.create(buildWritePayload("submitted"));
       if(refreshOrders) await refreshOrders(user.storeId);
       unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
       setDraftLockByKey(function(prev){if(!prev[oKey]) return prev;var n=Object.assign({},prev);delete n[oKey];return n;});
@@ -2039,9 +2097,22 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
       setShowConfirm(false);
       toast("Order submitted!");
     }catch(e){
-      // If the server blocked a duplicate submission, refresh so the store sees its
-      // already-submitted order and the form locks automatically.
+      // Reopen flow can hit 409 if client week and existing submitted week diverge.
+      // Retry once against backend-provided week so reopened vendor orders submit normally.
       if(selCategory==="vendor_orders"&&e&&e.status===409){
+        var retryWeek=String(e&&e.responseData&&e.responseData.existingWeek||"").trim();
+        if(retryWeek){
+          try{
+            await apiClient.orders.create(buildWritePayload("submitted",retryWeek));
+            if(refreshOrders) await refreshOrders(user.storeId);
+            unsavedByOrderKeyRef.current[oKey]={items:Object.assign({},qty),notes:Object.assign({},notes)};
+            setDraftLockByKey(function(prev){if(!prev[oKey]) return prev;var n=Object.assign({},prev);delete n[oKey];return n;});
+            setIsEditingDraft(false);
+            setShowConfirm(false);
+            toast("Order submitted!");
+            return;
+          }catch(_retryErr){}
+        }
         toast("Your order was already submitted. Loading it now...");
         if(refreshOrders) await refreshOrders(user.storeId).catch(function(){});
       }else{
@@ -2125,13 +2196,18 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
 }
 
 /* ═══ ORDER HISTORY ═══ */
-function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType,setDraftRequest,vendorOrderConfigs}){
+function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType,setDraftRequest,vendorOrderConfigs,categoryTemplates,suppliers}){
   var my=Object.entries(orders).filter(function(e){return e[0].indexOf(user.storeId)===0;}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var vegOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
   var leavesOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});
   var vendorOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";});
   var _s=useState(null),sel=_s[0],setSel=_s[1];
   var statusBg=function(st){return st==="processed"?S.bgP:st==="submitted"?S.bgG:S.bgY;};
+  var historyOrderLabel=function(o){
+    if(!o) return "Order -";
+    if(normalizeCategory(o.category||"vegetables")==="vendor_orders") return vendorDisplayName(suppliers,o.vendorKey||null)+"_Order";
+    return "Order "+String(o.type||"");
+  };
   var openType=manualOpenOrder||aot||null;
   var canReopenAsDraft=function(k,o){
     if(!o||o.status!=="submitted") return false;
@@ -2145,9 +2221,13 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
   var downloadHistoryExcel=async function(o){
     try{
       if(!o){toast("Order not found",true);return;}
+      var historyCodes=Object.keys(Object.assign({},o.items||{},o.notes||{})).filter(function(code){return (Number((o.items||{})[code])||0)>0 || String((o.notes||{})[code]||"").trim();});
+      var historyRows=(items||[]).filter(function(it){return historyCodes.indexOf(it.code)>=0;});
+      var tpl=getTemplateForCategory(categoryTemplates,o.category||"vegetables",normalizeVendorKey(o.category||"vegetables",o.vendorKey||null));
+      var historyItemDetails=buildOrderItemDetails(historyCodes,historyRows,items,tpl);
       var historyItemNames={};
-      Object.keys(Object.assign({},o.items||{},o.notes||{})).forEach(function(code){historyItemNames[code]=displayNameForOrderKey(code,items);});
-      var resp=await apiClient.orders.storeOrderExcelPreview(o.type||"A",o.category||"vegetables",o.vendorKey||null,o.items||{},o.notes||{},o.store||user.storeId,o.date||new Date().toISOString(),historyItemNames);
+      Object.keys(historyItemDetails).forEach(function(code){historyItemNames[code]=historyItemDetails[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(o.type||"A",o.category||"vegetables",o.vendorKey||null,o.items||{},o.notes||{},o.store||user.storeId,o.date||new Date().toISOString(),historyItemNames,historyItemDetails);
       downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
       toast("Document downloaded");
     }catch(e){toast(e.message||"Failed to generate document",true);}
@@ -2179,7 +2259,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       <div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:18,color:"#6B7186"}}>No orders</div>:
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
+        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
       </tbody></table></div>}
     </div>);
   };
@@ -2188,7 +2268,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
     {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:
     <Fragment>{renderHistorySection("Vegetable Orders",vegOrders)}{renderHistorySection("Leaves Orders",leavesOrders)}{renderHistorySection("Vendor Orders",vendorOrders)}</Fragment>}</div>
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
-      <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>{CATEGORY_LABELS[orders[sel].category||"vegetables"]} Order {orders[sel].type} - {fmtDT(orders[sel].date)}</div>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>{normalizeCategory(orders[sel].category||"vegetables")==="vendor_orders"?historyOrderLabel(orders[sel]):(CATEGORY_LABELS[orders[sel].category||"vegetables"]+" Order "+orders[sel].type)} - {fmtDT(orders[sel].date)}</div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Qty</th><th style={S.th}>Note</th></tr></thead><tbody>
         {Object.keys(Object.assign({},orders[sel].items||{},orders[sel].notes||{})).filter(function(code){return (orders[sel].items[code]||0)>0||((orders[sel].notes||{})[code]);}).map(function(code){return <tr key={code}><td style={S.td}>{displayNameForOrderKey(code,items)}</td><td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{(orders[sel].items||{})[code]||0}</td><td style={S.td}>{((orders[sel].notes||{})[code])||"-"}</td></tr>;})}</tbody></table></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSel(null);}}>Close</button></div></div></div>)}
@@ -2513,7 +2593,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var consolidatedRawSheets=consolidatedRawGrid&&Array.isArray(consolidatedRawGrid.sheets)?consolidatedRawGrid.sheets:[];
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
   var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"PRODUCT";
-  var qtyHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QTY";
+  var qtyHeader=selCategory==="vendor_orders"?"QTY":(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QTY");
   var totalHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.total?templateHeaders.total:"TOTAL QTY";
   var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"NOTE";
   var currentType=selCategory==="vendor_orders"?"VENDOR":vt;
@@ -3255,9 +3335,12 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
     try{
       setDownloadingSplit(function(prev){var n=Object.assign({},prev);n[String(row.store.id||"")]=true;return n;});
+      var rowCodes=Object.keys(Object.assign({},row.order.items||{},row.order.notes||{}));
+      var rowItems=(items||[]).filter(function(it){return rowCodes.indexOf(it.code)>=0;});
+      var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
       var itemNamesByCode={};
-      Object.keys(Object.assign({},row.order.items||{},row.order.notes||{})).forEach(function(code){itemNamesByCode[code]=displayNameForOrderKey(code,items);});
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode);
+      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
       downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
       toast("Document downloaded for "+(row.store.name||row.store.id));
     }catch(e){toast(e.message||"Failed to download document",true);}
@@ -3467,15 +3550,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         <div style={S.d}>{vendorStoreDocs.length} ready store document(s){vendorPendingCount>0?(" | "+vendorPendingCount+" store(s) still pending submission"):""}</div>
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-        <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+        <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{selectedVendor&&selectedVendor.name?selectedVendor.name:("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:96})}>{slotHeaderForIndex(sl,idx)}</th>;})}</tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
       </thead><tbody>
         {vendorConsolidatedDisplayRows.map(function(entry){
           if(entry.type==="heading"){
-            return <tr key={entry.key}><td colSpan={slots.length+3} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
+            return <tr key={entry.key}><td colSpan={slots.length+2} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
           }
           var r=entry.row;
-          return <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{r.note||""}</td></tr>;
+          return <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}</tr>;
         })}
       </tbody></table></div>
       {vendorStoreDocs.length===0?<div style={{textAlign:"center",padding:"8px 14px 22px",color:"#6B7186"}}>{selectedVendor?"No submitted store orders are ready for this vendor yet.":"Select a vendor to review store orders."}</div>:
@@ -3588,6 +3671,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           var displayRows=isSingleVendorFlow?vendorPreviewDisplayRows:rows.map(function(r){return {type:"item",key:r.code,row:r};});
           var sent=!!sentSplitBySupplier[sid];
           var isDownloading=!!downloadingSplit[sid];
+          var useVendorDocumentPreview=isSingleVendorFlow&&selCategory==="vendor_orders";
           return <div key={sid} style={Object.assign({},S.card,{marginBottom:0,padding:10})}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
               <div><div style={S.t}>{s.name}</div><div style={S.d}>{sEmailText||"No email"}</div></div>
@@ -3597,15 +3681,24 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
               </div>
             </div>
             <div style={Object.assign({},S.tw,{maxHeight:"40vh",border:"1px solid rgba(148,163,184,.25)"})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-              <tr><th style={Object.assign({},tHeadTop,{minWidth:200})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:100})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:280})}></th></tr>
-              <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:100})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+              {useVendorDocumentPreview?
+                <Fragment>
+                  <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th></tr>
+                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>{totalHeader}</th></tr>
+                </Fragment>
+                :<Fragment>
+                  <tr><th style={Object.assign({},tHeadTop,{minWidth:200})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:100})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:280})}></th></tr>
+                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:100})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+                </Fragment>}
             </thead><tbody>
               {displayRows.map(function(entry){
                 if(entry.type==="heading"){
-                  return <tr key={entry.key}><td colSpan={slots.length+3} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
+                  return <tr key={entry.key}><td colSpan={useVendorDocumentPreview?2:(slots.length+3)} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
                 }
                 var r=entry.row;
-                return <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{r.note||""}</td></tr>;
+                return useVendorDocumentPreview
+                  ? <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td></tr>
+                  : <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{r.note||""}</td></tr>;
               })}
             </tbody></table></div>
           </div>;
@@ -3616,7 +3709,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     {vendorStoreDialogRow&&(<div style={S.ov} onClick={function(){if(!savingVendorStoreDialog) closeVendorStoreDialog();}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>{vendorStoreDialogEditing?"Edit":"View"} Store Order - {(vendorStoreDialogRow.store&&vendorStoreDialogRow.store.name)||vendorStoreDialogRow.store&&vendorStoreDialogRow.store.id}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:10}}>Status: {vendorStoreDialogRow.order&&vendorStoreDialogRow.order.status||"-"} | Submitted: {fmtDT(vendorStoreDialogRow.order&&vendorStoreDialogRow.order.date)}</div>
-      {(!vendorStoreDialogEditing&&consolidatedRawSheets.length>0)?(<Fragment>
+      {(!vendorStoreDialogEditing&&consolidatedRawSheets.length>0&&selCategory!=="vendor_orders")?(<Fragment>
         {consolidatedRawSheets.length>1&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{consolidatedRawSheets.map(function(sheet,idx){return <button key={sheet.name+"_"+idx} style={Object.assign({},S.b,vendorStoreRawSheetIdx===idx?S.bP:S.bS,{padding:"4px 9px",fontSize:10.5})} onClick={function(){setVendorStoreRawSheetIdx(idx);}}>{sheet.name}</button>;})}</div>}
         {(function(){
           var sheetIdx=Math.min(Math.max(0,vendorStoreRawSheetIdx),consolidatedRawSheets.length-1);
@@ -3798,9 +3891,12 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
     try{
       var key=String(row.store.id||"");
       setDownloading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
+      var rowCodes=Object.keys(Object.assign({},row.order.items||{},row.order.notes||{}));
+      var rowItems=(items||[]).filter(function(it){return rowCodes.indexOf(it.code)>=0;});
+      var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
       var itemNamesByCode={};
-      Object.keys(Object.assign({},row.order.items||{},row.order.notes||{})).forEach(function(code){itemNamesByCode[code]=displayNameForOrderKey(code,items);});
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode);
+      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
       downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
       toast("Document downloaded for "+(row.store.name||row.store.id));
     }catch(e){toast(e.message||"Failed to download document",true);}
