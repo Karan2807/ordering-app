@@ -844,6 +844,10 @@ function parseItemSheetRows(rows, forcedCategory){
       if(!name||/^date\b/i.test(name)) continue;
       if(cleanHeaderToken(name)==="item"||cleanHeaderToken(name)==="items"||cleanHeaderToken(name)==="name") continue;
       if(resolvedForcedCategory==="vendor_orders"&&!codeText&&!unit&&name){
+        if(block.codeCol>=0){
+          currentSubheading=name;
+          continue;
+        }
         var nextText=String((rows[i+1]&&rows[i+1][block.itemCol])||"").trim();
         if(nextText){
           currentSubheading=name;
@@ -4760,7 +4764,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       }catch(e){toast(e.message,true);}
     };
   return(<div>
-    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>
+    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Vegetable Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>
       <div style={Object.assign({},S.tw,{marginTop:4})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Day</th><th style={Object.assign({},S.th,{width:120})}>Actions</th></tr></thead><tbody>
         {["A","B","C"].map(function(t){var isE=ed===t;return(<tr key={t}><td style={Object.assign({},S.td,{fontWeight:600,fontSize:13})}>Order {t}</td><td style={S.td}>{isE?<select style={Object.assign({},S.inp,{width:140})} value={eV} onChange={function(e){
                 var v=e.target.value;
@@ -4777,7 +4781,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
                   sEV(schedule[t] != null ? schedule[t] : "");
                 }}><Ic type="edit" size={11}/> Edit</button>}</td></tr>);})}</tbody></table></div>
       <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(148,163,184,.24)"}}>
-        <div style={{fontSize:12,fontWeight:600,color:"#0F172A",marginBottom:4}}>Manual Open Override</div>
+        <div style={{fontSize:12,fontWeight:600,color:"#0F172A",marginBottom:4}}>Vegetable Order Manual Override</div>
         <div style={{fontSize:11,color:"#64748B",marginBottom:8}}>Open an order for stores even when today is not its scheduled day.</div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <select style={Object.assign({},S.inp,{width:240})} value={moType} onChange={function(e){sMoType(e.target.value);}}>
