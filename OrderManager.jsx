@@ -48,6 +48,41 @@ function activeType(sc){var t=new Date().getDay();for(var k in sc){if(sc[k]===t)
 function weekNum(d){var dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));dt.setUTCDate(dt.getUTCDate()+4-(dt.getUTCDay()||7));var ys=new Date(Date.UTC(dt.getUTCFullYear(),0,1));return Math.ceil(((dt-ys)/86400000+1)/7);}
 function dateKey(type){var n=new Date();return n.getFullYear()+"-W"+String(weekNum(n)).padStart(2,"0")+"-"+type;}
 function lastWeekKey(type){var n=new Date();return n.getFullYear()+"-W"+String(weekNum(n)-1).padStart(2,"0")+"-"+type;}
+var ORDER_UNIT_TYPES=[
+  {value:"cas",label:"CASE"},
+  {value:"pcs",label:"PCS"},
+  {value:"pallet",label:"PALLET"},
+  {value:"master_case",label:"MASTER CASE"},
+  {value:"other",label:"OTHER"},
+];
+function normalizeUnitType(v){return ORDER_UNIT_TYPES.some(function(o){return o.value===v;})?v:"cas";}
+function normalizeOrderItemEntry(v){
+  if(v&&typeof v==="object"&&!Array.isArray(v)){
+    var q=Math.max(0,parseInt(v.qty!=null?v.qty:v.quantity)||0);
+    var t=normalizeUnitType(v.unitType||v.type||"cas");
+    var other=t==="other"?String(v.customUnit||v.otherUnit||"").trim():"";
+    return {qty:q,unitType:t,customUnit:other};
+  }
+  return {qty:Math.max(0,parseInt(v)||0),unitType:"cas",customUnit:""};
+}
+function getOrderItemQty(itemsMap,code){return normalizeOrderItemEntry(itemsMap&&itemsMap[code]).qty;}
+function getOrderItemUnitLabel(v){
+  var d=normalizeOrderItemEntry(v);
+  if(d.unitType==="pcs") return "PCS";
+  if(d.unitType==="pallet") return "PALLET";
+  if(d.unitType==="master_case") return "MASTER CASE";
+  if(d.unitType==="other") return d.customUnit||"OTHER";
+  return "CASE";
+}
+function formatQtyWithUnit(v){var d=normalizeOrderItemEntry(v);return d.qty+" "+getOrderItemUnitLabel(d);}
+function aggregateQtyUnit(itemsMapList){
+  var units={};
+  itemsMapList.forEach(function(v){var d=normalizeOrderItemEntry(v);if(d.qty>0)units[getOrderItemUnitLabel(d)]=true;});
+  var keys=Object.keys(units);
+  if(keys.length===0) return "CASE";
+  if(keys.length===1) return keys[0];
+  return "MIXED";
+}
 function sortItems(a){return a.slice().sort(function(x,y){var c=(x.category||"").localeCompare(y.category||"");return c!==0?c:x.name.localeCompare(y.name);});}
 function fmtDT(iso){if(!iso)return"-";var d=new Date(iso);return d.toLocaleDateString()+" "+d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
 function parseCSV(text){var lines=text.split(/\r?\n/).filter(function(l){return l.trim();});if(lines.length<2)return[];var hdr=lines[0].split(",").map(function(h){return h.trim().toLowerCase().replace(/[^a-z0-9]/g,"");});var ci=hdr.findIndex(function(h){return h.indexOf("code")>=0||h==="sku";});var ni=hdr.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";});var cti=hdr.findIndex(function(h){return h.indexOf("cat")>=0||h==="group";});var ui=hdr.findIndex(function(h){return h.indexOf("unit")>=0||h==="uom";});if(ni===-1)return[];var r=[];for(var i=1;i<lines.length;i++){var cols=lines[i].split(",").map(function(c){return c.trim().replace(/"/g,"");});if(!cols[ni])continue;r.push({code:ci>=0&&cols[ci]?cols[ci]:"CSV"+String(i).padStart(4,"0"),name:cols[ni],category:cti>=0?(cols[cti]||""):"",unit:ui>=0?(cols[ui]||""):"",});}return r;}
@@ -334,12 +369,18 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
   var oKey=user.storeId+"_"+dateKey(sel);var lwKey=user.storeId+"_"+lastWeekKey(sel);
   var ex=orders[oKey];var lw=orders[lwKey];var locked=sel!==aot;
   var done=ex&&(ex.status==="submitted"||ex.status==="processed");var ro=locked||done;
-  var _q=useState(function(){return ex&&ex.items?Object.assign({},ex.items):items.reduce(function(a,it){a[it.code]=0;return a;},{});}),qty=_q[0],setQty=_q[1];
-  var setQ=function(c,v){if(ro)return;setQty(function(p){var n=Object.assign({},p);n[c]=Math.max(0,parseInt(v)||0);return n;});};
+  var _q=useState(function(){
+    var base={};
+    items.forEach(function(it){base[it.code]=normalizeOrderItemEntry(ex&&ex.items?ex.items[it.code]:0);});
+    return base;
+  }),qty=_q[0],setQty=_q[1];
+  var setQ=function(c,v){if(ro)return;setQty(function(p){var n=Object.assign({},p);var cur=normalizeOrderItemEntry(n[c]);cur.qty=Math.max(0,parseInt(v)||0);n[c]=cur;return n;});};
+  var setQType=function(c,v){if(ro)return;setQty(function(p){var n=Object.assign({},p);var cur=normalizeOrderItemEntry(n[c]);cur.unitType=normalizeUnitType(v);if(cur.unitType!=="other")cur.customUnit="";n[c]=cur;return n;});};
+  var setQOther=function(c,v){if(ro)return;setQty(function(p){var n=Object.assign({},p);var cur=normalizeOrderItemEntry(n[c]);cur.unitType="other";cur.customUnit=v;n[c]=cur;return n;});};
   var save=function(){setOrders(function(p){var n=Object.assign({},p);n[oKey]={items:qty,status:"draft",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});toast("Draft saved");};
   var doSubmit=function(){setOrders(function(p){var n=Object.assign({},p);n[oKey]={items:qty,status:"submitted",store:user.storeId,type:sel,date:new Date().toISOString()};return n;});setShowConfirm(false);toast("Order submitted!");};
   var sName=(stores.find(function(s){return s.id===user.storeId;})||{}).name||"";
-  var filled=Object.values(qty).filter(function(v){return v>0;}).length;
+  var filled=Object.values(qty).filter(function(v){return normalizeOrderItemEntry(v).qty>0;}).length;
   var sorted=useMemo(function(){return items.slice().sort(function(a,b){if(sortBy==="name")return a.name.localeCompare(b.name);if(sortBy==="code")return a.code.localeCompare(b.code);var c=(a.category||"").localeCompare(b.category||"");return c!==0?c:a.name.localeCompare(b.name);});},[items,sortBy]);
   return(<div>
     <div style={S.tabs}>{["A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,sel===t?S.tA:S.tI)} onClick={function(){setSel(t);}}>Order {t}{t===aot?" *":""}</button>;})}</div>
@@ -356,7 +397,11 @@ function OrderEntry({user,items,orders,setOrders,aot,toast,stores,schedule,order
     </div>
     <div style={S.tw}><table style={S.tbl}>
       <thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Last Wk</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Qty</th></tr></thead>
-      <tbody>{sorted.map(function(it){var lwQ=lw&&lw.items?lw.items[it.code]:null;return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.unit||"-"}</td><td style={{padding:"7px 10px",borderBottom:"1px solid #2A2E3B",textAlign:"center",fontFamily:"monospace",fontSize:11,color:"#6B7186"}}>{lwQ!=null?lwQ:"-"}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="number" min="0" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} disabled={ro}/></td></tr>);})}</tbody>
+      <tbody>{sorted.map(function(it){
+        var lwQ=lw&&lw.items?getOrderItemQty(lw.items,it.code):null;
+        var cur=normalizeOrderItemEntry(qty[it.code]);
+        return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.unit||"-"}</td><td style={{padding:"7px 10px",borderBottom:"1px solid #2A2E3B",textAlign:"center",fontFamily:"monospace",fontSize:11,color:"#6B7186"}}>{lwQ!=null?lwQ:"-"}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,flexWrap:"wrap"}}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="number" min="0" value={cur.qty} onChange={function(e){setQ(it.code,e.target.value);}} disabled={ro}/><select style={Object.assign({},S.inp,{width:100,padding:"5px 6px",fontSize:11,opacity:ro?0.6:1})} value={cur.unitType} onChange={function(e){setQType(it.code,e.target.value);}} disabled={ro}>{ORDER_UNIT_TYPES.map(function(opt){return <option key={opt.value} value={opt.value}>{opt.label}</option>;})}</select>{cur.unitType==="other"&&<input style={Object.assign({},S.inp,{width:92,padding:"5px 6px",fontSize:11,opacity:ro?0.6:1})} value={cur.customUnit} onChange={function(e){setQOther(it.code,e.target.value);}} placeholder="Type" disabled={ro}/>}</div></td></tr>);
+      })}</tbody>
     </table></div></div>
     {showConfirm&&(<div style={S.ov} onClick={function(){setShowConfirm(false);}}><div style={Object.assign({},S.mo,{width:420,textAlign:"center"})} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:40,marginBottom:8}}>⚠️</div>
@@ -378,11 +423,11 @@ function OrderHistory({user,orders,items}){
   return(<div><div style={S.card}><div style={S.t}>Past Orders</div>
     {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:
     <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-      {my.map(function(e){var k=e[0],o=e[1];return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button></td></tr>);})}</tbody></table></div>}</div>
+      {my.map(function(e){var k=e[0],o=e[1];return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {o.type}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return normalizeOrderItemEntry(v).qty>0;}).length}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button></td></tr>);})}</tbody></table></div>}</div>
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Order {orders[sel].type} - {fmtDT(orders[sel].date)}</div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Qty</th></tr></thead><tbody>
-        {items.filter(function(it){return(orders[sel].items[it.code]||0)>0;}).map(function(it){return <tr key={it.code}><td style={S.td}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{orders[sel].items[it.code]}</td></tr>;})}</tbody></table></div>
+        {items.filter(function(it){return getOrderItemQty(orders[sel].items,it.code)>0;}).map(function(it){return <tr key={it.code}><td style={S.td}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{formatQtyWithUnit(orders[sel].items[it.code])}</td></tr>;})}</tbody></table></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSel(null);}}>Close</button></div></div></div>)}
   </div>);
 }
@@ -414,7 +459,7 @@ function OrderMonitor({orders,setOrders,items,stores,aot,toast}){
           <td style={Object.assign({},S.td,{fontWeight:500})}>{sn}</td><td style={S.td}>Order {o.type}</td>
           <td style={S.tm}>{fmtDT(o.date)}</td>
           <td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td>
-          <td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}/{items.length}</td>
+          <td style={S.td}>{Object.values(o.items||{}).filter(function(v){return normalizeOrderItemEntry(v).qty>0;}).length}/{items.length}</td>
           <td style={S.td}>{o.status==="submitted"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10})} onClick={function(){setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},n[k],{status:"processed"});return n;});toast("Processed");}}>Process</button>}</td>
         </tr>);})}</tbody></table></div>}</div>
   </div>);
@@ -430,12 +475,12 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
   var dk=dateKey(vt);
   const finishedMap = useMemo(()=>{const m={};logs.forEach(l=>{if(l.type)m[l.type]=true;});return m;},[logs]);
   const isFinished = !!finishedMap[vt];
-  var startE=function(sid){var k=sid+"_"+dk;var ex=orders[k]&&orders[k].items?orders[k].items:{};var q={};items.forEach(function(it){q[it.code]=ex[it.code]||0;});sEQ(q);sES(sid);};
+  var startE=function(sid){var k=sid+"_"+dk;var ex=orders[k]&&orders[k].items?orders[k].items:{};var q={};items.forEach(function(it){q[it.code]=normalizeOrderItemEntry(ex[it.code]);});sEQ(q);sES(sid);};
   var saveE=function(){var k=eSt+"_"+dk;setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},p[k]||{},{items:Object.assign({},eQ),status:(p[k]||{}).status||"submitted",store:eSt,type:vt,date:(p[k]||{}).date||new Date().toISOString()});return n;});toast("Updated");sES(null);sEQ({});};
   var sendEmail=function(){
     if(!eEmail||!eSupplier||isFinished) return;
     // just log locally
-    const totalObj={};items.forEach(it=>{var sum=0;stores.forEach(st=>{var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;}); if(sum>0) totalObj[it.code]=sum;});
+    const totalObj={};items.forEach(it=>{var sum=0;stores.forEach(st=>{var k=st.id+"_"+dk;sum+=getOrderItemQty(orders[k]&&orders[k].items?orders[k].items:null,it.code);}); if(sum>0) totalObj[it.code]=sum;});
     setLogs(l=>[{supplierName:eSupplier,email:eEmail,type:vt,week:dk,items:totalObj,sentAt:new Date().toISOString()}].concat(l));
     toast("(simulated) email sent to "+eEmail);
     sEmail("");sSupplier("");
@@ -457,13 +502,14 @@ function Consolidated({orders,setOrders,items,aot,toast,stores}){
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th>
         {stores.map(function(st){return(<th key={st.id} style={Object.assign({},S.th,{textAlign:"center",minWidth:80})}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:2}}><span>{st.name.split(" ")[0]}</span><button disabled={isFinished} style={Object.assign({},S.eB,eSt===st.id?{color:"#4F8CFF"}:{},isFinished?{opacity:0.4,cursor:'not-allowed'}:{})} onClick={function(){if(isFinished) return; eSt===st.id?cancelE():startE(st.id);}}><Ic type="edit" size={11}/></button></div></th>);})}<th style={Object.assign({},S.th,{textAlign:"center",background:"#272B38"})}>Total</th></tr></thead>
         <tbody>{items.map(function(it){
-          var qs=stores.map(function(st){if(eSt===st.id)return eQ[it.code]||0;var k=st.id+"_"+dk;return orders[k]&&orders[k].items?(orders[k].items[it.code]||0):0;});
-          var tot=qs.reduce(function(a,b){return a+b;},0);
+          var qs=stores.map(function(st){if(eSt===st.id)return normalizeOrderItemEntry(eQ[it.code]);var k=st.id+"_"+dk;return normalizeOrderItemEntry(orders[k]&&orders[k].items?orders[k].items[it.code]:0);});
+          var tot=qs.reduce(function(a,b){return a+b.qty;},0);
+          var totUnit=aggregateQtyUnit(qs);
           return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td>
             {stores.map(function(st,idx){var isE=eSt===st.id;return(<td key={st.id} style={Object.assign({},S.td,{textAlign:"center"},isE?S.cE:{})}>
-              {isE?<input style={S.ie} type="number" min="0" value={eQ[it.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);sEQ(function(p){var n=Object.assign({},p);n[it.code]=v;return n;});}}/>
-              :<span style={{fontFamily:"monospace",fontSize:11,color:qs[idx]>0?"#E8EAF0":"#6B7186"}}>{qs[idx]}</span>}</td>);})}
-            <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:tot>0?"#4F8CFF":"#6B7186"})}>{tot}</td></tr>);
+              {isE?<input style={S.ie} type="number" min="0" value={qs[idx].qty} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);sEQ(function(p){var n=Object.assign({},p);var cur=normalizeOrderItemEntry(n[it.code]);cur.qty=v;n[it.code]=cur;return n;});}}/>
+              :<span style={{fontFamily:"monospace",fontSize:11,color:qs[idx].qty>0?"#E8EAF0":"#6B7186"}}>{qs[idx].qty>0?formatQtyWithUnit(qs[idx]):"0"}</span>}</td>);})}
+            <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:tot>0?"#4F8CFF":"#6B7186"})}>{tot>0?tot+" "+totUnit:"0"}</td></tr>);
         })}</tbody></table></div></div>
   </div>);
 }
@@ -475,7 +521,8 @@ function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
   var _sending=useState({}),sending=_sending[0],sSending=_sending[1];
   var dk=dateKey(vt);
   // Compute totals per item across all stores
-  var totals=useMemo(function(){var t={};items.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;});if(sum>0)t[it.code]=sum;});return t;},[items,stores,orders,dk]);
+  var totals=useMemo(function(){var t={};items.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=getOrderItemQty(orders[k]&&orders[k].items?orders[k].items:null,it.code);});if(sum>0)t[it.code]=sum;});return t;},[items,stores,orders,dk]);
+  var totalUnits=useMemo(function(){var u={};items.forEach(function(it){u[it.code]=aggregateQtyUnit(stores.map(function(st){var k=st.id+"_"+dk;return orders[k]&&orders[k].items?orders[k].items[it.code]:0;}));});return u;},[items,stores,orders,dk]);
   // ensure we have arrays before using them
   const supList = Array.isArray(suppliers) ? suppliers : [];
   const itemList = Array.isArray(items) ? items : [];
@@ -490,7 +537,7 @@ function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
     sSending(function(p){var n=Object.assign({},p);n[key]=true;return n;});
     var subject="Purchase Order - Order "+vt+" - "+new Date().toLocaleDateString();
     var body="Dear "+sup.name+",\n\nPlease find our order details below:\n\n";
-    supItems.forEach(function(it){body+=it.name+" ("+it.code+") - Qty: "+totals[it.code]+"\n";});
+    supItems.forEach(function(it){body+=it.name+" ("+it.code+") - Qty: "+totals[it.code]+" "+(totalUnits[it.code]||"CAS")+"\n";});
     body+="\nThank you.";
 
     // call backend to actually send the message via configured SMTP server
@@ -534,14 +581,14 @@ function SupplierOrders({orders,setOrders,items,aot,toast,stores,suppliers}){
         <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Total Qty</th>
           {stores.map(function(st){return <th key={st.id} style={Object.assign({},S.th,{textAlign:"center",fontSize:9})}>{st.name.split(" ")[0]}</th>;})}</tr></thead>
           <tbody>{g.items.map(function(it){return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.category}</td><td style={Object.assign({},S.td,{color:"#9BA1B5"})}>{it.unit}</td>
-            <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:"#4F8CFF"})}>{totals[it.code]}</td>
-            {stores.map(function(st){var k=st.id+"_"+dk;var q=orders[k]&&orders[k].items?orders[k].items[it.code]||0:0;return <td key={st.id} style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontSize:11,color:q>0?"#E8EAF0":"#353A4A"})}>{q}</td>;})}
+            <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:"#4F8CFF"})}>{totals[it.code]+" "+(totalUnits[it.code]||"CAS")}</td>
+            {stores.map(function(st){var k=st.id+"_"+dk;var q=normalizeOrderItemEntry(orders[k]&&orders[k].items?orders[k].items[it.code]:0);return <td key={st.id} style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontSize:11,color:q.qty>0?"#E8EAF0":"#353A4A"})}>{q.qty>0?formatQtyWithUnit(q):"0"}</td>;})}
           </tr>);})}</tbody></table></div>
       </div>);
     })}
     {unassigned.length>0&&(<div style={Object.assign({},S.card,{borderColor:"rgba(248,113,113,0.3)"})}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Unassigned Items</div><div style={S.d}>These items are not mapped to any supplier. Assign in Supplier Management.</div></div></div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Total Qty</th></tr></thead><tbody>
-        {unassigned.map(function(it){return <tr key={it.code}><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700})}>{totals[it.code]}</td></tr>;})}</tbody></table></div></div>)}
+        {unassigned.map(function(it){return <tr key={it.code}><td style={S.tm}>{it.code}</td><td style={S.td}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700})}>{totals[it.code]+" "+(totalUnits[it.code]||"CAS")}</td></tr>;})}</tbody></table></div></div>)}
   </div>);
 }
 
@@ -730,7 +777,7 @@ function Reports({orders,items,stores}){
     var itemTotals={};var storeTotals={};var catTotals={};var orderCount=0;
     Object.entries(orders).forEach(function(e){var o=e[1];if(!o.items)return;orderCount++;
       var sid=o.store;if(!storeTotals[sid])storeTotals[sid]={submitted:0,processed:0,draft:0,total:0};storeTotals[sid][o.status]=(storeTotals[sid][o.status]||0)+1;storeTotals[sid].total++;
-      Object.entries(o.items).forEach(function(ie){var code=ie[0],qty=ie[1];if(qty<=0)return;if(!itemTotals[code])itemTotals[code]={qty:0,orders:0};itemTotals[code].qty+=qty;itemTotals[code].orders++;
+      Object.entries(o.items).forEach(function(ie){var code=ie[0],qty=normalizeOrderItemEntry(ie[1]).qty;if(qty<=0)return;if(!itemTotals[code])itemTotals[code]={qty:0,orders:0};itemTotals[code].qty+=qty;itemTotals[code].orders++;
         var it=items.find(function(i){return i.code===code;});if(it){var cat=it.category||"Other";if(!catTotals[cat])catTotals[cat]={qty:0,items:{}};catTotals[cat].qty+=qty;catTotals[cat].items[code]=true;}});});
     // Top items sorted by qty
     var topItems=Object.entries(itemTotals).map(function(e){var it=items.find(function(i){return i.code===e[0];});return{code:e[0],name:it?it.name:e[0],category:it?it.category:"",qty:e[1].qty,orders:e[1].orders};}).sort(function(a,b){return b.qty-a.qty;});

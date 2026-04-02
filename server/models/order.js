@@ -3,6 +3,12 @@ import mongoose from 'mongoose';
 const orderItemSchema = new mongoose.Schema({
   itemCode: { type: String, required: true },
   quantity: { type: Number, default: 0 },
+  unitType: {
+    type: String,
+    default: 'cas',
+    enum: ['cas', 'pcs', 'pallet', 'master_case', 'other'],
+  },
+  customUnit: { type: String, default: '' },
   note: { type: String, default: '' },
 });
 

@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useRef, Fragment, useContext, useEffect } from "react";
 import * as XLSX from 'xlsx';
+import * as mammoth from 'mammoth';
 import { AuthContext } from "./AuthContext";
 import { apiClient } from "./api";
 
@@ -141,6 +142,59 @@ function vendorWindowText(startDay,endDay){
   if(start===null&&end===null) return "Not scheduled";
   if(start===null||end===null) return "Not scheduled";
   return (DAYS[start]||"Day "+start)+" to "+(DAYS[end]||"Day "+end);
+}
+var ORDER_UNIT_TYPES=[
+  {value:"cas",label:"CASE"},
+  {value:"pcs",label:"PCS"},
+  {value:"pallet",label:"PALLET"},
+  {value:"master_case",label:"MASTER CASE"},
+  {value:"other",label:"OTHER"},
+];
+function normalizeUnitType(v){return ORDER_UNIT_TYPES.some(function(o){return o.value===v;})?v:"cas";}
+function normalizeOrderItemEntry(v){
+  if(v&&typeof v==="object"&&!Array.isArray(v)){
+    var q=Math.max(0,parseInt(v.qty!=null?v.qty:v.quantity)||0);
+    var t=normalizeUnitType(v.unitType||v.type||"cas");
+    var other=t==="other"?String(v.customUnit||v.otherUnit||"").trim():"";
+    return {qty:q,unitType:t,customUnit:other};
+  }
+  return {qty:Math.max(0,parseInt(v)||0),unitType:"cas",customUnit:""};
+}
+function hasOrderItemQty(v){return normalizeOrderItemEntry(v).qty>0;}
+function countFilledOrderItems(itemsMap){return Object.values(itemsMap||{}).filter(function(v){return hasOrderItemQty(v);}).length;}
+function getOrderItemQty(itemsMap,code){return normalizeOrderItemEntry(itemsMap&&itemsMap[code]).qty;}
+function getOrderItemUnitLabel(v){
+  var d=normalizeOrderItemEntry(v);
+  if(d.unitType==="pcs") return "PCS";
+  if(d.unitType==="pallet") return "PALLET";
+  if(d.unitType==="master_case") return "MASTER CASE";
+  if(d.unitType==="other") return d.customUnit||"OTHER";
+  return "CASE";
+}
+function formatQtyWithUnit(v){var d=normalizeOrderItemEntry(v);return d.qty+" "+getOrderItemUnitLabel(d);}
+function formatOrderItemQtyDisplay(v){var d=normalizeOrderItemEntry(v);return d.qty>0?formatQtyWithUnit(v):"0";}
+function formatQtyValueWithUnit(qty,unitMeta){
+  var safeQty=Math.max(0,parseInt(qty,10)||0);
+  if(!safeQty) return "";
+  return safeQty+" "+getOrderItemUnitLabel(unitMeta||{unitType:"cas",customUnit:""});
+}
+function formatQtySummaryByUnit(qtyByStoreId,orderUnitByStoreId){
+  var totals={};
+  Object.keys(qtyByStoreId||{}).forEach(function(storeId){
+    var qty=Math.max(0,parseInt(qtyByStoreId[storeId],10)||0);
+    if(!qty) return;
+    var label=getOrderItemUnitLabel(orderUnitByStoreId&&orderUnitByStoreId[storeId]?orderUnitByStoreId[storeId]:{unitType:"cas",customUnit:""});
+    totals[label]=(totals[label]||0)+qty;
+  });
+  return Object.keys(totals).map(function(label){return totals[label]+" "+label;}).join(", ");
+}
+function aggregateQtyUnit(itemsMapList){
+  var units={};
+  itemsMapList.forEach(function(v){var d=normalizeOrderItemEntry(v);if(d.qty>0)units[getOrderItemUnitLabel(d)]=true;});
+  var keys=Object.keys(units);
+  if(keys.length===0) return "CASE";
+  if(keys.length===1) return keys[0];
+  return "MIXED";
 }
 function isVendorConfigActiveNow(config, dayOverride, nowOverride){
   if(!config||config.enabled===false) return false;
@@ -612,13 +666,13 @@ function mergeParsedTemplateSheets(parsedSheets, category, vendorKey, sourceFile
   var mergedItems=[];
   var mergedOutline=[];
   var mergedItemRows=[];
+  var mergedMultiSheetItemRows=[];
   var seenCodes={};
   var order=0;
 
   list.forEach(function(entry, sheetIdx){
     var tpl=entry.template||{};
     var sheetName=String(tpl.sheetName||("Sheet "+String(sheetIdx+1))).trim()||("Sheet "+String(sheetIdx+1));
-    mergedOutline.push({type:"heading",text:sheetName,rowIndex:sheetIdx,colIndex:0});
     var codeMap={};
 
     (entry.items||[]).forEach(function(it){
@@ -630,9 +684,10 @@ function mergeParsedTemplateSheets(parsedSheets, category, vendorKey, sourceFile
       seenCodes[finalCode]=true;
       codeMap[baseCode]=codeMap[baseCode]||[];
       codeMap[baseCode].push(finalCode);
-      mergedItems.push(Object.assign({},it,{code:finalCode,sortOrder:order++,subheading:it&&it.subheading?it.subheading:sheetName}));
+      mergedItems.push(Object.assign({},it,{code:finalCode,sortOrder:order++,subheading:String(it&&it.subheading||"").trim()}));
     });
 
+    var outlinePickIndex={};
     (tpl.outline||[]).forEach(function(row){
       if(!row||typeof row!=="object") return;
       if(row.type==="heading"){
@@ -642,7 +697,9 @@ function mergeParsedTemplateSheets(parsedSheets, category, vendorKey, sourceFile
       }
       if(row.type!=="item") return;
       var oldCode=String(row.code||"").trim();
-      var codeCandidate=oldCode&&codeMap[oldCode]&&codeMap[oldCode].length?codeMap[oldCode][0]:"";
+      var outlineIdx=outlinePickIndex[oldCode]||0;
+      var codeCandidate=oldCode&&codeMap[oldCode]&&codeMap[oldCode].length?codeMap[oldCode][Math.min(outlineIdx,codeMap[oldCode].length-1)]:"";
+      outlinePickIndex[oldCode]=outlineIdx+1;
       var name=String(row.name||"").trim();
       if(codeCandidate) mergedOutline.push({type:"item",code:codeCandidate,name:name,rowIndex:row.rowIndex,colIndex:row.colIndex});
     });
@@ -656,6 +713,7 @@ function mergeParsedTemplateSheets(parsedSheets, category, vendorKey, sourceFile
       if(!nextCode) return;
       var name=String(ir&&ir.name||"").trim();
       mergedItemRows.push({code:nextCode,name:name,rowIndex:Number.isInteger(ir.rowIndex)?ir.rowIndex:0,colIndex:Number.isInteger(ir.colIndex)?ir.colIndex:0});
+      mergedMultiSheetItemRows.push({code:nextCode,name:name,rowIndex:Number.isInteger(ir.rowIndex)?ir.rowIndex:0,colIndex:Number.isInteger(ir.colIndex)?ir.colIndex:0,sheetIndex:sheetIdx,sheetName:sheetName});
     });
   });
 
@@ -669,6 +727,7 @@ function mergeParsedTemplateSheets(parsedSheets, category, vendorKey, sourceFile
       originalFile:originalFile||first.originalFile||null,
       outline:mergedOutline,
       itemRows:mergedItemRows.length?mergedItemRows:mergedItems.map(function(it,idx){return {code:it.code,name:it.name,rowIndex:idx,colIndex:0};}),
+      multiSheetItemRows:mergedMultiSheetItemRows.length?mergedMultiSheetItemRows:null,
       rows:Array.isArray(first.rows)?first.rows:[],
       storeColumns:Array.isArray(first.storeColumns)?first.storeColumns:[],
       quantityColumn:first.quantityColumn||null,
@@ -1197,9 +1256,7 @@ function handleGridNavigation(e,navGroup,row,col,maxRow,maxCol){
 }
 function downloadBase64File(fileBase64, filename, contentType){
   if(!fileBase64) throw new Error("No file data returned");
-  var bin=atob(fileBase64);
-  var bytes=new Uint8Array(bin.length);
-  for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  var bytes=decodeBase64Bytes(fileBase64);
   var blob=new Blob([bytes],{type:contentType||"application/octet-stream"});
   var url=URL.createObjectURL(blob);
   var a=document.createElement("a");
@@ -1209,6 +1266,120 @@ function downloadBase64File(fileBase64, filename, contentType){
   a.click();
   a.remove();
   setTimeout(function(){URL.revokeObjectURL(url);},1000);
+}
+function decodeBase64Bytes(fileBase64){
+  var bin=atob(String(fileBase64||""));
+  var bytes=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  return bytes;
+}
+function bytesToArrayBuffer(bytes){
+  if(bytes instanceof ArrayBuffer) return bytes;
+  var view=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes||[]);
+  return view.buffer.slice(view.byteOffset,view.byteOffset+view.byteLength);
+}
+function escapePrintHtml(value){
+  return String(value==null?"":value)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/\"/g,"&quot;")
+    .replace(/'/g,"&#39;");
+}
+function trimPrintableRows(rows){
+  var normalized=normalizePreviewRows(rows);
+  var lastRow=-1;
+  var lastCol=-1;
+  normalized.forEach(function(row,rowIdx){
+    (row||[]).forEach(function(cell,colIdx){
+      if(String(cell||"").trim()){lastRow=Math.max(lastRow,rowIdx);lastCol=Math.max(lastCol,colIdx);}
+    });
+  });
+  if(lastRow<0||lastCol<0) return [];
+  return normalized.slice(0,lastRow+1).map(function(row){return row.slice(0,lastCol+1);});
+}
+function buildPrintableTableHtml(rows){
+  var trimmed=trimPrintableRows(rows);
+  if(!trimmed.length) return '<div class="print-empty">No printable rows available.</div>';
+  var bodyRows=trimmed.map(function(row){
+    return '<tr>'+row.map(function(cell){return '<td>'+escapePrintHtml(cell)+"</td>";}).join("")+'</tr>';
+  }).join("");
+  return '<table class="print-table"><tbody>'+bodyRows+'</tbody></table>';
+}
+function buildPrintDocumentHtml(title, sectionsHtml){
+  return '<!doctype html><html><head><meta charset="utf-8"/><title>'+escapePrintHtml(title)+'</title><style>'+
+    '@page{margin:12mm;}'+
+    'body{font-family:"Segoe UI",Arial,sans-serif;color:#0f172a;margin:0;padding:18px;background:#fff;}'+
+    'h1{font-size:20px;margin:0 0 18px;}'+
+    'h2{font-size:14px;margin:0 0 10px;color:#334155;text-transform:uppercase;letter-spacing:.04em;}'+
+    '.print-section{margin:0 0 24px;page-break-after:always;}'+
+    '.print-section:last-child{page-break-after:auto;}'+
+    '.print-table{width:100%;border-collapse:collapse;table-layout:auto;}'+
+    '.print-table td,.print-table th{border:1px solid #cbd5e1;padding:6px 8px;font-size:12px;vertical-align:top;word-break:break-word;white-space:pre-wrap;}'+
+    '.print-docx{font-size:12px;line-height:1.45;}'+
+    '.print-docx table{width:100%;border-collapse:collapse;}'+
+    '.print-docx td,.print-docx th{border:1px solid #cbd5e1;padding:6px 8px;vertical-align:top;}'+
+    '.print-empty{padding:16px;border:1px dashed #cbd5e1;color:#64748b;font-size:12px;}'+
+    '</style></head><body><h1>'+escapePrintHtml(title)+'</h1>'+sectionsHtml+'</body></html>';
+}
+function openPendingPrintWindow(title){
+  var win=window.open("","_blank","width=1200,height=900");
+  if(!win) throw new Error("Allow pop-ups to print documents.");
+  win.document.open();
+  win.document.write(buildPrintDocumentHtml(title,'<div class="print-empty">Preparing print preview...</div>'));
+  win.document.close();
+  return win;
+}
+function finalizePrintWindow(win, title, sectionsHtml){
+  if(!win||win.closed) throw new Error("Print window was closed before the preview was ready.");
+  win.document.open();
+  win.document.write(buildPrintDocumentHtml(title,sectionsHtml));
+  win.document.close();
+  return new Promise(function(resolve,reject){
+    var done=false;
+    var trigger=function(){
+      if(done) return;
+      done=true;
+      setTimeout(function(){
+        try{
+          win.focus();
+          win.print();
+          resolve(true);
+        }catch(err){reject(err);}
+      },200);
+    };
+    if(win.document.readyState==="complete") trigger();
+    else win.onload=trigger;
+  });
+}
+async function printSheetSections(title, sheets, printWindow){
+  var sections=(Array.isArray(sheets)?sheets:[]).map(function(sheet,idx){
+    var sheetName=String(sheet&&sheet.name||("Sheet "+String(idx+1))).trim()||("Sheet "+String(idx+1));
+    return '<section class="print-section"><h2>'+escapePrintHtml(sheetName)+'</h2>'+buildPrintableTableHtml(sheet&&sheet.rows)+'</section>';
+  }).join("");
+  return finalizePrintWindow(printWindow||openPendingPrintWindow(title),title,sections||'<div class="print-empty">No printable rows available.</div>');
+}
+async function printBase64File(fileBase64, filename, contentType, printWindow){
+  if(!fileBase64) throw new Error("No file data returned");
+  var safeFilename=String(filename||"document").trim()||"document";
+  var lowerName=safeFilename.toLowerCase();
+  var lowerType=String(contentType||"").toLowerCase();
+  var bytes=decodeBase64Bytes(fileBase64);
+  var arrayBuffer=bytesToArrayBuffer(bytes);
+  if(lowerType.indexOf("spreadsheetml")>=0||/\.xlsx?$/.test(lowerName)){
+    var workbook=XLSX.read(arrayBuffer,{type:'array'});
+    var sections=(Array.isArray(workbook&&workbook.SheetNames)?workbook.SheetNames:[]).map(function(sheetName){
+      return {name:sheetName,rows:worksheetToRows(workbook.Sheets[sheetName])};
+    });
+    return printSheetSections(safeFilename,sections,printWindow);
+  }
+  if(lowerType.indexOf("wordprocessingml")>=0||/\.docx$/.test(lowerName)){
+    var result=await mammoth.convertToHtml({arrayBuffer:arrayBuffer});
+    var warnings=(result&&Array.isArray(result.messages)?result.messages:[]).map(function(msg){return '<div>'+escapePrintHtml(msg.message||msg.value||"")+'</div>';}).join("");
+    var sectionsHtml='<section class="print-section"><div class="print-docx">'+String(result&&result.value||"")+'</div>'+(warnings?('<div class="print-empty" style="margin-top:12px;">'+warnings+'</div>'):"")+'</section>';
+    return finalizePrintWindow(printWindow||openPendingPrintWindow(safeFilename),safeFilename,sectionsHtml);
+  }
+  throw new Error("Printing is supported for Excel and Word documents only.");
 }
 
 
@@ -1495,14 +1666,6 @@ export default function App(){
           B: serverSched.B != null ? serverSched.B : null,
           C: serverSched.C != null ? serverSched.C : null,
         };
-        // fallback to today's weekday if the server somehow returns null
-        var today = serverScheduleToday!=null?serverScheduleToday:new Date().getDay();
-        ['A','B','C'].forEach(function(t){
-          if (schedMap[t] == null) {
-            console.warn('schedule for',t,'was null, defaulting to current day',today);
-            schedMap[t] = today;
-          }
-        });
         setSchedule(function(prev){return sameJson(prev,schedMap)?prev:schedMap;});
         if(data.orders&&Array.isArray(data.orders)){
           var orderMap=buildOrderStateMap(data.orders);
@@ -1926,6 +2089,8 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"Item Name";
   var qtyHeader=selCategory==="vendor_orders"?"Qty":(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"Qty");
   var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"Note";
+  var showQtyType=selCategory==="vendor_orders";
+  var showNoteColumn=selCategory!=="vendor_orders";
   var currentType=selCategory==="vendor_orders"?"VENDOR":sel;
   var itemList=useMemo(function(){
     var filtered=items.filter(function(it){return normalizeCategory(it.category)===normalizeCategory(selCategory)&&normalizeVendorKey(selCategory,it.vendorKey)===resolvedVendorKey;});
@@ -1939,8 +2104,9 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var hasServerDraft=!!(ex&&(ex.status==="draft"||ex.status==="draft_shared"));
   var isDraftOrder=hasServerDraft||!!draftLockByKey[oKey];
   var ro=locked||done||(isDraftOrder&&!isEditingDraft)||(selCategory==="vendor_orders"&&!resolvedVendorKey);
-  var _q=useState(function(){return ex&&ex.items?Object.assign({},ex.items):itemList.reduce(function(a,it){a[it.code]=0;return a;},{});}),qty=_q[0],setQty=_q[1];
+  var _q=useState(function(){return ex&&ex.items?Object.assign({},ex.items):itemList.reduce(function(a,it){a[it.code]={qty:0,unitType:"cas",customUnit:""};return a;},{});}),qty=_q[0],setQty=_q[1];
   var _n=useState(function(){return ex&&ex.notes?Object.assign({},ex.notes):itemList.reduce(function(a,it){a[it.code]="";return a;},{});}),notes=_n[0],setNotes=_n[1];
+  var notePayload=showNoteColumn?notes:{};
   useEffect(function(){
     var cached=unsavedByOrderKeyRef.current[oKey]||null;
     var sourceItems=(ex&&ex.items)?ex.items:((cached&&cached.items)||{});
@@ -1949,13 +2115,12 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     itemList.forEach(function(it){known[it.code]=true;});
     var extraCodes=Object.keys(Object.assign({},sourceItems,sourceNotes)).filter(function(code){
       if(known[code]) return false;
-      return (Number(sourceItems[code])||0)>0 || String(sourceNotes[code]||"").trim();
+      return normalizeOrderItemEntry(sourceItems[code]).qty>0 || String(sourceNotes[code]||"").trim();
     });
     var allCodes=itemList.map(function(it){return it.code;}).concat(extraCodes);
     setQty(function(prev){
       return allCodes.reduce(function(a,code){
-        if(sourceItems&&sourceItems[code]!=null){a[code]=Math.max(0,parseInt(sourceItems[code],10)||0);}
-        else{a[code]=0;}
+        a[code]=normalizeOrderItemEntry(sourceItems&&sourceItems[code]);
         return a;
       },{});
     });
@@ -2009,11 +2174,41 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     if(ro)return;
     setQty(function(p){
       var n=Object.assign({},p);
-      n[c]=Math.max(0,parseInt(v,10)||0);
+      var current=normalizeOrderItemEntry(n[c]);
+      n[c]={qty:Math.max(0,parseInt(v,10)||0),unitType:current.unitType,customUnit:current.customUnit};
       unsavedByOrderKeyRef.current[oKey]=Object.assign({},unsavedByOrderKeyRef.current[oKey]||{},{
         items:n,
         notes:Object.assign({},notes),
       });
+      return n;
+    });
+  };
+  var setQType=function(c,v){
+    if(ro)return;
+    setQty(function(p){
+      var n=Object.assign({},p);
+      var current=normalizeOrderItemEntry(n[c]);
+      var newType=normalizeUnitType(v);
+      n[c]={qty:current.qty,unitType:newType,customUnit:newType==="other"?current.customUnit:""};
+      unsavedByOrderKeyRef.current[oKey]=Object.assign({},unsavedByOrderKeyRef.current[oKey]||{},{
+        items:n,
+        notes:Object.assign({},notes),
+      });
+      return n;
+    });
+  };
+  var setQOther=function(c,v){
+    if(ro)return;
+    setQty(function(p){
+      var n=Object.assign({},p);
+      var current=normalizeOrderItemEntry(n[c]);
+      if(current.unitType==="other"){
+        n[c]={qty:current.qty,unitType:"other",customUnit:String(v||"")};
+        unsavedByOrderKeyRef.current[oKey]=Object.assign({},unsavedByOrderKeyRef.current[oKey]||{},{
+          items:n,
+          notes:Object.assign({},notes),
+        });
+      }
       return n;
     });
   };
@@ -2035,8 +2230,8 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     try{
       var po=payload||{};
       var itemSource=po.items||qty;
-      var noteSource=po.notes||notes;
-      var activeCodes=Object.keys(Object.assign({},itemSource,noteSource)).filter(function(code){return (Number(itemSource[code])||0)>0 || String(noteSource[code]||"").trim();});
+      var noteSource=po.notes||notePayload;
+      var activeCodes=Object.keys(Object.assign({},itemSource,noteSource)).filter(function(code){return normalizeOrderItemEntry(itemSource[code]).qty>0 || String(noteSource[code]||"").trim();});
       var itemDetailsByCode=buildOrderItemDetails(activeCodes,sorted,items,activeTemplate);
       var itemNamesByCode={};
       Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
@@ -2044,9 +2239,28 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
       downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
     }catch(e){toast(e.message||"Failed to generate document",true);}
   };
+  var printOrderDocument=async function(payload){
+    var printWindow;
+    try{
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var po=payload||{};
+      var itemSource=po.items||qty;
+      var noteSource=po.notes||notePayload;
+      var activeCodes=Object.keys(Object.assign({},itemSource,noteSource)).filter(function(code){return normalizeOrderItemEntry(itemSource[code]).qty>0 || String(noteSource[code]||"").trim();});
+      var itemDetailsByCode=buildOrderItemDetails(activeCodes,sorted,items,activeTemplate);
+      var itemNamesByCode={};
+      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,itemSource,noteSource,user.storeId,po.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
+      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
+  };
   var save=async function(){
     var buildWritePayload=function(nextStatus,forcedWeek){
-      var payload={type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:user.storeId};
+      var payload={type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notePayload,status:nextStatus,storeId:user.storeId};
       if(selCategory==="vendor_orders"){
         var activeWeek=String(forcedWeek||((ex&&ex.week)||"")||"").trim();
         if(activeWeek) payload.week=activeWeek;
@@ -2085,7 +2299,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   };
   var doSubmit=async function(){
     var buildWritePayload=function(nextStatus,forcedWeek){
-      var payload={type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:user.storeId};
+      var payload={type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notePayload,status:nextStatus,storeId:user.storeId};
       if(selCategory==="vendor_orders"){
         var activeWeek=String(forcedWeek||((ex&&ex.week)||"")||"").trim();
         if(activeWeek) payload.week=activeWeek;
@@ -2125,21 +2339,22 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
       setShowConfirm(false);
     }
   };
-  var filled=Object.values(qty).filter(function(v){return v>0;}).length;
-  var totalCases=Object.values(qty).reduce(function(a,b){return a+(parseInt(b,10)||0);},0);
-  var hasLines=Object.keys(Object.assign({},qty,notes)).some(function(code){return (Number(qty[code])||0)>0 || String(notes[code]||"").trim();});
+  var filled=Object.values(qty).filter(function(v){return normalizeOrderItemEntry(v).qty>0;}).length;
+  var totalCases=Object.values(qty).reduce(function(a,b){return a+normalizeOrderItemEntry(b).qty;},0);
+  var hasLines=Object.keys(Object.assign({},qty,notePayload)).some(function(code){return normalizeOrderItemEntry(qty[code]).qty>0 || String(notePayload[code]||"").trim();});
   var actionBlocked=locked||(selCategory==="vendor_orders"&&!resolvedVendorKey);
   var sorted=useMemo(function(){
     var known=itemList.slice();
     var knownCodes={};known.forEach(function(it){knownCodes[it.code]=true;});
-    var extraCodes=Object.keys(Object.assign({},qty,notes)).filter(function(code){return !knownCodes[code]&&((qty[code]||0)>0||(notes[code]||"").trim());});
+    var extraCodes=Object.keys(Object.assign({},qty,notePayload)).filter(function(code){return !knownCodes[code]&&(normalizeOrderItemEntry(qty[code]).qty>0||(notePayload[code]||"").trim());});
     var extras=extraCodes.map(function(code){return {code:code,name:displayNameForOrderKey(code,items),category:selCategory,unit:"",_extra:true};});
     var merged=known.concat(extras);
     return selCategory==="vendor_orders"?orderRowsByTemplate(activeTemplate,merged):sortItemsAlphabetical(merged);
-  },[itemList,items,qty,notes,selCategory,activeTemplate]);
+  },[itemList,items,qty,notePayload,selCategory,activeTemplate]);
   var displayRows=useMemo(function(){return buildTemplateDisplayRows(activeTemplate,sorted);},[activeTemplate,sorted]);
   var placeOrderNavGroup="place-order-"+oKey;
   var placeOrderMaxRow=Math.max(0,sorted.length-1);
+  var placeOrderNavMaxCol=showNoteColumn?1:0;
   return(<div>
     {(notifs||[]).map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={{marginBottom:12}}>
@@ -2149,7 +2364,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
         orderType={sel}
         setOrderType={setSel}
         getCategoryDisabled={function(catId){return catId==="vendor_orders"?(!activeVendorIds.length&&!isAdmin):!isCategoryOpenForType(catId,sel,resolvedOpenTypes,manualOpenLeaves);}}
-        getOrderTypeDisabled={function(t){return !isAdmin&&resolvedOpenTypes.length>0&&resolvedOpenTypes.indexOf(t)<0;}}
+        getOrderTypeDisabled={function(t){return !isAdmin&&resolvedOpenTypes.indexOf(t)<0;}}
         orderTypeSuffix={function(t){return resolvedOpenTypes.indexOf(t)>=0?" *":"";}}
       />
     </div>
@@ -2162,7 +2377,8 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     <div style={S.card}><div style={S.cH}>
       <div><div style={S.t}>{selCategory==="vendor_orders"?("Vendor Orders - "+activeVendorName+" - "+sName):(CATEGORY_LABELS[selCategory]+" - Order "+sel+" - "+sName)}</div><div style={S.d}>{filled} items | {ex?ex.status:"New"}</div></div>
       <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-        <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadOrderExcel({items:qty,notes:notes,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Download Document</button>
+        <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadOrderExcel({items:qty,notes:notePayload,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Download Document</button>
+        <button style={Object.assign({},S.b,S.bS)} onClick={function(){printOrderDocument({items:qty,notes:notePayload,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Print</button>
         {done?null:(isDraftOrder&&!isEditingDraft?<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={function(){setIsEditingDraft(true);}} disabled={locked}>Edit Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}} disabled={actionBlocked}>Submit</button></Fragment>:<Fragment><button style={Object.assign({},S.b,S.bS)} onClick={save} disabled={actionBlocked}>Save Draft</button><button style={Object.assign({},S.b,S.bP)} onClick={function(){setShowConfirm(true);}} disabled={actionBlocked}>Submit</button></Fragment>)}
       </div>
     </div>
@@ -2171,21 +2387,22 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
         <div style={{fontSize:12.5}}><span style={{color:"#64748B"}}>Total Cases:</span> <strong style={{color:"#0F172A",fontFamily:"monospace"}}>{totalCases}</strong></div>
       </div>
     </div>
-    <div style={S.tw}><table style={Object.assign({},S.tbl,{tableLayout:"fixed"})}>
-      <thead><tr><th style={Object.assign({},S.th,{width:"38%"})}>{itemHeader}</th><th style={Object.assign({},S.th,{width:"12%"})}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center",width:"12%"})}>Qty</th><th style={Object.assign({},S.th,{width:"38%"})}>{noteHeader}</th></tr></thead>
+    <div style={Object.assign({},S.tw,{display:"inline-block",width:"fit-content",maxWidth:"100%",minWidth:0,verticalAlign:"top"})}><table style={Object.assign({},S.tbl,{tableLayout:"auto",width:"auto",minWidth:0})}>
+      <thead><tr><th style={Object.assign({},S.th,{whiteSpace:"nowrap"})}>{itemHeader}</th><th style={Object.assign({},S.th,{width:showQtyType?"136px":"108px",whiteSpace:"nowrap"})}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center",width:showQtyType?"196px":"104px",whiteSpace:"nowrap"})}>{qtyHeader}</th>{showNoteColumn&&<th style={Object.assign({},S.th,{width:"300px",whiteSpace:"nowrap"})}>{noteHeader}</th>}</tr></thead>
       <tbody>{(function(){
         var navRow=-1;
         return displayRows.map(function(row){
         if(row.type==="heading"){
-          return <tr key={row.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
+          return <tr key={row.key}><td colSpan={showNoteColumn?4:3} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
         }
         var it=row.item;
         navRow+=1;
         var currentRow=navRow;
-        return(<tr key={row.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit||"-"}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="text" inputMode="numeric" pattern="[0-9]*" value={qty[it.code]||0} onChange={function(e){setQ(it.code,e.target.value);}} onKeyDown={function(e){if(ro) return;handleGridNavigation(e,placeOrderNavGroup,currentRow,0,placeOrderMaxRow,1);}} data-nav-group={placeOrderNavGroup} data-nav-row={currentRow} data-nav-col={0} onWheel={stopNumberWheelChange} disabled={ro}/></td><td style={S.td}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:13})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} onKeyDown={function(e){if(ro) return;handleGridNavigation(e,placeOrderNavGroup,currentRow,1,placeOrderMaxRow,1);}} data-nav-group={placeOrderNavGroup} data-nav-row={currentRow} data-nav-col={1} placeholder="note" disabled={ro}/></td></tr>);
+        var cur=normalizeOrderItemEntry(qty[it.code]);
+        return(<tr key={row.key}><td style={Object.assign({},S.td,{fontWeight:500,whiteSpace:"nowrap",padding:"7px 6px"})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B",whiteSpace:"nowrap",padding:"7px 6px"})}>{it.unit||"-"}</td><td style={Object.assign({},S.td,{textAlign:"center",padding:"7px 6px"})}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:2,flexWrap:"nowrap"}}><input style={Object.assign({},S.ni,ro?{opacity:.4}:{})} type="text" inputMode="numeric" pattern="[0-9]*" value={cur.qty} onChange={function(e){setQ(it.code,e.target.value);}} onKeyDown={function(e){if(ro) return;handleGridNavigation(e,placeOrderNavGroup,currentRow,0,placeOrderMaxRow,placeOrderNavMaxCol);}} data-nav-group={placeOrderNavGroup} data-nav-row={currentRow} data-nav-col={0} onWheel={stopNumberWheelChange} disabled={ro}/>{showQtyType&&<select style={Object.assign({},S.inp,{width:96,padding:"5px 6px",fontSize:11,opacity:ro?0.6:1})} value={cur.unitType} onChange={function(e){setQType(it.code,e.target.value);}} disabled={ro}>{ORDER_UNIT_TYPES.map(function(opt){return <option key={opt.value} value={opt.value}>{opt.label}</option>;})}</select>}{showQtyType&&cur.unitType==="other"&&<input style={Object.assign({},S.inp,{width:88,padding:"5px 6px",fontSize:11,opacity:ro?0.6:1})} value={cur.customUnit} onChange={function(e){setQOther(it.code,e.target.value);}} placeholder="Type" disabled={ro}/>}</div></td>{showNoteColumn&&<td style={Object.assign({},S.td,{padding:"7px 6px"})}><input style={Object.assign({},S.inp,ro?{opacity:.5}:{},{padding:"5px 8px",fontSize:13})} value={notes[it.code]||""} onChange={function(e){setN(it.code,e.target.value);}} onKeyDown={function(e){if(ro) return;handleGridNavigation(e,placeOrderNavGroup,currentRow,1,placeOrderMaxRow,placeOrderNavMaxCol);}} data-nav-group={placeOrderNavGroup} data-nav-row={currentRow} data-nav-col={1} placeholder="note" disabled={ro}/></td>}</tr>);
       });
       })()}
-      {sorted.length===0&&<tr><td colSpan={4} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items in {CATEGORY_LABELS[selCategory]}.</td></tr>}</tbody>
+      {sorted.length===0&&<tr><td colSpan={showNoteColumn?4:3} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items in {CATEGORY_LABELS[selCategory]}.</td></tr>}</tbody>
     </table></div></div>
     {showConfirm&&(<div style={S.ov} onClick={function(){setShowConfirm(false);}}><div style={Object.assign({},S.mo,{width:420,textAlign:"center"})} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:40,marginBottom:8}}>⚠️</div>
@@ -2225,7 +2442,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
   var downloadHistoryExcel=async function(o){
     try{
       if(!o){toast("Order not found",true);return;}
-      var historyCodes=Object.keys(Object.assign({},o.items||{},o.notes||{})).filter(function(code){return (Number((o.items||{})[code])||0)>0 || String((o.notes||{})[code]||"").trim();});
+      var historyCodes=Object.keys(Object.assign({},o.items||{},o.notes||{})).filter(function(code){return hasOrderItemQty((o.items||{})[code]) || String((o.notes||{})[code]||"").trim();});
       var historyRows=(items||[]).filter(function(it){return historyCodes.indexOf(it.code)>=0;});
       var tpl=getTemplateForCategory(categoryTemplates,o.category||"vegetables",normalizeVendorKey(o.category||"vegetables",o.vendorKey||null));
       var historyItemDetails=buildOrderItemDetails(historyCodes,historyRows,items,tpl);
@@ -2235,6 +2452,25 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
       toast("Document downloaded");
     }catch(e){toast(e.message||"Failed to generate document",true);}
+  };
+  var printHistoryExcel=async function(o){
+    var printWindow;
+    try{
+      if(!o){toast("Order not found",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var historyCodes=Object.keys(Object.assign({},o.items||{},o.notes||{})).filter(function(code){return hasOrderItemQty((o.items||{})[code]) || String((o.notes||{})[code]||"").trim();});
+      var historyRows=(items||[]).filter(function(it){return historyCodes.indexOf(it.code)>=0;});
+      var tpl=getTemplateForCategory(categoryTemplates,o.category||"vegetables",normalizeVendorKey(o.category||"vegetables",o.vendorKey||null));
+      var historyItemDetails=buildOrderItemDetails(historyCodes,historyRows,items,tpl);
+      var historyItemNames={};
+      Object.keys(historyItemDetails).forEach(function(code){historyItemNames[code]=historyItemDetails[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(o.type||"A",o.category||"vegetables",o.vendorKey||null,o.items||{},o.notes||{},o.store||user.storeId,o.date||new Date().toISOString(),historyItemNames,historyItemDetails);
+      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
   };
   var reopenAsDraft=async function(o){
     try{
@@ -2263,7 +2499,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       <div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:18,color:"#6B7186"}}>No orders</div>:
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
+        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countFilledOrderItems(o.items||{})}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
       </tbody></table></div>}
     </div>);
   };
@@ -2274,7 +2510,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>{normalizeCategory(orders[sel].category||"vegetables")==="vendor_orders"?historyOrderLabel(orders[sel]):(CATEGORY_LABELS[orders[sel].category||"vegetables"]+" Order "+orders[sel].type)} - {fmtDT(orders[sel].date)}</div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Qty</th><th style={S.th}>Note</th></tr></thead><tbody>
-        {Object.keys(Object.assign({},orders[sel].items||{},orders[sel].notes||{})).filter(function(code){return (orders[sel].items[code]||0)>0||((orders[sel].notes||{})[code]);}).map(function(code){return <tr key={code}><td style={S.td}>{displayNameForOrderKey(code,items)}</td><td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{(orders[sel].items||{})[code]||0}</td><td style={S.td}>{((orders[sel].notes||{})[code])||"-"}</td></tr>;})}</tbody></table></div>
+        {Object.keys(Object.assign({},orders[sel].items||{},orders[sel].notes||{})).filter(function(code){return hasOrderItemQty((orders[sel].items||{})[code])||((orders[sel].notes||{})[code]);}).map(function(code){return <tr key={code}><td style={S.td}>{displayNameForOrderKey(code,items)}</td><td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{formatOrderItemQtyDisplay((orders[sel].items||{})[code])}</td><td style={S.td}>{((orders[sel].notes||{})[code])||"-"}</td></tr>;})}</tbody></table></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSel(null);}}>Close</button></div></div></div>)}
   </div>);
 }
@@ -2387,6 +2623,19 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       setHistoryDownloading(function(prev){var n=Object.assign({},prev);delete n[k];return n;});
     }
   };
+  var printConsolidatedHistoryExcel=async function(rec){
+    var printWindow;
+    try{
+      if(!rec||!rec.week||!rec.type){toast("Missing history record details",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var resp=await apiClient.orders.consolidatedHistoryExcel(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null);
+      await printBase64File(resp&&resp.excelBase64,resp&&resp.filename,resp&&resp.contentType,printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
+  };
   useEffect(function(){
     if(ft==="completed") refreshCompletedLogs();
   },[ft]);
@@ -2449,12 +2698,11 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var renderSubmissionSection=function(title,rows){
     return(<div style={Object.assign({},S.card,{marginTop:10})}><div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>No orders</div>:
-      <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Order</th><th style={S.th}>Date / Time</th><th style={S.th}>Status</th><th style={S.th}>Filled</th><th style={S.th}>Action</th></tr></thead><tbody>
+      <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Order</th><th style={S.th}>Date / Time</th><th style={S.th}>Status</th><th style={S.th}>Action</th></tr></thead><tbody>
         {rows.map(function(e){var k=e[0],o=e[1];var sn=(stores.find(function(s){return s.id===o.store;})||{}).name||o.store;return(<tr key={k}>
           <td style={Object.assign({},S.td,{fontWeight:500})}>{sn}</td><td style={S.td}>Order {o.type}</td>
           <td style={S.tm}>{fmtDT(o.date)}</td>
           <td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{statusLabel(o.status)}</span></td>
-          <td style={S.td}>{Object.values(o.items||{}).filter(function(v){return v>0;}).length}/{items.length}</td>
           <td style={S.td}>{isReceived(o.status)&&o.id&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10})} onClick={async function(){
               try{await apiClient.orders.process(o.id);
                 setOrders(function(p){var n=Object.assign({},p);n[k]=Object.assign({},n[k],{status:"processed"});return n;});
@@ -2472,6 +2720,8 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Order</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th><th style={S.th}>Details</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>
         {rows.map(function(l){
           var canReopen=true;
+          var rowKey=historyGroupKey(l);
+          var isDownloading=!!historyDownloading[rowKey];
           return(<tr key={l._id||l.sentAt}>
             <td style={S.tm}>{fmtDT(l.sentAt)}</td>
             <td style={S.td}>Order {l.type}</td>
@@ -2480,7 +2730,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
             <td style={S.tm}>{l.week}</td>
             <td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelDone(l);loadSheetPreviewForLog(l);}}>View Details</button></td>
             <td style={S.td}><span style={Object.assign({},S.bg,l.finished===false?S.bgW:S.bgG)}>{l.finished===false?"reopened":"completed"}</span></td>
-            <td style={S.td}>{canReopen?<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10})} onClick={function(){reopenCompleted(l);}}>{l.finished===false?"Open / Resend":"Reopen / Resend"}</button>:null}</td>
+            <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{l.week&&l.type&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel({week:l.week,type:l.type,category:l.category||"vegetables",vendorKey:l.vendorKey||null});}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Document"}</button>}{l.week&&l.type&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printConsolidatedHistoryExcel({week:l.week,type:l.type,category:l.category||"vegetables",vendorKey:l.vendorKey||null});}}>Print</button>}{canReopen?<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10})} onClick={function(){reopenCompleted(l);}}>{l.finished===false?"Open / Resend":"Reopen / Resend"}</button>:null}</div></td>
           </tr>);
         })}
       </tbody></table></div>}
@@ -2512,7 +2762,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
                 <td style={S.td}>{historyVendorLabel(r.vendorKey)}</td>
                 <td style={Object.assign({},S.td,{textAlign:"center"})}>{r.storeCount||0}</td>
                 <td style={S.td}><span style={Object.assign({},S.bg,r.sent?S.bgG:S.bgY)}>{r.sent?("Sent ("+(r.sentCount||0)+")"):"Not sent"}</span></td>
-                <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelHistory(r);loadSheetPreviewForHistory(r);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Sheet"}</button></div></td>
+                <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelHistory(r);loadSheetPreviewForHistory(r);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printConsolidatedHistoryExcel(r);}}>Print</button></div></td>
               </tr>);
             })}
           </tbody></table></div>}
@@ -2584,12 +2834,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var _logs=useState([]),logs=_logs[0],setLogs=_logs[1];
   var _sq=useState(""),supplierSearch=_sq[0],setSupplierSearch=_sq[1];
   var _vsm=useState("individual"),vendorSendMode=_vsm[0],setVendorSendMode=_vsm[1];
+  var _vsp=useState(null),vendorPreviewStoreId=_vsp[0],setVendorPreviewStoreId=_vsp[1];
   var _vsr=useState(null),vendorStoreDialogRow=_vsr[0],setVendorStoreDialogRow=_vsr[1];
   var _vse=useState(false),vendorStoreDialogEditing=_vse[0],setVendorStoreDialogEditing=_vse[1];
   var _vsq=useState({}),vendorStoreDialogQty=_vsq[0],setVendorStoreDialogQty=_vsq[1];
   var _vsn=useState({}),vendorStoreDialogNotes=_vsn[0],setVendorStoreDialogNotes=_vsn[1];
   var _vss=useState(false),savingVendorStoreDialog=_vss[0],setSavingVendorStoreDialog=_vss[1];
   var _vsri=useState(0),vendorStoreRawSheetIdx=_vsri[0],setVendorStoreRawSheetIdx=_vsri[1];
+  var _dlc=useState(false),downloadingVendorConsolidated=_dlc[0],setDownloadingVendorConsolidated=_dlc[1];
   var _rt=useState(function(){return loadPersistedReopenTarget();}),reopenTarget=_rt[0],setReopenTarget=_rt[1];
   var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
   var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
@@ -2658,23 +2910,20 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[supplierList,supplierSearch]);
   var configuredVendorOrderIds=normalizeVendorOrderList(vendorOrdersOpenVendors);
   var configuredVendorOrderIdsKey=configuredVendorOrderIds.join("|");
-    var recentOrderVendorIds=useMemo(function(){
-      var ids={};
-      var cutoff=Date.now()-7*24*60*60*1000;
-      Object.values(orders||{}).forEach(function(o){
-        if(!o||String(o.type||"")!=="VENDOR") return;
-        if(normalizeCategory(o.category||"vegetables")!=="vendor_orders") return;
-        if(orderTimestampMs(o)<cutoff) return;
-        var vk=normalizeVendorKey("vendor_orders",o.vendorKey);
-        if(vk) ids[vk]=true;
-      });
-      return ids;
-    },[orders]);
-    var visibleVendorOptions=supplierList.filter(function(v){
-      if(selCategory!=="vendor_orders") return true;
-      return configuredVendorOrderIds.indexOf(v.id)>=0||v.id===selectedVendorKey||!!recentOrderVendorIds[v.id];
-    });
-    var visibleVendorOptionsKey=visibleVendorOptions.map(function(v){return v.id;}).join("|");
+  var reopenedVendorKeyForAccess=useMemo(function(){
+    if(consolidatedRequest&&consolidatedRequest.reopenedFromId){
+      return normalizeVendorKey("vendor_orders",consolidatedRequest.vendorKey||null);
+    }
+    if(reopenTarget&&reopenTarget.reopenedFromId){
+      return normalizeVendorKey("vendor_orders",reopenTarget.vendorKey||null);
+    }
+    return null;
+  },[consolidatedRequest,reopenTarget]);
+  var visibleVendorOptions=supplierList.filter(function(v){
+    if(selCategory!=="vendor_orders") return true;
+    return configuredVendorOrderIds.indexOf(v.id)>=0||v.id===reopenedVendorKeyForAccess;
+  });
+  var visibleVendorOptionsKey=visibleVendorOptions.map(function(v){return v.id;}).join("|");
   var syncVendorStateFromResponse=function(resp){
     if(!resp) return;
     if(setVendorOrdersOpenVendors&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendors")){
@@ -2687,12 +2936,6 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setVendorOrderConfigs(normalizeVendorOrderConfigs(resp.vendorOrderConfigs));
       return;
     }
-    if(setVendorOrderConfigs&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendors")){
-      var nextVendorIds=normalizeVendorOrderList(resp.vendorOrdersOpenVendors||[]);
-      setVendorOrderConfigs(function(prev){
-        return normalizeVendorOrderConfigs(prev).filter(function(config){return nextVendorIds.indexOf(config.vendorKey)>=0;});
-      });
-    }
   };
   useEffect(function(){
     if(selCategory==="vendor_orders"){
@@ -2703,10 +2946,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[selCategory,selectedVendorKey]);
   useEffect(function(){
     if(selCategory!=="vendor_orders") return;
+    if(selectedVendorKey&&visibleVendorOptions.every(function(v){return v.id!==selectedVendorKey;})){
+      setSelectedVendorKey(null);
+      return;
+    }
     if(selectedVendorKey) return;
     if(configuredVendorOrderIds.length===1){
       setSelectedVendorKey(configuredVendorOrderIds[0]);
-    } else if(configuredVendorOrderIds.length===0&&visibleVendorOptions.length===1){
+    } else if(visibleVendorOptions.length===1){
       setSelectedVendorKey(visibleVendorOptions[0].id);
     }
   },[selCategory,selectedVendorKey,configuredVendorOrderIdsKey,visibleVendorOptionsKey]);
@@ -2778,19 +3025,26 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(!sameType||!sameCategory||!sameVendor||!week) return null;
     return week;
   },[reopenTarget,reopenedLog,currentType,selCategory,resolvedVendorKey]);
+  var preferScheduledNewGroup=useMemo(function(){
+    if(isSingleVendorFlow) return false;
+    if(!manualOpenOrder) return false;
+    if(String(currentType||"")!==String(manualOpenOrder||"")) return false;
+    return !reopenedWeekForCurrentGroup;
+  },[isSingleVendorFlow,manualOpenOrder,currentType,reopenedWeekForCurrentGroup]);
   var activeWeekKey=useMemo(function(){
     if(reopenedWeekForCurrentGroup) return reopenedWeekForCurrentGroup;
     if(isSingleVendorFlow){
-      if(latestCurrentTypeInfo&&latestCurrentTypeInfo.week){
+      if(latestCurrentTypeInfo&&latestCurrentTypeInfo.week&&String(latestCurrentTypeInfo.week||"")===String(scheduledWeekKey||"")){
         if(!hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)) return latestCurrentTypeInfo.week;
       }
       return scheduledWeekKey;
     }
+    if(preferScheduledNewGroup) return scheduledWeekKey;
     if(!latestCurrentTypeInfo||!latestCurrentTypeInfo.week) return scheduledWeekKey;
     if(String(latestCurrentTypeInfo.week||"")===String(scheduledWeekKey||"")) return latestCurrentTypeInfo.week;
     if(hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)) return scheduledWeekKey;
     return latestCurrentTypeInfo.week;
-  },[reopenedWeekForCurrentGroup,isSingleVendorFlow,scheduledWeekKey,latestCurrentTypeInfo,currentType,logs,selCategory,resolvedVendorKey]);
+  },[reopenedWeekForCurrentGroup,isSingleVendorFlow,preferScheduledNewGroup,scheduledWeekKey,latestCurrentTypeInfo,currentType,logs,selCategory,resolvedVendorKey]);
   var activeGroupKey=activeWeekKey+logKeySuffix;
   var storeOrderInfoById=useMemo(function(){
     var out={};
@@ -2807,6 +3061,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         out[sid]={order:vendorOrder,week:vendorOrder&&vendorOrder.week||activeWeekKey};
         return;
       }
+      if(preferScheduledNewGroup){
+        out[sid]={order:null,week:activeWeekKey};
+        return;
+      }
       var fallback=findLatestMatchingOrder(orders,[sid],currentType,selCategory,resolvedVendorKey,visibleStatus,7*24*60*60*1000);
       if(fallback&&fallback.order&&isSameOrAdjacentDateWeekKey(fallback.week,activeWeekKey)){
         out[sid]={order:fallback.order,week:fallback.week||activeWeekKey};
@@ -2815,7 +3073,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       out[sid]={order:null,week:activeWeekKey};
     });
     return out;
-  },[slots,orders,activeWeekKey,currentType,selCategory,resolvedVendorKey,isSingleVendorFlow,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
+  },[slots,orders,activeWeekKey,currentType,selCategory,resolvedVendorKey,isSingleVendorFlow,preferScheduledNewGroup,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
   var getStoreOrder=function(storeId){
     return storeOrderInfoById[storeId]&&storeOrderInfoById[storeId].order?storeOrderInfoById[storeId].order:null;
   };
@@ -2884,15 +3142,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     });
     rows=selCategory==="vendor_orders"?orderRowsByTemplate(activeTemplate,rows):rows.sort(function(a,b){return String(a.name||"").localeCompare(String(b.name||""));});
     return rows.map(function(it){
-      var qtyByStoreId={};var total=0;var noteParts=[];
+      var qtyByStoreId={};var total=0;var noteParts=[];var orderUnitByStoreId={};
       slots.forEach(function(sl){
         if(!sl.store) return;
-        var so=getStoreOrder(sl.store.id);var q=so&&so.items?(so.items[it.code]||0):0;
+        var so=getStoreOrder(sl.store.id);var entry=normalizeOrderItemEntry(so&&so.items?so.items[it.code]:0);var q=entry.qty;
         var noteTxt=so&&so.notes?String(so.notes[it.code]||"").trim():"";
         if(noteTxt&&noteParts.indexOf(noteTxt)===-1) noteParts.push(noteTxt);
-        qtyByStoreId[sl.store.id]=q;total+=q;
+        qtyByStoreId[sl.store.id]=q;if(selCategory==="vendor_orders")orderUnitByStoreId[sl.store.id]={unitType:entry.unitType,customUnit:entry.customUnit||""};total+=q;
       });
-      return {code:it.code,name:it.name,unit:it.unit||"",qtyByStoreId:qtyByStoreId,total:total,note:noteParts.join(" | ")};
+      return {code:it.code,name:it.name,unit:it.unit||"",qtyByStoreId:qtyByStoreId,orderUnitByStoreId:orderUnitByStoreId,total:total,totalDisplay:selCategory==="vendor_orders"?formatQtySummaryByUnit(qtyByStoreId,orderUnitByStoreId):String(total||""),note:noteParts.join(" | ")};
     });
   },[items,orders,slots,currentType,selCategory,manualOpenOrder,manualOpenSeq,resolvedVendorKey,activeTemplate,activeWeekKey]);
   var editableStoreSlots=useMemo(function(){
@@ -2903,6 +3161,11 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     editableStoreSlots.forEach(function(sl,idx){out[sl.store.id]=idx;});
     return out;
   },[editableStoreSlots]);
+  var baseRowByCode=useMemo(function(){
+    var out={};
+    baseRows.forEach(function(row){out[row.code]=row;});
+    return out;
+  },[baseRows]);
   var nonVendorStoreStatusRows=useMemo(function(){
     if(isSingleVendorFlow) return [];
     return (slots||[]).filter(function(sl){return !!(sl&&sl.store&&sl.store.id);}).map(function(sl){
@@ -2924,7 +3187,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var status=String(order&&order.status||"");
       var hasVisible=["submitted","draft_shared","processed"].indexOf(status)>=0;
       var lineCount=order?Object.keys(Object.assign({},order.items||{},order.notes||{})).filter(function(code){
-        return (Number((order.items||{})[code])||0)>0 || String((order.notes||{})[code]||"").trim();
+        return normalizeOrderItemEntry((order.items||{})[code]).qty>0 || String((order.notes||{})[code]||"").trim();
       }).length:0;
       return {slot:sl,store:sl.store,order:order,lineCount:lineCount,ready:hasVisible&&lineCount>0};
     }).filter(function(row){return row.ready;});
@@ -2937,15 +3200,50 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       return !(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
     }).length;
   },[isSingleVendorFlow,resolvedVendorKey,slots,orders,currentType,selCategory,manualOpenOrder,manualOpenSeq,activeWeekKey]);
+  useEffect(function(){
+    if(!isSingleVendorFlow){
+      setVendorPreviewStoreId(null);
+      return;
+    }
+    if(vendorStoreDocs.some(function(row){return String(row.store&&row.store.id||"")===String(vendorPreviewStoreId||"");})) return;
+    setVendorPreviewStoreId(vendorStoreDocs.length?String(vendorStoreDocs[0].store&&vendorStoreDocs[0].store.id||""):null);
+  },[isSingleVendorFlow,vendorStoreDocs,vendorPreviewStoreId]);
+  var selectedVendorPreviewRow=useMemo(function(){
+    if(!vendorStoreDocs.length) return null;
+    return vendorStoreDocs.find(function(row){return String(row.store&&row.store.id||"")===String(vendorPreviewStoreId||"");})||vendorStoreDocs[0]||null;
+  },[vendorStoreDocs,vendorPreviewStoreId]);
+  var vendorIndividualPreviewDisplayRows=useMemo(function(){
+    if(!selectedVendorPreviewRow||!selectedVendorPreviewRow.store) return [];
+    var order=(selectedVendorPreviewRow&&selectedVendorPreviewRow.order)||{};
+    return baseRows.map(function(r){
+      var orderItemEntry=normalizeOrderItemEntry((order.items||{})[r.code]);
+      return {
+        type:"item",
+        key:r.code,
+        row:{
+          code:r.code,
+          name:r.name,
+          unit:r.unit||"",
+          qtyDisplay:formatQtyValueWithUnit(orderItemEntry.qty,orderItemEntry),
+          note:String((order.notes||{})[r.code]||""),
+        }
+      };
+    }).filter(function(entry){
+      return String(entry.row.qtyDisplay||"").trim()||String(entry.row.note||"").trim();
+    });
+  },[selectedVendorPreviewRow,baseRows]);
   var vendorStoreDialogDisplayRows=useMemo(function(){
     if(!vendorStoreDialogRow||!vendorStoreDialogRow.store) return [];
     var sid=vendorStoreDialogRow.store.id;
     var sourceRows=baseRows.map(function(r){
+      var orderItemEntry=normalizeOrderItemEntry(((vendorStoreDialogRow.order&&vendorStoreDialogRow.order.items)||{})[r.code]);
       return {
         code:r.code,
         name:r.name,
         unit:r.unit||"",
         qty:(vendorStoreDialogEditing?Number(vendorStoreDialogQty[r.code])||0:Number(r.qtyByStoreId&&r.qtyByStoreId[sid])||0),
+        qtyDisplay:formatQtyValueWithUnit(vendorStoreDialogEditing?(vendorStoreDialogQty[r.code]||0):orderItemEntry.qty,orderItemEntry),
+        orderUnit:orderItemEntry,
         note:vendorStoreDialogEditing?String(vendorStoreDialogNotes[r.code]||""):String(((vendorStoreDialogRow.order&&vendorStoreDialogRow.order.notes)||{})[r.code]||""),
       };
     });
@@ -2981,7 +3279,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       if(!overlay[shKey]) overlay[shKey]={};
       var ri=ir.rowIndex;
       if(!Number.isInteger(ri)) return;
-      var qty=Number(orderItems[ir.code])||0;
+      var qty=normalizeOrderItemEntry(orderItems[ir.code]).qty;
       var note=String(orderNotes[ir.code]||"").trim();
       if(qtyColIdx>=0){
         if(!overlay[shKey][ri]) overlay[shKey][ri]={};
@@ -2995,6 +3293,147 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     return overlay;
   },[vendorStoreDialogRow,activeTemplate,slots]);
 
+  var buildStoreItemsPayload=function(storeId, qtyMap, existingItems){
+    var payload={};
+    var sourceQty=qtyMap&&typeof qtyMap==="object"?qtyMap:{};
+    var sourceItems=existingItems&&typeof existingItems==="object"?existingItems:{};
+    var codes=Object.keys(Object.assign({},baseRowByCode,sourceItems,sourceQty));
+    codes.forEach(function(code){
+      var rawEditedItem=sourceQty[code];
+      var editedEntry=normalizeOrderItemEntry(rawEditedItem);
+      var qtyValue=editedEntry.qty;
+      if(selCategory==="vendor_orders"){
+        var rawSourceItem=sourceItems[code];
+        var hasStructuredMeta=!!(rawSourceItem&&typeof rawSourceItem==="object"&&!Array.isArray(rawSourceItem));
+        var hasEditedMeta=!!(rawEditedItem&&typeof rawEditedItem==="object"&&!Array.isArray(rawEditedItem));
+        var fallbackMeta=baseRowByCode[code]&&baseRowByCode[code].orderUnitByStoreId&&baseRowByCode[code].orderUnitByStoreId[storeId]
+          ?baseRowByCode[code].orderUnitByStoreId[storeId]
+          : {unitType:"cas",customUnit:""};
+        var currentMeta=normalizeOrderItemEntry(sourceItems[code]);
+        var resolvedUnitType=hasEditedMeta
+          ?(editedEntry.unitType||fallbackMeta.unitType||currentMeta.unitType||"cas")
+          :(hasStructuredMeta
+            ?(currentMeta.unitType||fallbackMeta.unitType||editedEntry.unitType||"cas")
+            :(fallbackMeta.unitType||currentMeta.unitType||editedEntry.unitType||"cas"));
+        var resolvedCustomUnit="";
+        if(resolvedUnitType==="other"){
+          resolvedCustomUnit=hasEditedMeta?String(editedEntry.customUnit||"").trim():"";
+          if(!resolvedCustomUnit&&hasStructuredMeta) resolvedCustomUnit=String(currentMeta.customUnit||"").trim();
+          if(!resolvedCustomUnit) resolvedCustomUnit=String(fallbackMeta.customUnit||"").trim();
+        }
+        payload[code]={
+          qty:qtyValue,
+          unitType:resolvedUnitType,
+          customUnit:resolvedCustomUnit,
+        };
+        return;
+      }
+      payload[code]=qtyValue;
+    });
+    return payload;
+  };
+
+  var getEditableStoreEntry=function(storeId, code, fallbackMeta){
+    var raw=((editQtyByStore[storeId]||{})[code]);
+    if(selCategory!=="vendor_orders") return {qty:Math.max(0,parseInt(raw,10)||0),unitType:"cas",customUnit:""};
+    var entry=normalizeOrderItemEntry(raw);
+    var hasStructured=!!(raw&&typeof raw==="object"&&!Array.isArray(raw));
+    var fallback=fallbackMeta&&typeof fallbackMeta==="object"?fallbackMeta:{unitType:"cas",customUnit:""};
+    if(!hasStructured){
+      entry.unitType=fallback.unitType||entry.unitType||"cas";
+      entry.customUnit=String(fallback.customUnit||entry.customUnit||"").trim();
+    }
+    if(entry.unitType!=="other") entry.customUnit="";
+    return entry;
+  };
+
+  var updateEditableStoreEntry=function(storeId, code, updater){
+    setEditQtyByStore(function(prev){
+      var next=Object.assign({},prev);
+      var storeMap=Object.assign({},next[storeId]||{});
+      var current=selCategory==="vendor_orders"
+        ?normalizeOrderItemEntry(storeMap[code])
+        :{qty:Math.max(0,parseInt(storeMap[code],10)||0),unitType:"cas",customUnit:""};
+      var updated=updater(Object.assign({},current))||current;
+      if(selCategory==="vendor_orders"){
+        var normalized=normalizeOrderItemEntry(updated);
+        if(normalized.unitType!=="other") normalized.customUnit="";
+        storeMap[code]=normalized;
+      }else{
+        storeMap[code]=Math.max(0,parseInt(updated.qty,10)||0);
+      }
+      next[storeId]=storeMap;
+      return next;
+    });
+  };
+
+  var getEditableVendorRowState=function(row){
+    var qtyByStoreId={};
+    var orderUnitByStoreId={};
+    var entries=[];
+    editableStoreSlots.forEach(function(sl){
+      var sid=sl.store.id;
+      var fallbackMeta=row&&row.orderUnitByStoreId&&row.orderUnitByStoreId[sid]
+        ?row.orderUnitByStoreId[sid]
+        :{unitType:"cas",customUnit:""};
+      var entry=getEditableStoreEntry(sid,row.code,fallbackMeta);
+      qtyByStoreId[sid]=entry.qty;
+      orderUnitByStoreId[sid]={unitType:entry.unitType,customUnit:entry.customUnit||""};
+      entries.push(entry);
+    });
+    return {
+      qtyByStoreId:qtyByStoreId,
+      orderUnitByStoreId:orderUnitByStoreId,
+      totalQty:entries.reduce(function(sum,entry){return sum+entry.qty;},0),
+      totalDisplay:formatQtySummaryByUnit(qtyByStoreId,orderUnitByStoreId),
+      unitLabel:aggregateQtyUnit(entries),
+    };
+  };
+
+  var renderVendorQtyEditor=function(storeId, code, fallbackMeta, rowIdx, colIdx){
+    var entry=getEditableStoreEntry(storeId,code,fallbackMeta);
+    return <div style={{display:"grid",gap:4}}>
+      <input
+        style={Object.assign({},S.ie,{width:"100%",minWidth:0})}
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        value={entry.qty}
+        onChange={function(e){
+          var value=Math.max(0,parseInt(e.target.value,10)||0);
+          updateEditableStoreEntry(storeId,code,function(current){current.qty=value;return current;});
+        }}
+        onKeyDown={colIdx==null?undefined:function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,colIdx,consolidatedNavMaxRow,consolidatedNavMaxCol);}}
+        onWheel={stopNumberWheelChange}
+        data-nav-group={colIdx==null?undefined:consolidatedNavGroup}
+        data-nav-row={colIdx==null?undefined:rowIdx}
+        data-nav-col={colIdx==null?undefined:colIdx}
+        disabled={isCompletedLocked||savingAll}
+      />
+      <select
+        style={Object.assign({},S.inp,{width:"100%",minWidth:0,padding:"4px 6px",fontSize:10.5,minHeight:26})}
+        value={entry.unitType}
+        onChange={function(e){
+          var value=normalizeUnitType(e.target.value);
+          updateEditableStoreEntry(storeId,code,function(current){current.unitType=value;if(value!=="other") current.customUnit="";return current;});
+        }}
+        disabled={isCompletedLocked||savingAll}
+      >
+        {ORDER_UNIT_TYPES.map(function(opt){return <option key={opt.value} value={opt.value}>{opt.label}</option>;})}
+      </select>
+      {entry.unitType==="other"&&<input
+        style={Object.assign({},S.inp,{width:"100%",minWidth:0,padding:"4px 6px",fontSize:10.5,minHeight:26})}
+        value={entry.customUnit}
+        onChange={function(e){
+          var value=e.target.value;
+          updateEditableStoreEntry(storeId,code,function(current){current.unitType="other";current.customUnit=value;return current;});
+        }}
+        placeholder="Custom unit"
+        disabled={isCompletedLocked||savingAll}
+      />}
+    </div>;
+  };
+
   var startEditAll=function(){
     if(selCategory!=="vendor_orders"&&!hasAccessibleOpenType){toast("No consolidated order is open right now",true);return;}
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
@@ -3003,8 +3442,20 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       if(!sl.store) return;
       var sid=sl.store.id;
       var rowMap={};var noteMap={};
-      baseRows.forEach(function(r){rowMap[r.code]=Number(r.qtyByStoreId&&r.qtyByStoreId[sid])||0;});
       var current=getStoreOrder(sid)||{};
+      baseRows.forEach(function(r){
+        if(selCategory==="vendor_orders"){
+          var fallbackMeta=r.orderUnitByStoreId&&r.orderUnitByStoreId[sid]?r.orderUnitByStoreId[sid]:{unitType:"cas",customUnit:""};
+          var currentEntry=normalizeOrderItemEntry(current.items&&current.items[r.code]);
+          rowMap[r.code]={
+            qty:currentEntry.qty,
+            unitType:currentEntry.unitType||fallbackMeta.unitType||"cas",
+            customUnit:currentEntry.unitType==="other"?(currentEntry.customUnit||fallbackMeta.customUnit||""):"",
+          };
+        }else{
+          rowMap[r.code]=Number(r.qtyByStoreId&&r.qtyByStoreId[sid])||0;
+        }
+      });
       var currentNotes=current.notes||{};
       baseRows.forEach(function(r){noteMap[r.code]=String(currentNotes[r.code]||"");});
       next[sid]=rowMap;
@@ -3020,9 +3471,9 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setSavingAll(true);
       var targets=slots.filter(function(sl){return !!sl.store;}).map(function(sl){return sl.store.id;});
       var results=await Promise.all(targets.map(async function(sid){
-        var qty=Object.assign({},editQtyByStore[sid]||{});
-        var notes=Object.assign({},editNotesByStore[sid]||{});
         var existing=getStoreOrder(sid)||{};
+        var qty=buildStoreItemsPayload(sid,Object.assign({},editQtyByStore[sid]||{}),existing.items||{});
+        var notes=Object.assign({},editNotesByStore[sid]||{});
         var targetWeek=getStoreOrderWeek(sid);
         var nextStatus=(existing.status==="submitted"||existing.status==="processed"||existing.status==="draft_shared")?existing.status:"draft";
         var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:sid,week:targetWeek});
@@ -3090,18 +3541,21 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     });
     return latest>0?latest:null;
   },[slots,orders,currentType,selCategory,resolvedVendorKey,activeWeekKey]);
+  var usesUnsentGraceWindow=selCategory!=="vendor_orders";
   var unsentLockExpired=useMemo(function(){
+    if(!usesUnsentGraceWindow) return false;
     if(latestTypeLog&&latestTypeLog.finished===true) return false;
     if(!latestVisibleOrderAt) return false;
     return (Date.now()-latestVisibleOrderAt)>(48*60*60*1000);
-  },[latestTypeLog,latestVisibleOrderAt]);
+  },[usesUnsentGraceWindow,latestTypeLog,latestVisibleOrderAt]);
   var unsentHoursLeft=useMemo(function(){
+    if(!usesUnsentGraceWindow) return null;
     if(latestTypeLog&&latestTypeLog.finished===true) return null;
     if(!latestVisibleOrderAt) return null;
     var remainMs=(48*60*60*1000)-(Date.now()-latestVisibleOrderAt);
     if(remainMs<=0) return 0;
     return Math.ceil(remainMs/(60*60*1000));
-  },[latestTypeLog,latestVisibleOrderAt]);
+  },[usesUnsentGraceWindow,latestTypeLog,latestVisibleOrderAt]);
   var reopenedForCurrentGroup=useMemo(function(){
     if(reopenTarget){
       return String(reopenTarget.type||"")===String(currentType||"")
@@ -3192,7 +3646,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(editingAll){toast("Save edited quantities before continuing",true);return;}
     if(isSingleVendorFlow&&(!resolvedVendorKey||!selectedVendor)){toast("Select a vendor first",true);return;}
     if(isSingleVendorFlow&&vendorStoreDocs.length<1){toast("No submitted store orders are ready for this vendor yet",true);return;}
-    var snap=baseRows.map(function(r){return {code:r.code,name:r.name,unit:r.unit||"",note:r.note||"",total:r.total,qtyByStoreId:Object.assign({},r.qtyByStoreId)};});
+    var snap=baseRows.map(function(r){return {code:r.code,name:r.name,unit:r.unit||"",note:r.note||"",total:r.total,totalDisplay:r.totalDisplay||"",qtyByStoreId:Object.assign({},r.qtyByStoreId),orderUnitByStoreId:Object.assign({},r.orderUnitByStoreId||{})};});
     var ids=isSingleVendorFlow?(resolvedVendorKey?[resolvedVendorKey]:[]):(isLeavesFlow?[]:supplierList.map(function(s){return s.id;}));
     if(isSingleVendorFlow&&ids.length<1){toast("Add a supplier first",true);return;}
     if(!isSingleVendorFlow&&!isLeavesFlow&&ids.length<1){toast("Add at least one supplier first",true);return;}
@@ -3247,7 +3701,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       });
       splitSupplierIds.forEach(function(sid){
         var total=0;Object.values(perSupplier[sid]).forEach(function(v){total+=Number(v)||0;});
-        out[sid].push({code:r.code,name:r.name,unit:r.unit||"",note:r.note||"",qtyByStoreId:perSupplier[sid],total:total});
+        out[sid].push({code:r.code,name:r.name,unit:r.unit||"",note:r.note||"",qtyByStoreId:perSupplier[sid],orderUnitByStoreId:Object.assign({},r.orderUnitByStoreId||{}),total:total,totalDisplay:formatQtySummaryByUnit(perSupplier[sid],r.orderUnitByStoreId||{})});
       });
     });
     return out;
@@ -3267,7 +3721,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[isSingleVendorFlow,activeTemplate,baseRows]);
   var buildSplitPayload=function(rows,isFinal){
     var payloadRows=(rows||[]).map(function(r){
-      return {itemCode:r.code,itemName:r.name,note:r.note||"",total:r.total||0,qtyByStoreId:r.qtyByStoreId};
+      return {itemCode:r.code,itemName:r.name,itemUnit:r.unit||"",note:r.note||"",total:r.total||0,totalDisplay:r.totalDisplay||"",qtyByStoreId:r.qtyByStoreId,orderUnitByStoreId:r.orderUnitByStoreId||{}};
     });
     var payload={rows:payloadRows};
     if(typeof isFinal==="boolean") payload.finished=isFinal;
@@ -3275,16 +3729,21 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     var slotStoreIds=slots.map(function(sl){return sl&&sl.store&&sl.store.id?String(sl.store.id):"";});
     var slotHeaders=slots.map(function(sl,idx){return String(slotHeaderForIndex(sl,idx)||"");});
     var slotQtyHeaders=slots.map(function(sl,idx){return String(slotQtyHeaderForIndex(sl,idx)||"");});
-    var previewRows=(vendorPreviewDisplayRows||[]).map(function(entry){
+    var useConsolidatedPreviewRows=rows===baseRows||!splitSupplierIds.length;
+    var sourceDisplayRows=(useConsolidatedPreviewRows?vendorConsolidatedDisplayRows:vendorPreviewDisplayRows)||[];
+    var previewRows=sourceDisplayRows.map(function(entry){
       if(!entry) return null;
       if(entry.type==="heading") return {type:"heading",text:String(entry.text||"")};
       var r=entry.row||{};
       return {
         type:"item",
-        itemName:itemNameWithUnit(r),
+        itemName:r.name||"",
+        itemUnit:r.unit||"",
         note:r.note||"",
         total:r.total||0,
+        totalDisplay:r.totalDisplay||"",
         qtyByStoreId:r.qtyByStoreId||{},
+        orderUnitByStoreId:r.orderUnitByStoreId||{},
       };
     }).filter(function(entry){return !!entry;});
     payload.previewLayout={
@@ -3352,13 +3811,31 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setDownloadingSplit(function(prev){var n=Object.assign({},prev);delete n[String(row.store.id||"")];return n;});
     }
   };
+  var printVendorStoreDocument=async function(row){
+    var printWindow;
+    try{
+      if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var rowCodes=Object.keys(Object.assign({},row.order.items||{},row.order.notes||{}));
+      var rowItems=(items||[]).filter(function(it){return rowCodes.indexOf(it.code)>=0;});
+      var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
+      var itemNamesByCode={};
+      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
+      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
+  };
   var openVendorStoreDialog=function(row, editing){
     if(!row||!row.store){toast("Store order not available",true);return;}
     var order=row.order||{};
     var qtyMap={};
     var noteMap={};
     baseRows.forEach(function(r){
-      qtyMap[r.code]=Number(order.items&&order.items[r.code])||0;
+      qtyMap[r.code]=normalizeOrderItemEntry(order.items&&order.items[r.code]).qty;
       noteMap[r.code]=String(order.notes&&order.notes[r.code]||"");
     });
     setVendorStoreDialogRow(row);
@@ -3378,11 +3855,12 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setSavingVendorStoreDialog(true);
       var existing=vendorStoreDialogRow.order||{};
       var nextStatus=(existing.status==="submitted"||existing.status==="processed"||existing.status==="draft_shared")?existing.status:"draft";
+      var itemPayload=buildStoreItemsPayload(vendorStoreDialogRow.store.id,vendorStoreDialogQty,existing.items||{});
       await apiClient.orders.create({
         type:currentType,
         category:selCategory,
         vendorKey:resolvedVendorKey,
-        items:vendorStoreDialogQty,
+        items:itemPayload,
         notes:vendorStoreDialogNotes,
         status:nextStatus,
         storeId:vendorStoreDialogRow.store.id,
@@ -3393,7 +3871,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         var key=vendorStoreDialogRow.store.id+"_"+activeGroupKey;
         n[key]=Object.assign({},prev[key]||{},{
           id:(prev[key]||{}).id||existing.id,
-          items:Object.assign({},vendorStoreDialogQty),
+          items:Object.assign({},itemPayload),
           notes:Object.assign({},vendorStoreDialogNotes),
           status:nextStatus,
           store:vendorStoreDialogRow.store.id,
@@ -3489,6 +3967,62 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       setDownloadingSplit(function(prev){var n=Object.assign({},prev);delete n[sid];return n;});
     }
   };
+  var printSplitExcel=async function(sid){
+    var printWindow;
+    try{
+      var rows=splitRowsBySupplier[sid]||[];
+      if(!rows.length){toast("No split rows available for print",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var splitPayload=buildSplitPayload(rows);
+      var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,splitPayload,activeWeekKey);
+      await printBase64File(resp&&resp.excelBase64,resp&&resp.filename,resp&&resp.contentType,printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
+  };
+  var downloadVendorConsolidatedDocument=async function(){
+    if(!isSingleVendorFlow){toast("This download is only available for vendor consolidated orders",true);return;}
+    if(!selectedVendor||!resolvedVendorKey){toast("Select a vendor first",true);return;}
+    try{
+      setDownloadingVendorConsolidated(true);
+      var livePayload=buildSplitPayload(baseRows);
+      livePayload.documentMode="monitor";
+      var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,livePayload,activeWeekKey);
+      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
+      var bin=atob(resp.excelBase64);
+      var bytes=new Uint8Array(bin.length);
+      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a");
+      a.href=url;
+      a.download=resp.filename||("consolidated-order-"+currentType+".xlsx");
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){URL.revokeObjectURL(url);},1000);
+      toast("Consolidated document downloaded");
+    }catch(e){toast(e.message||"Failed to download consolidated document",true);}
+    finally{setDownloadingVendorConsolidated(false);}
+  };
+  var printVendorConsolidatedDocument=async function(){
+    var printWindow;
+    try{
+      if(!isSingleVendorFlow){toast("This print action is only available for vendor consolidated orders",true);return;}
+      if(!selectedVendor||!resolvedVendorKey){toast("Select a vendor first",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var livePayload=buildSplitPayload(baseRows);
+      livePayload.documentMode="monitor";
+      var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,livePayload,activeWeekKey);
+      await printBase64File(resp&&resp.excelBase64,resp&&resp.filename,resp&&resp.contentType,printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
+  };
 
   var tCellBase={border:"1px solid #B9BEC9",padding:"5px 6px",fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:"#111827",lineHeight:1.2,height:24};
   var tHeadTop=Object.assign({},tCellBase,{fontWeight:700,background:"#FFFFFF",textAlign:"left",position:"sticky",top:0,zIndex:8});
@@ -3540,36 +4074,42 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     {!latestTypeLog&&unsentHoursLeft===0&&<div style={S.nP}>This consolidated order is now locked because 48 hours elapsed without sending supplier email.</div>}
     {isCompletedLocked&&<div style={S.nG}>{selCategory==="vendor_orders"?"Vendor Orders":"Consolidated Order "+vt} is completed and locked. {selCategory==="vendor_orders"?"Reopen from Settings to edit/send again.":"Reopen from Order Monitor to edit/send again."}</div>}
     {reopenedForCurrentGroup&&<div style={Object.assign({},S.nP,{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10})}><span>Resend mode active. This send will be stored as a reopened resend history entry.</span><button style={Object.assign({},S.b,S.bS,{padding:"4px 10px",fontSize:11})} onClick={function(){if(setReopenedFromId) setReopenedFromId(null);setReopenTarget(null);}}>Clear</button></div>}
-    {editingAll&&<div style={S.nI}>Editing quantities and notes for all stores. Click Save when finished.</div>}
+    {editingAll&&<div style={S.nI}>Editing quantities, qty types, and notes for all stores. Click Save when finished.</div>}
 
     {step===1&&(isSingleVendorFlow?(<div style={Object.assign({},S.card,{padding:0})}>
       <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(148,163,184,.24)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <div><div style={S.t}>{selectedVendor?(selectedVendor.name+" - Consolidated Vendor Orders"):"Vendor Consolidated Orders"}</div><div style={S.d}>All store quantities are consolidated below with total qty, while keeping the uploaded template format.</div></div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
           {(latestTypeLog&&vendorStoreDocs.length>0)&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
-          <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked||!selectedVendor||vendorStoreDocs.length<1}>Next</button>
+          {!editingAll&&<button style={Object.assign({},S.b,S.bS)} onClick={startEditAll} disabled={isCompletedLocked||!selectedVendor||vendorStoreDocs.length<1}>Edit All Stores</button>}
+          {editingAll&&<button style={Object.assign({},S.b,S.bP)} onClick={saveAllEdits} disabled={savingAll||isCompletedLocked||!selectedVendor||vendorStoreDocs.length<1}>{savingAll?"Saving...":"Save"}</button>}
+          <button style={Object.assign({},S.b,S.bS)} onClick={downloadVendorConsolidatedDocument} disabled={downloadingVendorConsolidated||!selectedVendor||baseRows.length<1}>{downloadingVendorConsolidated?"Downloading...":"Download Document"}</button>
+          <button style={Object.assign({},S.b,S.bS)} onClick={printVendorConsolidatedDocument} disabled={!selectedVendor||baseRows.length<1}>Print</button>
+          <button style={Object.assign({},S.b,S.bP)} onClick={beginSplit} disabled={isCompletedLocked||editingAll||savingAll||!selectedVendor||vendorStoreDocs.length<1}>Next</button>
         </div>
       </div>
       <div style={{padding:"12px 14px"}}>
         <div style={S.d}>{vendorStoreDocs.length} ready store document(s){vendorPendingCount>0?(" | "+vendorPendingCount+" store(s) still pending submission"):""}</div>
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-        <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{selectedVendor&&selectedVendor.name?selectedVendor.name:("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:96})}>{slotHeaderForIndex(sl,idx)}</th>;})}</tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
+        <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{selectedVendor&&selectedVendor.name?selectedVendor.name:("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th><th style={Object.assign({},tHeadTopCenter,{minWidth:120})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:96})}>{slotHeaderForIndex(sl,idx)}</th>;})}</tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>UNIT</th><th style={Object.assign({},tHeadSub,{minWidth:120})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
       </thead><tbody>
-        {vendorConsolidatedDisplayRows.map(function(entry){
+        {vendorConsolidatedDisplayRows.map(function(entry,rowIdx){
           if(entry.type==="heading"){
-            return <tr key={entry.key}><td colSpan={slots.length+2} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
+            return <tr key={entry.key}><td colSpan={slots.length+3} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
           }
           var r=entry.row;
-          return <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}</tr>;
+          var liveVendorState=editingAll?getEditableVendorRowState(r):null;
+          var totalDisplay=editingAll?(liveVendorState.totalDisplay||""):(r.totalDisplay||"");
+          return <tr key={entry.key}><td style={tProductCell}>{r.name||""}</td><td style={tQtyCell}>{r.unit||""}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{totalDisplay}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var q=sid?((r.qtyByStoreId&&r.qtyByStoreId[sid])||0):0;var unitMeta=sid?((r.orderUnitByStoreId&&r.orderUnitByStoreId[sid])||{unitType:"cas",customUnit:""}):{unitType:"cas",customUnit:""};return <td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?renderVendorQtyEditor(sid,r.code,unitMeta,rowIdx,editableStoreIndexById[sid]):<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{formatQtyValueWithUnit(q,unitMeta)}</span>}</td>;})}</tr>;
         })}
       </tbody></table></div>
       {vendorStoreDocs.length===0?<div style={{textAlign:"center",padding:"8px 14px 22px",color:"#6B7186"}}>{selectedVendor?"No submitted store orders are ready for this vendor yet.":"Select a vendor to review store orders."}</div>:
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Submitted</th><th style={S.th}>Lines</th><th style={S.th}>Document</th><th style={S.th}>Actions</th></tr></thead><tbody>
         {vendorStoreDocs.map(function(row){
           var downloadKey=String(row.store.id||"");
-          return <tr key={downloadKey}><td style={Object.assign({},S.td,{fontWeight:600})}>{row.store.name||row.store.id}</td><td style={S.td}><span style={Object.assign({},S.bg,String(row.order&&row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order&&row.order.status||"-"}</span></td><td style={S.tm}>{fmtDT(row.order&&row.order.date)}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700})}>{row.lineCount}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloadingSplit[downloadKey]}>{downloadingSplit[downloadKey]?"Downloading...":"Download Document"}</button></td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openVendorStoreDialog(row,false);}}>View</button><button style={Object.assign({},S.b,S.bP,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openVendorStoreDialog(row,true);}} disabled={isCompletedLocked}>Edit</button></div></td></tr>;
+          return <tr key={downloadKey}><td style={Object.assign({},S.td,{fontWeight:600})}>{row.store.name||row.store.id}</td><td style={S.td}><span style={Object.assign({},S.bg,String(row.order&&row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order&&row.order.status||"-"}</span></td><td style={S.tm}>{fmtDT(row.order&&row.order.date)}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700})}>{row.lineCount}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloadingSplit[downloadKey]}>{downloadingSplit[downloadKey]?"Downloading...":"Download Document"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printVendorStoreDocument(row);}}>Print</button></div></td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openVendorStoreDialog(row,false);}}>View</button></div></td></tr>;
         })}
       </tbody></table></div>}
     </div>):(<div style={Object.assign({},S.card,{padding:0})}>
@@ -3588,10 +4128,13 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         })}
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-        <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+        <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadTopCenter,{minWidth:68})}>UNIT</th>}{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadSub,{minWidth:68})}>UNIT</th>}{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
       </thead><tbody>{baseRows.map(function(it,rowIdx){
-        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{it.total||""}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var editQ=sid&&editingAll?Number((editQtyByStore[sid]||{})[it.code])||0:baseQ;var storeCol=sid!=null?editableStoreIndexById[sid]:null;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={editQ} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){if(storeCol==null) return;handleGridNavigation(e,consolidatedNavGroup,rowIdx,storeCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={storeCol} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:baseQ>0?"#0F172A":"#64748B"}}>{baseQ||""}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{editableStoreSlots.map(function(sl,noteIdx){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");var noteCol=editableStoreSlots.length+noteIdx;return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"5px 7px",fontSize:12.5,minHeight:28})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,noteCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={noteCol} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
+        var liveVendorState=selCategory==="vendor_orders"&&editingAll?getEditableVendorRowState(it):null;
+        var totalQty=liveVendorState?liveVendorState.totalQty:it.total;
+        var unitLabel=liveVendorState?liveVendorState.unitLabel:(getOrderItemUnitLabel({unitType:Object.values(it.unitTypeByStoreId||{})[0]||"cas"})||"CASE");
+        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{totalQty||""}</td>{selCategory==="vendor_orders"&&<td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534",fontSize:11,textAlign:"center"})}>{unitLabel}</td>}{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var fallbackMeta=sid&&it.orderUnitByStoreId&&it.orderUnitByStoreId[sid]?it.orderUnitByStoreId[sid]:{unitType:"cas",customUnit:""};var storeCol=sid!=null?editableStoreIndexById[sid]:null;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid&&selCategory==="vendor_orders"?renderVendorQtyEditor(sid,it.code,fallbackMeta,rowIdx,storeCol):editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={Number((editQtyByStore[sid]||{})[it.code])||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){if(storeCol==null) return;handleGridNavigation(e,consolidatedNavGroup,rowIdx,storeCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={storeCol} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:baseQ>0?"#0F172A":"#64748B"}}>{selCategory==="vendor_orders"?formatQtyValueWithUnit(baseQ,fallbackMeta):(baseQ||"")}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{editableStoreSlots.map(function(sl,noteIdx){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");var noteCol=editableStoreSlots.length+noteIdx;return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"5px 7px",fontSize:12.5,minHeight:28})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,noteCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={noteCol} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
       })}</tbody></table></div>
     </div>))}
 
@@ -3611,6 +4154,39 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         <div style={S.t}>{vendorSendMode==="individual"?"Individual Store Email":"Consolidated Vendor Email"}</div>
         <div style={S.d}>{vendorSendMode==="individual"?((selectedVendor&&supplierEmailsText(selectedVendor))||"No vendor email set")+" | "+vendorStoreDocs.length+" store document(s) ready.":("Continue to consolidated preview for "+((selectedVendor&&selectedVendor.name)||"this vendor")+" before sending.")}</div>
       </div>
+      {vendorSendMode==="individual"&&<div style={Object.assign({},S.card,{padding:"12px 14px"})}>
+        <div style={S.cH}>
+          <div>
+            <div style={S.t}>{selectedVendor?(selectedVendor.name+" - Individual Store Preview"):"Individual Store Preview"}</div>
+            <div style={S.d}>Review the store-specific document layout before sending the individual attachments.</div>
+          </div>
+        </div>
+        {vendorStoreDocs.length>0?<Fragment>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+            {vendorStoreDocs.map(function(row){
+              var storeId=String(row.store&&row.store.id||"");
+              var isActive=storeId===String(vendorPreviewStoreId||"");
+              return <button key={storeId} style={Object.assign({},S.b,isActive?S.bP:S.bS,{padding:"4px 10px",fontSize:10.5})} onClick={function(){setVendorPreviewStoreId(storeId);}}>{row.store.name||row.store.id}</button>;
+            })}
+          </div>
+          {selectedVendorPreviewRow&&<Fragment>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:10}}>
+              <div style={{fontSize:12,color:"#64748B"}}>Store: <strong style={{color:"#0F172A"}}>{selectedVendorPreviewRow.store.name||selectedVendorPreviewRow.store.id}</strong> | Submitted: {fmtDT(selectedVendorPreviewRow.order&&selectedVendorPreviewRow.order.date)}</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(selectedVendorPreviewRow);}} disabled={!!downloadingSplit[String(selectedVendorPreviewRow.store.id||"")]}>Download Document</button>
+                <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printVendorStoreDocument(selectedVendorPreviewRow);}}>Print</button>
+                <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openVendorStoreDialog(selectedVendorPreviewRow,false);}}>Open Full View</button>
+              </div>
+            </div>
+            <div style={Object.assign({},S.tw,{maxHeight:"46vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>UNIT</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
+              {vendorIndividualPreviewDisplayRows.length?vendorIndividualPreviewDisplayRows.map(function(entry){
+                var row=entry.row;
+                return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.name||""}</td><td style={S.td}>{row.unit||""}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><span style={{fontFamily:"monospace"}}>{row.qtyDisplay||""}</span></td><td style={S.td}>{row.note||"-"}</td></tr>;
+              }):<tr><td colSpan={4} style={Object.assign({},S.td,{textAlign:"center",padding:20,color:"#64748B"})}>No filled lines in this store document.</td></tr>}
+            </tbody></table></div>
+          </Fragment>}
+        </Fragment>:<div style={{textAlign:"center",padding:20,color:"#6B7186"}}>No ready store documents are available for preview.</div>}
+      </div>}
       <div style={S.mA}>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setStep(1);}}>Back</button>
         {vendorSendMode==="individual"?<button style={Object.assign({},S.b,S.bP)} onClick={sendVendorIndividualDocs} disabled={eMailing||!selectedVendor||vendorStoreDocs.length<1||isCompletedLocked}>{eMailing?"Sending...":"Send Individual Store Documents"}</button>:<button style={Object.assign({},S.b,S.bP)} onClick={function(){setStep(3);}} disabled={!selectedVendor||isCompletedLocked}>Continue to Consolidated Preview</button>}
@@ -3681,14 +4257,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
               <div><div style={S.t}>{s.name}</div><div style={S.d}>{sEmailText||"No email"}</div></div>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
                 <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadSplitExcel(sid);}} disabled={isDownloading||isCompletedLocked}>{isDownloading?"Downloading...":(isSingleVendorFlow?"Download Consolidated File":"Download Excel")}</button>
+                <button style={Object.assign({},S.b,S.bS)} onClick={function(){printSplitExcel(sid);}} disabled={isCompletedLocked}>Print</button>
                 <button style={Object.assign({},S.b,sent?S.bG:S.bP)} onClick={function(){sendSplitEmail(sid);}} disabled={eMailing||supplierEmailsArray(s).length===0||isCompletedLocked||sent}>{sent?"Sent":"Send Consolidated Order"}</button>
               </div>
             </div>
             <div style={Object.assign({},S.tw,{maxHeight:"40vh",border:"1px solid rgba(148,163,184,.25)"})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
               {useVendorDocumentPreview?
                 <Fragment>
-                  <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:90})}></th></tr>
-                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:90})}>{totalHeader}</th></tr>
+                  <tr><th style={Object.assign({},tHeadTop,{minWidth:220})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th><th style={Object.assign({},tHeadTopCenter,{minWidth:110})}></th></tr>
+                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>UNIT</th><th style={Object.assign({},tHeadSub,{minWidth:110})}>{totalHeader}</th></tr>
                 </Fragment>
                 :<Fragment>
                   <tr><th style={Object.assign({},tHeadTop,{minWidth:200})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:100})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:280})}></th></tr>
@@ -3697,11 +4274,11 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
             </thead><tbody>
               {displayRows.map(function(entry){
                 if(entry.type==="heading"){
-                  return <tr key={entry.key}><td colSpan={useVendorDocumentPreview?2:(slots.length+3)} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
+                  return <tr key={entry.key}><td colSpan={useVendorDocumentPreview?3:(slots.length+3)} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
                 }
                 var r=entry.row;
                 return useVendorDocumentPreview
-                  ? <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td></tr>
+                  ? <tr key={entry.key}><td style={tProductCell}>{r.name||""}</td><td style={tQtyCell}>{r.unit||""}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.totalDisplay||formatQtySummaryByUnit(r.qtyByStoreId||{},r.orderUnitByStoreId||{})||""}</td></tr>
                   : <tr key={entry.key}><td style={tProductCell}>{itemNameWithUnit(r)}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.total||""}</td>{slots.map(function(sl){var q=sl.store?(r.qtyByStoreId&&r.qtyByStoreId[sl.store.id])||0:0;return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{q||""}</span></td>;})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{r.note||""}</td></tr>;
               })}
             </tbody></table></div>
@@ -3733,13 +4310,13 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           </tbody></table></div>;
         })()}
       </Fragment>):(
-      <div style={Object.assign({},S.tw,{maxHeight:"55vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
+      <div style={Object.assign({},S.tw,{maxHeight:"55vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>UNIT</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
         {vendorStoreDialogDisplayRows.map(function(entry){
           if(entry.type==="heading"){
-            return <tr key={entry.key}><td colSpan={3} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{entry.text}</td></tr>;
+            return <tr key={entry.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{entry.text}</td></tr>;
           }
           var row=entry.row;
-          return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{itemNameWithUnit(row)}</td><td style={Object.assign({},S.td,{textAlign:"center"})}>{vendorStoreDialogEditing?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={vendorStoreDialogQty[row.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value,10)||0);setVendorStoreDialogQty(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog}/>:<span style={{fontFamily:"monospace"}}>{row.qty||""}</span>}</td><td style={S.td}>{vendorStoreDialogEditing?<input style={Object.assign({},S.inp,{padding:"5px 8px",fontSize:11.5})} value={vendorStoreDialogNotes[row.code]||""} onChange={function(e){var v=e.target.value;setVendorStoreDialogNotes(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog} placeholder="note"/>:(row.note||"-")}</td></tr>;
+          return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.name||""}</td><td style={S.td}>{row.unit||""}</td><td style={Object.assign({},S.td,{textAlign:"center"})}>{vendorStoreDialogEditing?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={vendorStoreDialogQty[row.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value,10)||0);setVendorStoreDialogQty(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog}/>:<span style={{fontFamily:"monospace"}}>{row.qtyDisplay||""}</span>}</td><td style={S.td}>{vendorStoreDialogEditing?<input style={Object.assign({},S.inp,{padding:"5px 8px",fontSize:11.5})} value={vendorStoreDialogNotes[row.code]||""} onChange={function(e){var v=e.target.value;setVendorStoreDialogNotes(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog} placeholder="note"/>:(row.note||"-")}</td></tr>;
         })}
       </tbody></table></div>)}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={closeVendorStoreDialog} disabled={savingVendorStoreDialog}>Close</button>{vendorStoreDialogEditing&&<button style={Object.assign({},S.b,S.bP)} onClick={saveVendorStoreDialog} disabled={savingVendorStoreDialog}>{savingVendorStoreDialog?"Saving...":"Save"}</button>}</div>
@@ -3844,6 +4421,20 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       setDownloading(function(prev){var n=Object.assign({},prev);delete n[key];return n;});
     }
   };
+  var printExcelForHistory=async function(r){
+    var printWindow;
+    try{
+      if(!r||!r._id){toast("Missing supplier order record id",true);return;}
+      if(!r.hasExcel){toast("Excel file not available for this record",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var resp=await apiClient.supplierOrders.previewExcel(r._id);
+      await printSheetSections((r.excelFilename||r.supplierName||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
+  };
   var openSheetPreviewForHistory=async function(r){
     if(!r||!r._id){toast("Missing supplier order record id",true);return;}
     if(!r.hasExcel){toast("Excel file not available for this record",true);return;}
@@ -3870,7 +4461,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
     return (stores||[]).map(function(st){
       var order=getCurrentOrderForStoreType(orders,st.id,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
       var hasVisible=!!(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
-      var lineCount=order?Object.keys(Object.assign({},order.items||{},order.notes||{})).filter(function(code){return (Number((order.items||{})[code])||0)>0||String((order.notes||{})[code]||"").trim();}).length:0;
+      var lineCount=order?Object.keys(Object.assign({},order.items||{},order.notes||{})).filter(function(code){return normalizeOrderItemEntry((order.items||{})[code]).qty>0||String((order.notes||{})[code]||"").trim();}).length:0;
       return {store:st,order:order,lineCount:lineCount,ready:hasVisible&&lineCount>0};
     }).filter(function(row){return row.ready;});
   },[stores,orders,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
@@ -3908,6 +4499,24 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       setDownloading(function(prev){var n=Object.assign({},prev);delete n[String(row.store.id||"")];return n;});
     }
   };
+  var printVendorStoreHistoryDocument=async function(row){
+    var printWindow;
+    try{
+      if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var rowCodes=Object.keys(Object.assign({},row.order.items||{},row.order.notes||{}));
+      var rowItems=(items||[]).filter(function(it){return rowCodes.indexOf(it.code)>=0;});
+      var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
+      var itemNamesByCode={};
+      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
+      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print document",true);
+    }
+  };
   var sendVendorIndividualDocs=async function(){
     if(!selectedVendor){toast("Select a vendor first",true);return;}
     var recipients=supplierEmailsArray(selectedVendor);
@@ -3938,7 +4547,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
               var key=String((r&&r._id)||r.sentAt||"");
               var isDownloading=!!downloading[key];
               var isPreviewLoading=!!previewLoading[key];
-              return(<tr key={key}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td><td style={S.td}>{r.hasExcel?<span style={Object.assign({},S.bg,S.bgG)}>Available</span>:<span style={Object.assign({},S.bg,S.bgY)}>Not stored</span>}</td><td style={S.td}>{r.hasExcel?<div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){openSheetPreviewForHistory(r);}} disabled={isPreviewLoading}>{isPreviewLoading?"Loading...":"View Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadExcelForHistory(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Excel"}</button></div>:null}</td></tr>);
+              return(<tr key={key}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td><td style={S.td}>{r.hasExcel?<span style={Object.assign({},S.bg,S.bgG)}>Available</span>:<span style={Object.assign({},S.bg,S.bgY)}>Not stored</span>}</td><td style={S.td}>{r.hasExcel?<div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){openSheetPreviewForHistory(r);}} disabled={isPreviewLoading}>{isPreviewLoading?"Loading...":"View Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadExcelForHistory(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Excel"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printExcelForHistory(r);}}>Print</button></div>:null}</td></tr>);
             })}
           </tbody></table></div>}
         </div>);
@@ -3976,7 +4585,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
           <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Lines</th><th style={S.th}>Document</th></tr></thead><tbody>
             {vendorStoreDocs.map(function(row){
               var dKey=String(row.store.id||"");
-              return <tr key={dKey}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.store.name||row.store.id}</td><td style={S.td}><span style={Object.assign({},S.bg,String(row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order.status}</span></td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace"})}>{row.lineCount}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloading[dKey]}>{downloading[dKey]?"Downloading...":"Download Document"}</button></td></tr>;
+              return <tr key={dKey}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.store.name||row.store.id}</td><td style={S.td}><span style={Object.assign({},S.bg,String(row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order.status}</span></td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace"})}>{row.lineCount}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloading[dKey]}>{downloading[dKey]?"Downloading...":"Download Document"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printVendorStoreHistoryDocument(row);}}>Print</button></div></td></tr>;
             })}
           </tbody></table></div>}
         </div>
@@ -4131,19 +4740,12 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
               }
             });
             if(!parsedSheets.length&&looseItems.length===0){toast("Could not read item rows from Excel file",true);return;}
+            var mergedParsed=parsedSheets.length?mergeParsedTemplateSheets(parsedSheets,uploadCategory,uploadVendorKey,name,originalFile):null;
+            var mergedItems=mergedParsed&&Array.isArray(mergedParsed.items)?mergedParsed.items.slice():[];
             var usedCodes={};
-            var mergedItems=[];
-            parsedSheets.forEach(function(parsed,sheetIdx){
-              var sheetLabel=(parsed&&parsed.template&&parsed.template.sheetName)?String(parsed.template.sheetName).trim():("Sheet "+String(sheetIdx+1));
-              (parsed.items||[]).forEach(function(it,lineIdx){
-                var baseCode=String(it&&it.code||"").trim();
-                if(!baseCode) return;
-                var finalCode=baseCode;
-                if(usedCodes[finalCode]) finalCode=finalCode+"__S"+String(sheetIdx+1)+"L"+String(lineIdx+1);
-                while(usedCodes[finalCode]) finalCode=finalCode+"_x";
-                usedCodes[finalCode]=true;
-                mergedItems.push(Object.assign({},it,{code:finalCode,subheading:String(it&&it.subheading||"").trim()||sheetLabel}));
-              });
+            mergedItems.forEach(function(it){
+              var code=String(it&&it.code||"").trim();
+              if(code) usedCodes[code]=true;
             });
             looseItems.forEach(function(it){
               var baseCode=String(it&&it.code||"").trim();
@@ -4155,27 +4757,24 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
               mergedItems.push(Object.assign({},it,{code:finalCode}));
             });
             if(!mergedItems.length){toast("Could not detect item rows in Excel file",true);return;}
-            var mergedOutline=[];
-            var lastHeading="";
-            mergedItems.forEach(function(it,idx){
-              var heading=String(it&&it.subheading||"").trim();
-              if(heading&&heading!==lastHeading){
-                mergedOutline.push({type:"heading",text:heading,rowIndex:idx,colIndex:0});
-                lastHeading=heading;
-              }
-              mergedOutline.push({type:"item",code:it.code,name:it.name,rowIndex:idx,colIndex:0});
-            });
-            var firstTemplate=(parsedSheets[0]&&parsedSheets[0].template)?parsedSheets[0].template:{};
-            var multiSheetItemRows=[];
-            parsedSheets.forEach(function(parsed,sheetIdx){
-              var shName=(parsed&&parsed.template&&parsed.template.sheetName)?String(parsed.template.sheetName).trim():("Sheet "+String(sheetIdx+1));
-              (parsed&&parsed.template&&Array.isArray(parsed.template.itemRows)?parsed.template.itemRows:[]).forEach(function(ir){
-                multiSheetItemRows.push(Object.assign({},ir,{sheetIndex:sheetIdx,sheetName:shName}));
-              });
-            });
-            var uploadTpl=parsedSheets.length
-              ?Object.assign({},firstTemplate,{outline:mergedOutline,rawGrid:rawGridTemplate&&rawGridTemplate.rawGrid?rawGridTemplate.rawGrid:null,originalFile:originalFile||firstTemplate.originalFile||null,multiSheetItemRows:multiSheetItemRows.length?multiSheetItemRows:null})
+            var uploadTpl=mergedParsed&&mergedParsed.template
+              ?Object.assign({},mergedParsed.template,{rawGrid:rawGridTemplate&&rawGridTemplate.rawGrid?rawGridTemplate.rawGrid:null,originalFile:originalFile||mergedParsed.template.originalFile||null})
               :(rawGridTemplate||null);
+            if(uploadTpl&&looseItems.length){
+              var nextOutline=Array.isArray(uploadTpl.outline)?uploadTpl.outline.slice():[];
+              var looseHeading="";
+              looseItems.forEach(function(it,idx){
+                var finalItem=mergedItems[mergedItems.length-looseItems.length+idx];
+                if(!finalItem) return;
+                var heading=String(finalItem&&finalItem.subheading||"").trim();
+                if(heading&&heading!==looseHeading){
+                  nextOutline.push({type:"heading",text:heading,rowIndex:idx,colIndex:0});
+                  looseHeading=heading;
+                }
+                nextOutline.push({type:"item",code:finalItem.code,name:finalItem.name,rowIndex:idx,colIndex:0});
+              });
+              uploadTpl=Object.assign({},uploadTpl,{outline:nextOutline});
+            }
             sC(mergedItems.map(function(it,idx){return Object.assign({},it,{sortOrder:idx});}));
             setUploadTemplate(uploadTpl);
             sU(true);
@@ -4691,6 +5290,8 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
         var resp=await apiClient.settings.updateManualOpen(moType||null);
         setManualOpenOrder(resp.manualOpenOrder||null);
         if(setManualOpenSeq) setManualOpenSeq(resp.manualOpenSeq!=null?Number(resp.manualOpenSeq):null);
+        if(setReopenedFromId) setReopenedFromId(null);
+        persistReopenTarget(null);
         toast(resp.manualOpenOrder?("Manual open active: Order "+resp.manualOpenOrder):"Manual open cleared");
       }catch(e){toast(e.message,true);}  };
   var saveManualLeavesOpen=async function(){

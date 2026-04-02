@@ -3,6 +3,7 @@ import { authMiddleware } from '../auth.js';
 import { v4 as uuidv4 } from 'uuid';
 import Order from '../models/order.js';
 import Store from '../models/store.js';
+import Supplier from '../models/supplier.js';
 import SupplierOrder from '../models/supplierOrder.js';
 import Item from '../models/item.js';
 import Setting from '../models/setting.js';
@@ -437,7 +438,7 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
     const name = itemNameByCode[code] || itemRow.name || displayOrderItemCode(code);
     rows[itemRow.rowIndex][itemRow.colIndex || 0] = name;
     if (template.kind === 'tabular') {
-      const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+      const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + getQtyNumber(value), 0);
       if (template.quantityColumn && template.quantityColumn.colIndex != null) {
         ensureRowCell(rows, itemRow.rowIndex, template.quantityColumn.colIndex);
         rows[itemRow.rowIndex][template.quantityColumn.colIndex] = qtyTotal > 0 ? String(qtyTotal) : '';
@@ -452,8 +453,9 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
       ensureRowCell(rows, itemRow.rowIndex, col.colIndex);
       const slot = slotByKey[col.slotKey];
       const storeId = slot && slot.store ? slot.store.id : null;
-      const qty = storeId && qtyByCodeStoreId[code] ? Number(qtyByCodeStoreId[code][storeId]) || 0 : 0;
-      rows[itemRow.rowIndex][col.colIndex] = qty > 0 ? String(qty) : '';
+      const qtyValue = storeId && qtyByCodeStoreId[code] ? qtyByCodeStoreId[code][storeId] : null;
+      const displayValue = getQtyCellValue(qtyValue);
+      rows[itemRow.rowIndex][col.colIndex] = displayValue == null ? '' : String(displayValue);
     });
   });
   return rows;
@@ -504,7 +506,7 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
       nameCell.value = name;
       applyWrappedCellLayout(nameCell, name, 20);
       if (template.kind === 'tabular') {
-        const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+        const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + getQtyNumber(value), 0);
         if (template.quantityColumn && template.quantityColumn.colIndex != null) {
           ws.getCell(itemRow.rowIndex + 1, template.quantityColumn.colIndex + 1).value = qtyTotal > 0 ? qtyTotal : null;
         }
@@ -516,9 +518,30 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
       (template.storeColumns || []).forEach((col) => {
         const slot = slotByKey[col.slotKey];
         const storeId = slot && slot.store ? slot.store.id : null;
-        const qty = storeId && qtyByCodeStoreId[code] ? Number(qtyByCodeStoreId[code][storeId]) || 0 : 0;
-        ws.getCell(itemRow.rowIndex + 1, col.colIndex + 1).value = qty > 0 ? qty : null;
+        const qtyValue = storeId && qtyByCodeStoreId[code] ? qtyByCodeStoreId[code][storeId] : null;
+        ws.getCell(itemRow.rowIndex + 1, col.colIndex + 1).value = getQtyCellValue(qtyValue);
       });
+    });
+
+    const touchedColumns = new Set();
+    const touchedRows = new Set();
+    if (sheetGroup.sheetIndex === 0 && template.dateCell && template.dateCell.colIndex != null && template.dateCell.rowIndex != null) {
+      touchedColumns.add(template.dateCell.colIndex + 1);
+      touchedRows.add(template.dateCell.rowIndex + 1);
+    }
+    sheetGroup.rows.forEach((itemRow) => {
+      touchedColumns.add((itemRow.colIndex || 0) + 1);
+      touchedRows.add(itemRow.rowIndex + 1);
+      if (template.kind === 'tabular') {
+        if (template.quantityColumn && template.quantityColumn.colIndex != null) touchedColumns.add(template.quantityColumn.colIndex + 1);
+        if (template.noteColumn && template.noteColumn.colIndex != null) touchedColumns.add(template.noteColumn.colIndex + 1);
+      } else {
+        (template.storeColumns || []).forEach((col) => touchedColumns.add(col.colIndex + 1));
+      }
+    });
+    normalizeWorksheetGrid(ws, {
+      columnNumbers: Array.from(touchedColumns),
+      rowNumbers: Array.from(touchedRows),
     });
   }
 
@@ -611,6 +634,36 @@ function weekWindowFilter(weekKey, weekBase) {
 
 function safeFilenamePart(value) {
   return String(value || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'document';
+}
+
+function consolidatedFilenameDate(value) {
+  const date = value ? new Date(value) : new Date();
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = safeDate.getFullYear();
+  const month = String(safeDate.getMonth() + 1).padStart(2, '0');
+  const day = String(safeDate.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function resolveConsolidatedSupplierName({ category, vendorKey, supplierName }) {
+  const directName = String(supplierName || '').trim();
+  if (directName) return directName;
+
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  if (resolvedVendorKey) {
+    const supplier = await Supplier.findOne({ id: resolvedVendorKey }).select({ name: 1, _id: 0 }).lean();
+    if (supplier && String(supplier.name || '').trim()) return String(supplier.name || '').trim();
+    return resolvedVendorKey;
+  }
+
+  return resolvedCategory === 'leaves' ? 'Leaves' : 'Supplier';
+}
+
+function buildConsolidatedFilename({ supplierName, dateValue }) {
+  const supplierBase = safeFilenamePart(supplierName || 'Supplier');
+  const dateBase = safeFilenamePart(consolidatedFilenameDate(dateValue));
+  return `${supplierBase}_${dateBase}_consolidated.xlsx`;
 }
 
 async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase = null) {
@@ -729,33 +782,118 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
   return null;
 }
 
+function getQtyWithUnit(value) {
+  // Handle both legacy (number) and new format (object with qty, unitType, customUnit)
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const qty = Number(value.qty) || 0;
+    const unitType = String(value.unitType || 'cas').toLowerCase();
+    const customUnit = String(value.customUnit || '').trim();
+    
+    let unitLabel = 'CASE';
+    if (unitType === 'pcs') unitLabel = 'PCS';
+    else if (unitType === 'pallet') unitLabel = 'PALLET';
+    else if (unitType === 'master_case') unitLabel = 'MASTER CASE';
+    else if (unitType === 'other') unitLabel = customUnit || 'OTHER';
+    
+    return { qty, unitLabel, formatted: `${qty} ${unitLabel}` };
+  }
+  
+  const qty = Number(value) || 0;
+  return { qty, unitLabel: 'CASE', formatted: `${qty} CASE` };
+}
+
+function formatQtyValueWithUnit(qty, unitMeta) {
+  const info = getQtyWithUnit({
+    qty: Number(qty) || 0,
+    unitType: unitMeta && unitMeta.unitType ? unitMeta.unitType : 'cas',
+    customUnit: unitMeta && unitMeta.customUnit ? unitMeta.customUnit : '',
+  });
+  return info.qty > 0 ? info.formatted : '';
+}
+
+function formatQtySummaryByUnit(qtyByStoreId = {}, orderUnitByStoreId = {}) {
+  const totals = {};
+  Object.keys(qtyByStoreId || {}).forEach((storeId) => {
+    const qty = Number(qtyByStoreId[storeId]) || 0;
+    if (qty <= 0) return;
+    const label = getQtyWithUnit({
+      qty,
+      unitType: orderUnitByStoreId[storeId] && orderUnitByStoreId[storeId].unitType ? orderUnitByStoreId[storeId].unitType : 'cas',
+      customUnit: orderUnitByStoreId[storeId] && orderUnitByStoreId[storeId].customUnit ? orderUnitByStoreId[storeId].customUnit : '',
+    }).unitLabel;
+    totals[label] = (totals[label] || 0) + qty;
+  });
+  return Object.entries(totals).map(([label, qty]) => `${qty} ${label}`).join(', ');
+}
+
+function isStructuredQtyValue(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getQtyNumber(value) {
+  return getQtyWithUnit(value).qty;
+}
+
+function getQtyCellValue(value) {
+  const info = getQtyWithUnit(value);
+  if (info.qty <= 0) return null;
+  return isStructuredQtyValue(value) ? info.formatted : info.qty;
+}
+
 function normalizeOrderItems(itemsInput, notesInput = {}) {
   const itemsObj = itemsInput && typeof itemsInput === 'object' && !Array.isArray(itemsInput) ? itemsInput : {};
   const notesObj = notesInput && typeof notesInput === 'object' && !Array.isArray(notesInput) ? notesInput : {};
 
   return Object.entries(itemsObj)
-    .map(([itemCode, rawQty]) => {
-      const qty = Number(rawQty) || 0;
+    .map(([itemCode, rawValue]) => {
+      // Handle both old format (number) and new format (object with qty, unitType, customUnit)
+      let qty = 0;
+      let unitType = 'cas';
+      let customUnit = '';
+      
+      if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+        qty = Number(rawValue.qty) || 0;
+        unitType = String(rawValue.unitType || 'cas').toLowerCase();
+        customUnit = String(rawValue.customUnit || '').trim();
+      } else {
+        qty = Number(rawValue) || 0;
+      }
+      
       const note = typeof notesObj[itemCode] === 'string' ? notesObj[itemCode].trim() : '';
-      return { itemCode, quantity: qty, note };
+      return { itemCode, quantity: qty, unitType, customUnit, note };
     })
     .filter(({ quantity, note }) => quantity > 0 || note);
 }
 
 function orderItemsToList(rawItems) {
-  if (Array.isArray(rawItems)) return rawItems;
+  if (Array.isArray(rawItems)) {
+    return rawItems.map((item) => {
+      if (!item || typeof item !== 'object') return { itemCode: '', quantity: 0, unitType: 'cas', customUnit: '', note: '' };
+      return {
+        itemCode: String(item.itemCode || ''),
+        quantity: Number(item.qty != null ? item.qty : item.quantity) || 0,
+        unitType: String(item.unitType || item.type || 'cas').toLowerCase(),
+        customUnit: String(item.customUnit || item.otherUnit || '').trim(),
+        note: String(item.note || ''),
+      };
+    });
+  }
   if (!rawItems || typeof rawItems !== 'object') return [];
   return Object.entries(rawItems).map(([itemCode, value]) => {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       return {
         itemCode,
-        quantity: Number(value.quantity) || 0,
+        quantity: Number(value.qty != null ? value.qty : value.quantity) || 0,
+        unitType: String(value.unitType || value.type || 'cas').toLowerCase(),
+        customUnit: String(value.customUnit || value.otherUnit || '').trim(),
         note: typeof value.note === 'string' ? value.note : '',
       };
     }
     return {
       itemCode,
       quantity: Number(value) || 0,
+      unitType: 'cas',
+      customUnit: '',
       note: '',
     };
   });
@@ -880,11 +1018,17 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
   // When a consolidated email was already sent, return the exact workbook that
   // was attached to the email so history matches what the supplier received.
   if (latestSentLog && latestSentLog.excelBase64) {
+    const supplierDisplayName = await resolveConsolidatedSupplierName({
+      category: normalizedCategory,
+      vendorKey: normalizedVendorKey,
+      supplierName: latestSentLog.supplierName,
+    });
     return {
       excelBuffer: Buffer.from(latestSentLog.excelBase64, 'base64'),
-      excelFilename:
-        latestSentLog.excelFilename ||
-        `consolidated-order-${normalizedCategory}${normalizedVendorKey ? `-${normalizedVendorKey}` : ''}-${normalizedType}-${normalizedWeek}.xlsx`,
+      excelFilename: buildConsolidatedFilename({
+        supplierName: supplierDisplayName,
+        dateValue: latestSentLog.sentAt || latestSentLog.createdAt || new Date(),
+      }),
     };
   }
 
@@ -903,7 +1047,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
 function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNameByCode }) {
   const rows = [];
   rows.push([`Date: ${dateText}`, '', ...slots.map((slot) => `${slot.apna}${type}`), '']);
-  rows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QUANTITY (case qty)'), 'NOTE']);
+  rows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QTY'), 'NOTE']);
 
   const itemCodes = new Set();
   slots.forEach((slot) => {
@@ -949,12 +1093,13 @@ function buildVendorRowsFromPreviewLayout(layout) {
   const itemHeader = String(layout.itemHeader || 'PRODUCT').trim() || 'PRODUCT';
   const totalHeader = String(layout.totalHeader || 'TOTAL QTY').trim() || 'TOTAL QTY';
   const previewRows = Array.isArray(layout.rows) ? layout.rows : [];
+  if (previewRows.length < 1) return null;
 
   const rows = [];
-  // Vendor supplier attachment must contain only product and total quantity.
+  // Vendor supplier attachment keeps item, item-master unit, and grouped total qty.
   // Keep template-compatible width so style rendering remains consistent.
   rows.push(makeExcelRow([dateLabel, '', '', '', '', '', ''], 'date'));
-  rows.push(makeExcelRow([itemHeader, totalHeader, '', '', '', '', ''], 'header'));
+  rows.push(makeExcelRow([itemHeader, 'UNIT', totalHeader, '', '', '', ''], 'header'));
 
   previewRows.forEach((entry) => {
     if (!entry || typeof entry !== 'object') return;
@@ -967,12 +1112,51 @@ function buildVendorRowsFromPreviewLayout(layout) {
     if (entry.type !== 'item') return;
     const itemName = String(entry.itemName || '').trim();
     if (!itemName) return;
+    const itemUnit = String(entry.itemUnit || '').trim();
     const qtyMap = entry.qtyByStoreId && typeof entry.qtyByStoreId === 'object' ? entry.qtyByStoreId : {};
-    const totalFromPayload = Number(entry.total) || 0;
-    const total = totalFromPayload > 0
-      ? totalFromPayload
-      : Object.values(qtyMap).reduce((acc, value) => acc + (Number(value) || 0), 0);
-    rows.push(makeExcelRow([itemName, total > 0 ? total : '', '', '', '', '', ''], 'data'));
+    const orderUnitByStoreId = entry.orderUnitByStoreId && typeof entry.orderUnitByStoreId === 'object' ? entry.orderUnitByStoreId : {};
+    const totalDisplay = String(entry.totalDisplay || '').trim() || formatQtySummaryByUnit(qtyMap, orderUnitByStoreId);
+    rows.push(makeExcelRow([itemName, itemUnit, totalDisplay, '', '', '', ''], 'data'));
+  });
+
+  return rows;
+}
+
+function buildVendorMonitorRowsFromPreviewLayout(layout) {
+  if (!layout || typeof layout !== 'object') return null;
+  const dateLabel = String(layout.dateLabel || `Date: ${new Date().toLocaleDateString('en-US')}`).trim();
+  const itemHeader = String(layout.itemHeader || 'PRODUCT').trim() || 'PRODUCT';
+  const totalHeader = String(layout.totalHeader || 'TOTAL QTY').trim() || 'TOTAL QTY';
+  const slotHeaders = Array.isArray(layout.slotHeaders) ? layout.slotHeaders : [];
+  const slotStoreIds = Array.isArray(layout.slotStoreIds) ? layout.slotStoreIds : [];
+  const slotQtyHeaders = Array.isArray(layout.slotQtyHeaders) ? layout.slotQtyHeaders : [];
+  const previewRows = Array.isArray(layout.rows) ? layout.rows : [];
+  if (previewRows.length < 1) return null;
+
+  const rows = [];
+  rows.push(makeExcelRow([dateLabel, '', '', ...slotHeaders, ''], 'date'));
+  rows.push(makeExcelRow([itemHeader, 'UNIT', totalHeader, ...slotQtyHeaders, 'NOTE'], 'header'));
+
+  previewRows.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    if (entry.type === 'heading') {
+      const heading = String(entry.text || '').trim();
+      if (!heading) return;
+      rows.push(makeExcelRow([heading, '', '', ...slotHeaders.map(() => ''), ''], 'heading'));
+      return;
+    }
+    if (entry.type !== 'item') return;
+    const itemName = String(entry.itemName || '').trim();
+    if (!itemName) return;
+    const itemUnit = String(entry.itemUnit || '').trim();
+    const qtyMap = entry.qtyByStoreId && typeof entry.qtyByStoreId === 'object' ? entry.qtyByStoreId : {};
+    const orderUnitByStoreId = entry.orderUnitByStoreId && typeof entry.orderUnitByStoreId === 'object' ? entry.orderUnitByStoreId : {};
+    const totalDisplay = String(entry.totalDisplay || '').trim() || formatQtySummaryByUnit(qtyMap, orderUnitByStoreId);
+    const qtyCols = slotStoreIds.map((storeId) => {
+      const qty = Number(qtyMap[storeId]) || 0;
+      return formatQtyValueWithUnit(qty, orderUnitByStoreId[storeId] || { unitType: 'cas', customUnit: '' });
+    });
+    rows.push(makeExcelRow([itemName, itemUnit, totalDisplay, ...qtyCols, String(entry.note || '').trim()], 'data'));
   });
 
   return rows;
@@ -1051,6 +1235,52 @@ function applyHeadingRowStyle(ws, targetRowNumber, startCol, endCol) {
   if (!dstRow.height || dstRow.height < 22) dstRow.height = 22;
 }
 
+function normalizeWorksheetGrid(ws, { columnNumbers = null, rowNumbers = null } = {}) {
+  if (!ws) return;
+  const columns = Array.isArray(columnNumbers) && columnNumbers.length
+    ? Array.from(new Set(columnNumbers.filter((value) => Number.isInteger(value) && value > 0))).sort((a, b) => a - b)
+    : Array.from({ length: ws.columnCount || 0 }, (_, idx) => idx + 1);
+  const rows = Array.isArray(rowNumbers) && rowNumbers.length
+    ? Array.from(new Set(rowNumbers.filter((value) => Number.isInteger(value) && value > 0))).sort((a, b) => a - b)
+    : Array.from({ length: ws.rowCount || 0 }, (_, idx) => idx + 1);
+  if (!columns.length || !rows.length) return;
+
+  columns.forEach((colNumber, idx) => {
+    let maxLength = 0;
+    rows.forEach((rowNumber) => {
+      const text = String(excelCellToPreviewText(ws.getCell(rowNumber, colNumber).value) || '').trim();
+      if (!text) return;
+      maxLength = Math.max(maxLength, Math.min(text.length, idx === 0 ? 36 : 28));
+    });
+    if (!maxLength) return;
+    const minWidth = idx === 0 ? 16 : 10;
+    const maxWidth = idx === 0 ? 34 : 22;
+    ws.getColumn(colNumber).width = Math.max(minWidth, Math.min(maxWidth, maxLength + 2));
+  });
+
+  rows.forEach((rowNumber) => {
+    const row = ws.getRow(rowNumber);
+    let targetHeight = 22;
+    columns.forEach((colNumber) => {
+      const cell = ws.getCell(rowNumber, colNumber);
+      const text = String(excelCellToPreviewText(cell.value) || '').trim();
+      if (!text) return;
+      const existingAlignment = cell.alignment || {};
+      const isNumeric = typeof cell.value === 'number' || /^-?\d+(?:\.\d+)?$/.test(text);
+      const colWidth = Number(ws.getColumn(colNumber).width) || 10;
+      const charsPerLine = Math.max(8, Math.floor(colWidth - 1));
+      const lineCount = Math.max(1, Math.ceil(text.length / charsPerLine));
+      targetHeight = Math.max(targetHeight, Math.min(54, 16 * lineCount + 4));
+      cell.alignment = Object.assign({}, existingAlignment, {
+        vertical: 'middle',
+        horizontal: existingAlignment.horizontal || (isNumeric ? 'center' : 'left'),
+        wrapText: lineCount > 1 || existingAlignment.wrapText === true,
+      });
+    });
+    row.height = targetHeight;
+  });
+}
+
 async function rowsToExcelBuffer(rows) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(CONSOLIDATED_TEMPLATE_PATH);
@@ -1097,6 +1327,11 @@ async function rowsToExcelBuffer(rows) {
     }
   });
 
+  normalizeWorksheetGrid(ws, {
+    columnNumbers: Array.from({ length: writeCols }, (_, idx) => startCol + idx),
+    rowNumbers: Array.from({ length: rows.length }, (_, idx) => startRow + idx),
+  });
+
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);
 }
@@ -1122,6 +1357,7 @@ async function rowsToPlainExcelBuffer(rows) {
       };
     }
   });
+  normalizeWorksheetGrid(ws);
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);
 }
@@ -1238,16 +1474,22 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   let excelRows = [];
   let usePlainWorkbook = false;
   let excelBuffer = null;
+  const vendorMonitorRows =
+    resolvedCategory === 'vendor_orders' && splitData && splitData.documentMode === 'monitor' && splitData.previewLayout
+      ? buildVendorMonitorRowsFromPreviewLayout(splitData.previewLayout)
+      : null;
   const vendorPreviewRows =
-    resolvedCategory === 'vendor_orders' && splitData && splitData.previewLayout
+    resolvedCategory === 'vendor_orders' && splitData && splitData.documentMode !== 'monitor' && splitData.previewLayout
       ? buildVendorRowsFromPreviewLayout(splitData.previewLayout)
       : null;
   const qtyByCodeStoreId = {};
+  const orderUnitByCodeStoreId = {};
   const noteByCode = {};
   if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
     splitData.rows.forEach((r) => {
       const code = r.itemCode || `XLS::${String(r.itemName || '').trim()}`;
       qtyByCodeStoreId[code] = r.qtyByStoreId || {};
+      orderUnitByCodeStoreId[code] = r.orderUnitByStoreId || {};
       noteByCode[code] = typeof r.note === 'string' ? r.note.trim() : '';
     });
   } else {
@@ -1256,7 +1498,12 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       if (!order || !slot.store) return;
       orderItemsToList(order.items).forEach((item) => {
         if (!qtyByCodeStoreId[item.itemCode]) qtyByCodeStoreId[item.itemCode] = {};
+        if (!orderUnitByCodeStoreId[item.itemCode]) orderUnitByCodeStoreId[item.itemCode] = {};
         qtyByCodeStoreId[item.itemCode][slot.store.id] = Number(item.quantity) || 0;
+        orderUnitByCodeStoreId[item.itemCode][slot.store.id] = {
+          unitType: item.unitType || 'cas',
+          customUnit: item.customUnit || '',
+        };
         if (item.note) noteByCode[item.itemCode] = item.note;
       });
     });
@@ -1265,7 +1512,9 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   // Vendor supplier attachment must include only product + total qty.
   // When preview layout exists, use it to preserve product order/headings while dropping
   // store-wise columns.
-  if (resolvedCategory === 'vendor_orders' && vendorPreviewRows && vendorPreviewRows.length > 0) {
+  if (resolvedCategory === 'vendor_orders' && vendorMonitorRows && vendorMonitorRows.length > 0) {
+    excelRows = vendorMonitorRows;
+  } else if (resolvedCategory === 'vendor_orders' && vendorPreviewRows && vendorPreviewRows.length > 0) {
     excelRows = vendorPreviewRows;
   } else if (resolvedCategory === 'vendor_orders') {
     const vendorRows = splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0
@@ -1273,7 +1522,10 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       : Object.entries(qtyByCodeStoreId).map(([itemCode, qtyByStore]) => ({
           itemCode,
           itemName: itemNameByCode[itemCode] || displayOrderItemCode(itemCode),
+          itemUnit: '',
           total: Object.values(qtyByStore || {}).reduce((acc, v) => acc + (Number(v) || 0), 0),
+          totalDisplay: formatQtySummaryByUnit(qtyByStore || {}, orderUnitByCodeStoreId[itemCode] || {}),
+          orderUnitByStoreId: orderUnitByCodeStoreId[itemCode] || {},
         }));
     const vendorRowByCode = Object.fromEntries(vendorRows.map((row) => [String(row.itemCode || '').trim(), row]));
     const vendorEntries = buildCatalogOutlineEntries({
@@ -1282,22 +1534,16 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       itemNameByCode,
     });
     excelRows.push(makeExcelRow([`Date: ${dateText}`, '', '', '', '', '', ''], 'date'));
-    excelRows.push(makeExcelRow(['PRODUCT', 'TOTAL QTY', '', '', '', '', ''], 'header'));
+    excelRows.push(makeExcelRow(['PRODUCT', 'UNIT', 'TOTAL QTY', '', '', '', ''], 'header'));
     vendorEntries.forEach((entry) => {
       if (entry.type === 'heading') {
         excelRows.push(makeExcelRow([entry.text, '', '', '', '', '', ''], 'heading'));
         return;
       }
       const sourceRow = vendorRowByCode[entry.code] || {};
-      const totalFromPayload = Number(sourceRow.total) || 0;
-      const total =
-        totalFromPayload > 0
-          ? totalFromPayload
-          : slots.reduce((acc, slot) => {
-              if (!slot.store) return acc;
-              return acc + (Number(sourceRow.qtyByStoreId && sourceRow.qtyByStoreId[slot.store.id]) || 0);
-            }, 0);
-      excelRows.push(makeExcelRow([entry.itemName, total > 0 ? total : '', '', '', '', '', ''], 'data'));
+      const itemUnit = String(sourceRow.itemUnit || '').trim();
+      const totalDisplay = String(sourceRow.totalDisplay || '').trim() || formatQtySummaryByUnit(sourceRow.qtyByStoreId || {}, sourceRow.orderUnitByStoreId || orderUnitByCodeStoreId[entry.code] || {});
+      excelRows.push(makeExcelRow([entry.itemName, itemUnit, totalDisplay, '', '', '', ''], 'data'));
     });
   // Leaves supplier exports should include only product + total qty (no store-wise columns).
   } else if (resolvedCategory === 'leaves') {
@@ -1344,7 +1590,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     usePlainWorkbook = !excelBuffer;
   } else if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
     excelRows.push([`Date: ${dateText}`, '', ...slots.map((slot) => `${slot.apna}${type}`), '']);
-    excelRows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QUANTITY (case qty)'), 'NOTE']);
+    excelRows.push(['PRODUCT', 'TOTAL QTY', ...slots.map(() => 'QTY'), 'NOTE']);
     splitData.rows.forEach((r) => {
       const itemName = r.itemName || itemNameByCode[r.itemCode] || displayOrderItemCode(r.itemCode);
       const note = typeof r.note === 'string' ? r.note.trim() : '';
@@ -1369,9 +1615,15 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
 
   const snapshotLines = excelRows.map((row) => getExcelRowCells(row).join(' | '));
   const finalExcelBuffer = excelBuffer || (usePlainWorkbook ? await rowsToPlainExcelBuffer(excelRows) : await rowsToExcelBuffer(excelRows));
-  const excelFilename = template && template.originalFile && template.originalFile.filename && String(template.originalFile.filename).toLowerCase().endsWith('.xlsx')
-    ? template.originalFile.filename
-    : `consolidated-order-${resolvedCategory}${resolvedVendorKey ? `-${resolvedVendorKey}` : ''}-${type}-${weekKey}.xlsx`;
+  const supplierDisplayName = await resolveConsolidatedSupplierName({
+    category: resolvedCategory,
+    vendorKey: resolvedVendorKey,
+    supplierName: splitData && typeof splitData === 'object' ? splitData.supplierName : '',
+  });
+  const excelFilename = buildConsolidatedFilename({
+    supplierName: supplierDisplayName,
+    dateValue: now,
+  });
   return { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer: finalExcelBuffer, excelFilename };
 }
 
@@ -1382,7 +1634,26 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
   const providedItemDetails = itemDetailsObj && typeof itemDetailsObj === 'object' ? itemDetailsObj : {};
   const providedItemNames = itemNamesObj && typeof itemNamesObj === 'object' ? itemNamesObj : {};
-  const { itemNameByCode } = buildItemDisplayMaps(itemDocs, providedItemNames, providedItemDetails);
+  const { itemNameByCode, itemUnitByCode } = buildItemDisplayMaps(itemDocs, providedItemNames, providedItemDetails);
+  const itemDocByCode = Object.fromEntries((itemDocs || []).map((item) => [String(item && item.code || '').trim(), item]));
+  const getStoreDocumentItemName = (code) => {
+    const trimmedCode = String(code || '').trim();
+    const itemDoc = itemDocByCode[trimmedCode];
+    if (itemDoc && String(itemDoc.name || '').trim()) return String(itemDoc.name || '').trim();
+    const detail = providedItemDetails && providedItemDetails[trimmedCode] && typeof providedItemDetails[trimmedCode] === 'object'
+      ? providedItemDetails[trimmedCode]
+      : null;
+    if (detail && String(detail.name || '').trim()) {
+      const detailName = String(detail.name || '').trim();
+      const detailUnit = String(detail.unit || '').trim();
+      if (detailUnit) {
+        const suffix = ` (${detailUnit})`;
+        if (detailName.endsWith(suffix)) return detailName.slice(0, -suffix.length).trim();
+      }
+      return detailName;
+    }
+    return itemNameByCode[trimmedCode] || displayOrderItemCode(trimmedCode);
+  };
   const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
   const hasDocxStoreTemplate = !!(template && template.kind === 'docx_vendor_form' && template.docxMap && template.originalFile && template.originalFile.base64);
   const useStandardStoreTemplate = resolvedCategory === 'vendor_orders' && !hasDocxStoreTemplate;
@@ -1398,9 +1669,9 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   const normalizedNotes = notesObj && typeof notesObj === 'object' ? notesObj : {};
   const codes = Array.from(
     new Set([...Object.keys(normalizedItems), ...Object.keys(normalizedNotes)].filter((code) => {
-      const qty = Number(normalizedItems[code]) || 0;
+      const qtyInfo = getQtyWithUnit(normalizedItems[code]);
       const note = String(normalizedNotes[code] || '').trim();
-      return qty > 0 || note;
+      return qtyInfo.qty > 0 || note;
     }))
   ).sort((a, b) =>
     String(itemNameByCode[a] || displayOrderItemCode(a)).localeCompare(
@@ -1413,7 +1684,7 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   const qtyByCodeStoreId = {};
   const noteByCode = {};
   codes.forEach((code) => {
-    qtyByCodeStoreId[code] = { [storeId]: Math.max(0, Number(normalizedItems[code]) || 0) };
+    qtyByCodeStoreId[code] = { [storeId]: normalizedItems[code] };
     noteByCode[code] = String(normalizedNotes[code] || '').trim();
   });
   const outlineEntries = buildCatalogOutlineEntries({
@@ -1430,8 +1701,8 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   if (hasDocxStoreTemplate) {
     const quantitiesByCode = {};
     codes.forEach((code) => {
-      const qty = Math.max(0, Number(normalizedItems[code]) || 0);
-      if (qty > 0) quantitiesByCode[code] = qty;
+      const qtyInfo = getQtyWithUnit(normalizedItems[code]);
+      if (qtyInfo.qty > 0) quantitiesByCode[code] = qtyInfo.formatted;
     });
     const rendered = await renderVendorDocxTemplate({
       template,
@@ -1447,9 +1718,9 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
       filename: `${storeBase}_${vendorBase}_${stamp}.docx`,
       contentType: rendered.contentType,
       snapshotLines: codes.map((code) => {
-        const qty = Math.max(0, Number(normalizedItems[code]) || 0);
+        const qtyInfo = getQtyWithUnit(normalizedItems[code]);
         const note = String(normalizedNotes[code] || '').trim();
-        return [storeDoc.name || storeDoc.id || storeId, code, itemNameByCode[code] || displayOrderItemCode(code), qty || '', note].join(' | ');
+        return [storeDoc.name || storeDoc.id || storeId, code, itemNameByCode[code] || displayOrderItemCode(code), qtyInfo.formatted || '', note].join(' | ');
       }),
     };
   }
@@ -1482,7 +1753,9 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
       }),
       '',
     ];
-    const headerRow = ['PRODUCT', ...documentSlots.map(() => 'QUANTITY (case qty)'), 'NOTE'];
+    const headerRow = useStandardStoreTemplate
+      ? ['PRODUCT', 'UNIT', ...documentSlots.map(() => 'QUANTITY'), 'NOTE']
+      : ['PRODUCT', ...documentSlots.map(() => 'QTY'), 'NOTE'];
     rows = [
       makeExcelRow(dateRow, 'date'),
       makeExcelRow(headerRow, 'header'),
@@ -1490,26 +1763,28 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
     if (useStandardStoreTemplate || hasStructuredHeadings) {
       outlineEntries.forEach((entry) => {
         if (entry.type === 'heading') {
-          rows.push(makeExcelRow([entry.text, ...documentSlots.map(() => ''), ''], 'heading'));
+          rows.push(makeExcelRow(useStandardStoreTemplate ? [entry.text, '', ...documentSlots.map(() => ''), ''] : [entry.text, ...documentSlots.map(() => ''), ''], 'heading'));
           return;
         }
-        const qty = Math.max(0, Number(normalizedItems[entry.code]) || 0);
+        const qtyInfo = getQtyWithUnit(normalizedItems[entry.code]);
         const note = String(normalizedNotes[entry.code] || '').trim();
         const qtyCols = documentSlots.map((slot) => {
           if (!slot.store) return '';
-          return slot.store.id === storeId && qty > 0 ? qty : '';
+          return slot.store.id === storeId && qtyInfo.qty > 0 ? qtyInfo.formatted : '';
         });
-        rows.push(makeExcelRow([entry.itemName, ...qtyCols, note], 'data'));
+        rows.push(makeExcelRow(useStandardStoreTemplate ? [getStoreDocumentItemName(entry.code), itemUnitByCode[entry.code] || '', ...qtyCols, note] : [entry.itemName, ...qtyCols, note], 'data'));
       });
     } else {
       codes.forEach((code) => {
-        const qty = Math.max(0, Number(normalizedItems[code]) || 0);
+        const qtyValue = normalizedItems[code];
+        const qtyInfo = getQtyWithUnit(qtyValue);
+        const qtyDisplay = getQtyCellValue(qtyValue);
         const note = String(normalizedNotes[code] || '').trim();
         const qtyCols = documentSlots.map((slot) => {
           if (!slot.store) return '';
-          return slot.store.id === storeId && qty > 0 ? qty : '';
+          return slot.store.id === storeId && qtyInfo.qty > 0 ? qtyDisplay : '';
         });
-        rows.push(makeExcelRow([itemNameByCode[code] || displayOrderItemCode(code), ...qtyCols, note], 'data'));
+        rows.push(makeExcelRow(useStandardStoreTemplate ? [getStoreDocumentItemName(code), itemUnitByCode[code] || '', ...qtyCols, note] : [itemNameByCode[code] || displayOrderItemCode(code), ...qtyCols, note], 'data'));
       });
     }
   }
@@ -1545,7 +1820,11 @@ router.get('/', authMiddleware, async (req, res) => {
       status: order.status,
       week: order.week,
       items: orderItemsToList(order.items).reduce((acc, i) => {
-        acc[i.itemCode] = i.quantity;
+        acc[i.itemCode] = {
+          qty: Number(i.quantity) || 0,
+          unitType: i.unitType || 'cas',
+          customUnit: i.customUnit || '',
+        };
         return acc;
       }, {}),
       notes: orderItemsToList(order.items).reduce((acc, i) => {
@@ -1755,25 +2034,8 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     const mo = await getManualOpenState();
     let weekKey = requestedWeekKey || composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
     if (!requestedWeekKey && category === 'vendor_orders' && vendorKey) {
-      const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
-      const latestVisible = await Order.findOne({
-        type: req.params.type,
-        category,
-        vendorKey,
-        status: { $in: ['submitted', 'processed', 'draft_shared'] },
-        $or: [
-          { submittedAt: { $gte: since } },
-          { createdAt: { $gte: since } },
-        ],
-      })
-        .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
-        .lean();
-      if (latestVisible && latestVisible.week) {
-        weekKey = String(latestVisible.week);
-      } else {
-        const vendorSeq = await getVendorSeqForKey(vendorKey);
-        weekKey = weekBase + '-VS' + vendorSeq;
-      }
+      const vendorSeq = await getVendorSeqForKey(vendorKey);
+      weekKey = weekBase + '-VS' + vendorSeq;
     }
     const stores = await getStoresForConsolidatedWindow(req.params.type, category, vendorKey, weekKey, weekBase);
     const response = [];
@@ -1828,8 +2090,12 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
     if (recipients.length === 0) return res.status(400).json({ error: 'At least one recipient email is required' });
     // supplierName is optional here; frontend will send when available
 
+    const effectiveSplitData = splitData && typeof splitData === 'object'
+      ? { ...splitData, supplierName: splitData.supplierName || supplierName || '' }
+      : splitData;
+
     const { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename } =
-      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, splitData, requestedWeekKey);
+      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, effectiveSplitData, requestedWeekKey);
     const supplierDisplayName = (supplierName || 'Supplier').trim();
     let body = 'Please find attached the consolidated order';
 
@@ -2290,8 +2556,12 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
     if (!doc.excelBase64) return res.status(404).json({ error: 'Excel file not stored for this record' });
     const excelBuffer = Buffer.from(doc.excelBase64, 'base64');
+    const downloadFilename = buildConsolidatedFilename({
+      supplierName: doc.supplierName || doc.vendorKey || doc.category || 'Supplier',
+      dateValue: doc.sentAt || doc.createdAt || new Date(),
+    });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${doc.excelFilename || `consolidated-order-${doc.type || 'X'}.xlsx`}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
     res.send(excelBuffer);
   } catch (err) {
     console.error('Download supplier order Excel error:', err);
@@ -2312,7 +2582,10 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
     const preview = await buildExcelPreviewFromBuffer(excelBuffer);
     res.json({
       success: true,
-      filename: doc.excelFilename || null,
+      filename: buildConsolidatedFilename({
+        supplierName: doc.supplierName || doc.vendorKey || doc.category || 'Supplier',
+        dateValue: doc.sentAt || doc.createdAt || new Date(),
+      }),
       sheetName: preview.sheetName,
       rows: preview.rows,
     });
