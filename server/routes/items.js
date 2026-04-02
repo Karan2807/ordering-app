@@ -18,6 +18,13 @@ function normalizeVendorKey(category, vendorKey) {
     : null;
 }
 
+function buildItemMasterCode(name, unit) {
+  const resolvedName = String(name || '').trim().replace(/\s+/g, ' ');
+  const resolvedUnit = String(unit || '').trim().replace(/\s+/g, ' ');
+  if (!resolvedName) return '';
+  return resolvedUnit ? `${resolvedName}:${resolvedUnit}` : resolvedName;
+}
+
 function normalizeTemplatePayload(template) {
   if (!template || typeof template !== 'object') return null;
   const kind = String(template.kind || '').trim();
@@ -239,20 +246,21 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
-    const { code, name, category, vendorKey, unit, subheading, sortOrder } = req.body;
+    const { name, category, vendorKey, unit, subheading, sortOrder } = req.body;
+    const resolvedCode = buildItemMasterCode(name, unit);
 
-    if (!code || !name) {
+    if (!resolvedCode || !name) {
       return res.status(400).json({ error: 'Code and name required' });
     }
 
-    const existing = await Item.findOne({ code });
+    const existing = await Item.findOne({ code: resolvedCode });
     if (existing) {
       return res.status(400).json({ error: 'Code already exists' });
     }
 
     const resolvedCategory = normalizeCategory(category);
     await Item.create({
-      code,
+      code: resolvedCode,
       name,
       category: resolvedCategory,
       vendorKey: normalizeVendorKey(resolvedCategory, vendorKey),
@@ -308,9 +316,9 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
     const toInsert = [];
     const seenCodes = new Set();
     for (const item of items) {
-      const { code, name, category: itemCategory, vendorKey: itemVendorKey, unit, subheading, sortOrder } = item;
-      if (code && name) {
-        const normalizedCode = String(code).trim();
+      const { name, category: itemCategory, vendorKey: itemVendorKey, unit, subheading, sortOrder } = item;
+      if (name) {
+        const normalizedCode = buildItemMasterCode(name, unit);
         if (!normalizedCode || seenCodes.has(normalizedCode)) {
           continue;
         }
