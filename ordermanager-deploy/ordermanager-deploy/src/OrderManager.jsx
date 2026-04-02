@@ -30,6 +30,10 @@ function normalizeOpenOrderTypes(input){
   var values=Array.isArray(input)?input:[input];
   return values.map(function(v){return String(v||"").trim().toUpperCase();}).filter(function(v){return v==="A"||v==="B"||v==="C";});
 }
+function isAdminRole(user){return !!(user&&user.role==="admin");}
+function isWarehouseRole(user){return !!(user&&user.role==="warehouse");}
+function isPrivilegedRole(user){return isAdminRole(user)||isWarehouseRole(user);}
+function displayRoleLabel(user){return isAdminRole(user)?"Admin":(isWarehouseRole(user)?"Warehouse":"Manager");}
 function normalizeCategory(v){var raw=String(v||"").trim().toLowerCase();return ORDER_CATEGORIES.some(function(c){return c.id===raw;})?raw:"vegetables";}
 function normalizeVendorKey(category,v){return normalizeCategory(category)==="vendor_orders"?(String(v||"").trim()||null):null;}
 function extractVendorIdentifier(input){
@@ -145,7 +149,7 @@ function vendorWindowText(startDay,endDay){
 }
 var ORDER_UNIT_TYPES=[
   {value:"cas",label:"CASE"},
-  {value:"pcs",label:"PCS"},
+  {value:"pcs",label:"PIECES"},
   {value:"pallet",label:"PALLET"},
   {value:"master_case",label:"MASTER CASE"},
   {value:"other",label:"OTHER"},
@@ -165,7 +169,7 @@ function countFilledOrderItems(itemsMap){return Object.values(itemsMap||{}).filt
 function getOrderItemQty(itemsMap,code){return normalizeOrderItemEntry(itemsMap&&itemsMap[code]).qty;}
 function getOrderItemUnitLabel(v){
   var d=normalizeOrderItemEntry(v);
-  if(d.unitType==="pcs") return "PCS";
+  if(d.unitType==="pcs") return "PIECES";
   if(d.unitType==="pallet") return "PALLET";
   if(d.unitType==="master_case") return "MASTER CASE";
   if(d.unitType==="other") return d.customUnit||"OTHER";
@@ -1458,8 +1462,8 @@ function Ic({type,size}){var z=size||16;var p={home:"M3 9l9-7 9 7v11a2 2 0 0 1-2
 /* ═══ TOAST ═══ */
 function Toast({msg,isErr}){if(!msg)return null;return <div style={Object.assign({},S.to,isErr?S.toE:{})}>{msg}</div>;}
 
-function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCategoryDisabled,getOrderTypeDisabled,orderTypeSuffix,onCategoryChanged}){
-  var mainCats=[
+function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCategoryDisabled,getOrderTypeDisabled,orderTypeSuffix,onCategoryChanged,categories}){
+  var mainCats=categories||[
     {id:"vegetables",label:"Vegetables"},
     {id:"leaves",label:"Leaves"},
     {id:"vendor_orders",label:"Vendors"},
@@ -1607,7 +1611,7 @@ export default function App(){
       syncInFlightRef.current=true;
       try{
         if(initial){setIsLoading(true);}
-        var isA=user.role==="admin";
+        var isA=isPrivilegedRole(user);
         var fetches={
           items:apiClient.items.getAll(),
           stores:apiClient.stores.getAll(),
@@ -1709,7 +1713,7 @@ export default function App(){
     };
   },[userKey,auth.loading]);
   var refreshOrders=useCallback(async function(storeId){
-    var isAdminUser=user&&user.role==="admin";
+    var isAdminUser=isPrivilegedRole(user);
     var requestedStoreId=(typeof storeId==="string"&&storeId)?storeId:null;
     var raw=await apiClient.orders.getAll(isAdminUser?requestedStoreId:(user&&user.storeId?user.storeId:null));
     var orderMap=buildOrderStateMap(raw);
@@ -1741,7 +1745,9 @@ export default function App(){
   if(isLoading||loadError){return <div style={Object.assign({},S.lP,{justifyContent:"center"})}><div style={{color:loadError?"#F87171":"#64748B"}}>{loadError?loadError:"Loading..."}</div></div>;}
   
   var sN=user.storeId?(stores.find(function(s){return s.id===user.storeId;})||{}).name||user.storeId:"All Stores";
-  var isA=user.role==="admin";
+  var isA=isPrivilegedRole(user);
+  var isWarehouseUser=isWarehouseRole(user);
+  var isAdminOnly=isAdminRole(user);
   var openOrderTypes=manualOpenOrder?[manualOpenOrder]:activeTypes(schedule,scheduleToday);
   var aot=openOrderTypes.length?openOrderTypes[0]:null;
   var effectiveToday=Number.isInteger(scheduleToday)?scheduleToday:new Date().getDay();
@@ -1754,12 +1760,18 @@ export default function App(){
     ?normalizeVendorOrderList(serverActiveVendorOrderIds).filter(function(vendorKey){return knownSupplierIds.indexOf(vendorKey)>=0;})
     :calculatedActiveVendorOrderIds;
   var vendorOrdersWindowOpen=activeVendorOrderIds.length>0;
-  var navs=isA?[
+  var navs=isAdminOnly?[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"orders",label:"Order Monitor",ico:"clip"},
     {id:"consolidated",label:"Consolidated",ico:"grid"},{id:"supplier-orders",label:"Supplier Orders",ico:"truck"},
     {id:"items",label:"Item Master",ico:"up"},{id:"users",label:"Users",ico:"users"},
     {id:"suppliers",label:"Suppliers",ico:"truck"},{id:"notifications",label:"Notifications",ico:"bell"},
     {id:"stores",label:"Stores",ico:"pin"},{id:"reports",label:"Reports",ico:"chart"},
+    {id:"settings",label:"Settings",ico:"gear"},
+  ]:isWarehouseUser?[
+    {id:"dashboard",label:"Dashboard",ico:"home"},{id:"orders",label:"Order Monitor",ico:"clip"},
+    {id:"consolidated",label:"Consolidated",ico:"grid"},{id:"supplier-orders",label:"Supplier Orders",ico:"truck"},
+    {id:"items",label:"Item Master",ico:"up"},{id:"suppliers",label:"Suppliers",ico:"truck"},
+    {id:"notifications",label:"Notifications",ico:"bell"},{id:"reports",label:"Reports",ico:"chart"},
     {id:"settings",label:"Settings",ico:"gear"},
   ]:[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"order-entry",label:"Place Order",ico:"clip"},
@@ -1788,7 +1800,7 @@ export default function App(){
         <div style={{fontSize:9,fontWeight:600,color:"#6B7186",textTransform:"uppercase",letterSpacing:1,padding:"8px 10px 3px"}}>Navigation</div>
         {navs.map(function(n){return(<div key={n.id} style={Object.assign({},S.navItem,page===n.id?S.navA:S.navI)} onClick={function(){setPage(n.id);if(isMobile)setShowMobileNav(false);}}><Ic type={n.ico} size={15}/><span>{n.label}</span></div>);})}
       </nav>
-      <div style={S.ft}><div style={S.uC}><div style={S.av}>{(user?.name || user?.username || "?").charAt(0)}</div><div><div style={{fontSize:11,fontWeight:600}}>{user.name}</div><div style={{fontSize:9,color:"#6B7186"}}>{isA?"Admin":"Manager"}</div></div></div>
+      <div style={S.ft}><div style={S.uC}><div style={S.av}>{(user?.name || user?.username || "?").charAt(0)}</div><div><div style={{fontSize:11,fontWeight:600}}>{user.name||user.username}</div><div style={{fontSize:9,color:"#6B7186"}}>{displayRoleLabel(user)}</div></div></div>
         <button style={S.loB} onClick={function(){auth.logout();}}><Ic type="out" size={13}/><span>Sign Out</span></button></div>
     </aside>
     <div style={S.main}>
@@ -1803,12 +1815,15 @@ export default function App(){
 }
 
 /* ═══ ADMIN DASHBOARD ═══ */
-function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setConsolidatedRequest,vendorOrderConfigs}){
+function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setConsolidatedRequest,vendorOrderConfigs,user}){
   var _adlogs=useState([]),adminLogs=_adlogs[0],setAdminLogs=_adlogs[1];
+  var isWarehouseUser=isWarehouseRole(user);
   var todayKey=cycleBaseKey(new Date());
   var cycleOrders=Object.values(orders).filter(function(o){return !!(o&&isSameOrAdjacentDateWeekKey(o.week,todayKey));});
-  var sub=cycleOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
-  var proc=cycleOrders.filter(function(o){return o.status==="processed";}).length;
+  var vendorCycleOrders=cycleOrders.filter(function(o){return normalizeCategory(o&&o.category||"vegetables")==="vendor_orders";});
+  var summaryOrders=isWarehouseUser?vendorCycleOrders:cycleOrders;
+  var sub=summaryOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
+  var proc=summaryOrders.filter(function(o){return o.status==="processed";}).length;
   var vendorSummary=summarizeVendorKeys(activeVendorOrderIds,suppliers);
   useEffect(function(){
     var cancelled=false;
@@ -1818,13 +1833,10 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
     }).catch(function(){});
     return function(){cancelled=true;};
   },[]);
-  // Pending reminders: managers who haven't submitted for active order (vegetables AND leaves)
   var isStoreOrderSent=function(o){
     if(!o) return false;
     return o.status==="submitted"||o.status==="processed"||o.status==="draft_shared";
   };
-  // Build pending alerts across ALL open order categories for the current type.
-  // For type B, leaves orders are also active so both should be tracked.
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
   var dashboardTypes=openTypes;
   var pendingGroups=dashboardTypes.map(function(openType){
@@ -1865,6 +1877,7 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
     });
     return {vendorKey:vendorKey,vendorName:vendorName,pendingAlerts:pending};
   });
+  var vendorPendingTotal=vendorGroups.reduce(function(acc,group){return acc+group.pendingAlerts.length;},0);
   var vendorStatValue=!vendorGroups.length?"Locked":(vendorGroups.length===1?vendorGroups[0].vendorName:(vendorGroups.length+" Open"));
   var openVendorOrdersPage=function(vendorKey){
     if(vendorKey&&setConsolidatedRequest){
@@ -1926,15 +1939,15 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
   };
   return(<div>
     <div style={S.sg}>
-      <div style={S.sc}><div style={S.sL}>Stores</div><div style={Object.assign({},S.sV,{color:"#34D399"})}>{stores.length}</div></div>
-      <div style={S.sc}><div style={S.sL}>Items</div><div style={Object.assign({},S.sV,{color:"#166534"})}>{items.length}</div></div>
-      <div style={S.sc}><div style={S.sL}>Submitted</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div></div>
-      <div style={S.sc}><div style={S.sL}>Processed</div><div style={Object.assign({},S.sV,{color:"#0F766E"})}>{proc}</div></div>
-      <div style={S.sc}><div style={S.sL}>Pending</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{dashboardTypes.length?pendingTotal:"-"}</div></div>
-      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div><div style={S.sS}>{openTypes.length?"Currently open":"No active cycle"}</div></div>
+      {!isWarehouseUser&&<div style={S.sc}><div style={S.sL}>Stores</div><div style={Object.assign({},S.sV,{color:"#34D399"})}>{stores.length}</div></div>}
+      {!isWarehouseUser&&<div style={S.sc}><div style={S.sL}>Items</div><div style={Object.assign({},S.sV,{color:"#166534"})}>{items.length}</div></div>}
+      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Submitted":"Submitted"}</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div></div>
+      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Processed":"Processed"}</div><div style={Object.assign({},S.sV,{color:"#0F766E"})}>{proc}</div></div>
+      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Pending":"Pending"}</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{isWarehouseUser?vendorPendingTotal:(dashboardTypes.length?pendingTotal:"-")}</div></div>
+      {!isWarehouseUser&&<div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div><div style={S.sS}>{openTypes.length?"Currently open":"No active cycle"}</div></div>}
       <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
-    {pendingGroups.map(function(group){return(<div key={group.type} style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Order {group.type}</div><div style={S.d}>These stores have not submitted yet. Auto SMS runs in final 1 hour window every 30 minutes.</div></div>{group.pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){sendAllReminders(group.type);}}>Send Reminder to All</button>}</div>
+    {!isWarehouseUser&&pendingGroups.map(function(group){return(<div key={group.type} style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Order {group.type}</div><div style={S.d}>These stores have not submitted yet. Auto SMS runs in final 1 hour window every 30 minutes.</div></div>{group.pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){sendAllReminders(group.type);}}>Send Reminder to All</button>}</div>
       {group.pendingAlerts.length>0&&<div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Manager</th><th style={S.th}>Phone</th><th style={S.th}>Missing</th><th style={S.th}>Action</th></tr></thead><tbody>
         {group.pendingAlerts.map(function(row){return <tr key={group.type+"-"+row.storeId}><td style={S.td}>{row.store}</td><td style={S.td}>{row.manager}</td><td style={S.tm}>{row.phone}</td><td style={S.td}>{(row.missing||[]).map(function(m){return m.charAt(0).toUpperCase()+m.slice(1);}).join(", ")||"—"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){sendOneReminder(row,group.type);}}>Send SMS</button></td></tr>;})}
       </tbody></table></div>}
@@ -1956,19 +1969,19 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
       </tbody></table></div>}
       {group.pendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted the active vendor order.</div>}
     </div>);})}
-    {notifs.map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
+    {!isWarehouseUser&&notifs.map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={S.card}><div style={S.cH}><div style={S.t}>Quick Actions</div></div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
         <button style={Object.assign({},S.b,S.bP)} onClick={function(){setPage("consolidated");}}>Consolidated</button>
         {vendorGroups.map(function(group){return <button key={group.vendorKey} style={Object.assign({},S.b,S.bS)} onClick={function(){openVendorOrdersPage(group.vendorKey);}}>{group.vendorName}</button>;})}
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("supplier-orders");}}>Supplier Orders</button>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("reports");}}>Reports</button>
-        <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("items");}}>Items</button>
-        <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("users");}}>Users</button>
+        {!isWarehouseUser&&<button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("items");}}>Items</button>}
+        {!isWarehouseUser&&<button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("users");}}>Users</button>}
       </div></div>
-    <div style={S.card}><div style={S.t}>Order Schedule</div>
+    {!isWarehouseUser&&<div style={S.card}><div style={S.t}>Order Schedule</div>
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Day</th><th style={S.th}>Status</th></tr></thead><tbody>
-        {["A","B","C"].map(function(t){var open=openTypes.indexOf(t)>=0;return(<tr key={t}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {t}</td><td style={S.td}>{DAYS[schedule[t]]||"Unset"}</td><td style={S.td}><span style={Object.assign({},S.bg,open?S.bgG:S.bgY)}>{open?"Open":"Locked"}</span></td></tr>);})}</tbody></table></div></div>
+        {["A","B","C"].map(function(t){var open=openTypes.indexOf(t)>=0;return(<tr key={t}><td style={Object.assign({},S.td,{fontWeight:600})}>Order {t}</td><td style={S.td}>{DAYS[schedule[t]]||"Unset"}</td><td style={S.td}><span style={Object.assign({},S.bg,open?S.bgG:S.bgY)}>{open?"Open":"Locked"}</span></td></tr>);})}</tbody></table></div></div>}
   </div>);
 }
 
@@ -2049,7 +2062,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var _ed=useState(false),isEditingDraft=_ed[0],setIsEditingDraft=_ed[1];
   var _dl=useState({}),draftLockByKey=_dl[0],setDraftLockByKey=_dl[1];
   var unsavedByOrderKeyRef=useRef({});
-  var isAdmin=!!(user&&user.role==="admin");
+  var isAdmin=isPrivilegedRole(user);
   var vendorOptions=Array.isArray(suppliers)?suppliers:[];
   var activeVendorIds=normalizeVendorOrderList(activeVendorOrderIds);
   var activeVendorIdsKey=activeVendorIds.join("|");
@@ -2516,8 +2529,9 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
 }
 
 /* ═══ ORDER MONITOR (with time + process button) ═══ */
-function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,setPage,setConsolidatedType,setConsolidatedRequest,setReopenedFromId,suppliers}){
+function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,setPage,setConsolidatedType,setConsolidatedRequest,setReopenedFromId,suppliers,user}){
   var _f=useState("all"),ft=_f[0],sFt=_f[1];
+  var isWarehouseUser=isWarehouseRole(user);
   var _cl=useState([]),completedLogs=_cl[0],setCompletedLogs=_cl[1];
   var _sd=useState(null),selDone=_sd[0],setSelDone=_sd[1];
   var _sp=useState({}),sheetPreviewById=_sp[0],setSheetPreviewById=_sp[1];
@@ -2530,6 +2544,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var _hspl=useState({}),historySheetPreviewLoadingById=_hspl[0],setHistorySheetPreviewLoadingById=_hspl[1];
   var all=Object.entries(orders).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var f=(ft==="all"||ft==="completed")?all:all.filter(function(e){return e[1].type===ft;});
+  var monitorTabs=isWarehouseUser?["all","completed"]:["all","A","B","C","completed"];
   var vegSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
   var leavesSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});
   var vendorSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";});
@@ -2551,12 +2566,17 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     }catch(e){}
   };
   var loadSheetPreviewForLog=async function(log){
-    if(!log||!log._id||!log.hasExcel) return null;
-    var id=String(log._id);
+    if(!log) return null;
+    var isVendorLog=normalizeCategory(log.category||"vegetables")==="vendor_orders";
+    var id=isVendorLog?historyGroupKey(log):String(log._id||"");
+    if(!id) return null;
+    if(!isVendorLog&&!log.hasExcel) return null;
     if(sheetPreviewById[id]) return sheetPreviewById[id];
     try{
       setSheetPreviewLoadingById(function(prev){var n=Object.assign({},prev);n[id]=true;return n;});
-      var resp=await apiClient.supplierOrders.previewExcel(id);
+      var resp=isVendorLog
+        ? await apiClient.orders.consolidatedHistorySheetPreview(log.week,log.type,log.category||"vegetables",log.vendorKey||null)
+        : await apiClient.supplierOrders.previewExcel(id);
       var next={sheetName:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)};
       setSheetPreviewById(function(prev){var n=Object.assign({},prev);n[id]=next;return n;});
       return next;
@@ -2642,6 +2662,10 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   useEffect(function(){
     if(ft==="completed") refreshConsolidatedHistory();
   },[ft]);
+  useEffect(function(){
+    if(monitorTabs.indexOf(ft)>=0) return;
+    sFt("all");
+  },[ft,isWarehouseUser]);
   var reopenCompleted=async function(log){
     try{
       await apiClient.supplierOrders.reopen(log._id);
@@ -2714,6 +2738,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var completedVegetableLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vegetables";});
   var completedLeavesLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="leaves";});
   var completedVendorLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vendor_orders";});
+  var visibleConsolidatedHistory=isWarehouseUser?consolidatedHistory.filter(function(r){return normalizeCategory((r&&r.category)||"vegetables")==="vendor_orders";}):consolidatedHistory;
   var renderCompletedSection=function(title,rows){
     return(<div style={S.card}><div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>No completed orders</div>:
@@ -2738,20 +2763,20 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   };
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:14}}>
-      <div style={S.tabs}>{["all","A","B","C","completed"].map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?"All":t==="completed"?"Completed":"Order "+t}</button>;})}</div>
+      <div style={S.tabs}>{monitorTabs.map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?(isWarehouseUser?"Vendor Orders":"All"):t==="completed"?"Completed":"Order "+t}</button>;})}</div>
       {ft!=="all"&&ft!=="completed"&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){processAll(ft);}}>Process Order {ft} (All Stores)</button>}
     </div>
     {ft==="completed" ? (
       <Fragment>
         <div style={S.card}>
           <div style={S.cH}>
-            <div><div style={S.t}>Consolidated History (Last 7 Days)</div><div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div></div>
+            <div><div style={S.t}>{isWarehouseUser?"Vendor Consolidated History (Last 7 Days)":"Consolidated History (Last 7 Days)"}</div><div style={S.d}>{isWarehouseUser?"Vendor consolidated groups with sent/not sent status and store-level order details.":"All consolidated groups with sent/not sent status and store-level order details."}</div></div>
             <button style={Object.assign({},S.b,S.bS)} onClick={refreshConsolidatedHistory} disabled={historyLoading}>{historyLoading?"Refreshing...":"Refresh"}</button>
           </div>
           {historyLoading?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>Loading consolidated history...</div>:
-          consolidatedHistory.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No consolidated records in the last 7 days</div>:
+          visibleConsolidatedHistory.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No consolidated records in the last 7 days</div>:
           <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Latest</th><th style={S.th}>Week</th><th style={S.th}>Type</th><th style={S.th}>Category</th><th style={S.th}>Vendor</th><th style={S.th}>Stores</th><th style={S.th}>Sent</th><th style={S.th}>Actions</th></tr></thead><tbody>
-            {consolidatedHistory.map(function(r){
+            {visibleConsolidatedHistory.map(function(r){
               var rowKey=historyGroupKey(r);
               var isDownloading=!!historyDownloading[rowKey];
               return(<tr key={rowKey}>
@@ -2767,11 +2792,11 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
             })}
           </tbody></table></div>}
         </div>
-        {renderCompletedSection("Completed Vegetable Orders",completedVegetableLogs)}
-        {renderCompletedSection("Completed Leaves Orders",completedLeavesLogs)}
+        {!isWarehouseUser&&renderCompletedSection("Completed Vegetable Orders",completedVegetableLogs)}
+        {!isWarehouseUser&&renderCompletedSection("Completed Leaves Orders",completedLeavesLogs)}
         {renderCompletedSection("Completed Vendor Orders",completedVendorLogs)}
       </Fragment>
-    ) : (<Fragment>{renderSubmissionSection("Vegetable Orders",vegSubmissions)}{renderSubmissionSection("Leaves Orders",leavesSubmissions)}{renderSubmissionSection("Vendor Orders",vendorSubmissions)}</Fragment>)}
+    ) : (<Fragment>{!isWarehouseUser&&renderSubmissionSection("Vegetable Orders",vegSubmissions)}{!isWarehouseUser&&renderSubmissionSection("Leaves Orders",leavesSubmissions)}{renderSubmissionSection("Vendor Orders",vendorSubmissions)}</Fragment>)}
     {selDone&&(<div style={S.ov} onClick={function(){setSelDone(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>Sent Consolidated Order {selDone.type} - {fmtDT(selDone.sentAt)}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:8}}>Supplier: {selDone.supplierName} | {selDone.email} | Week: {selDone.week}</div>
@@ -2815,9 +2840,10 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
 }
 
 /* ═══ CONSOLIDATED ═══ */
-function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendors,setVendorOrdersOpenVendors,setServerActiveVendorOrderIds,vendorOrderConfigs,setVendorOrderConfigs,consolidatedType,setConsolidatedType,consolidatedRequest,setConsolidatedRequest,reopenedFromId,setReopenedFromId}){
+function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendors,setVendorOrdersOpenVendors,setServerActiveVendorOrderIds,vendorOrderConfigs,setVendorOrderConfigs,consolidatedType,setConsolidatedType,consolidatedRequest,setConsolidatedRequest,reopenedFromId,setReopenedFromId,user}){
   var _v=useState(consolidatedType||aot||"A"),vt=_v[0],sVt=_v[1];
-  var _cat=useState("vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
+  var isWarehouseUser=isWarehouseRole(user);
+  var _cat=useState(isWarehouseUser?"vendor_orders":"vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
   var _vk=useState(null),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
   var _ea=useState(false),editingAll=_ea[0],setEditingAll=_ea[1];
   var _eb=useState({}),editQtyByStore=_eb[0],setEditQtyByStore=_eb[1];
@@ -2938,6 +2964,11 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     }
   };
   useEffect(function(){
+    if(!isWarehouseUser) return;
+    if(selCategory==="vendor_orders") return;
+    setSelCategory("vendor_orders");
+  },[isWarehouseUser,selCategory]);
+  useEffect(function(){
     if(selCategory==="vendor_orders"){
       return;
     }else if(selectedVendorKey){
@@ -2969,6 +3000,9 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   useEffect(function(){
     if(!consolidatedRequest) return;
     var nextCategory=normalizeCategory(consolidatedRequest.category||"vegetables");
+    if(isWarehouseUser&&nextCategory!=="vendor_orders"){
+      nextCategory="vendor_orders";
+    }
     var nextVendorKey=normalizeVendorKey(nextCategory,consolidatedRequest.vendorKey||null);
     setSelCategory(nextCategory);
     setSelectedVendorKey(nextVendorKey);
@@ -2986,7 +3020,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     }
     setStep(1);
     if(setConsolidatedRequest) setConsolidatedRequest(null);
-  },[consolidatedRequest]);
+  },[consolidatedRequest,isWarehouseUser]);
   var supplierById=useMemo(function(){var m={};supplierList.forEach(function(s){m[s.id]=s;});return m;},[supplierList]);
   var selectedVendor=supplierById[resolvedVendorKey]||null;
   var reopenedRequestedType=(reopenedFromId&&consolidatedType)?consolidatedType:null;
@@ -4047,6 +4081,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         setSelCategory={setSelCategory}
         orderType={vt}
         setOrderType={function(t){if(editingAll){toast("Save quantities before switching order type",true);return;}sVt(t);if(setConsolidatedType)setConsolidatedType(t);}}
+        categories={isWarehouseUser?[{id:"vendor_orders",label:"Vendors"}]:null}
         getCategoryDisabled={function(catId){return catId==="vendor_orders"?visibleVendorOptions.length===0:!isCategoryOpenForType(catId,vt,onlyOpen||vt,manualOpenLeaves);}}
         getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:true;}}
         onCategoryChanged={function(){setStep(1);}}
@@ -4624,12 +4659,15 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
 }
 
 /* ═══ ITEM MASTER (no category rows) ═══ */
-function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategoryTemplates}){
+function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategoryTemplates,user}){
   var _a=useState(false),shA=_a[0],sA=_a[1];var _u=useState(false),shU=_u[0],sU=_u[1];
-  var _n=useState({code:"",name:"",category:"vegetables",unit:""}),nI=_n[0],sNI=_n[1];
+  var isWarehouseUser=isWarehouseRole(user);
+  var itemMasterCategories=isWarehouseUser?[{id:"vendor_orders",label:"Vendor Orders"}]:ORDER_CATEGORIES;
+  var defaultItemMasterCategory=isWarehouseUser?"vendor_orders":"vegetables";
+  var _n=useState({code:"",name:"",category:defaultItemMasterCategory,unit:""}),nI=_n[0],sNI=_n[1];
   var _s=useState(""),sr=_s[0],sSr=_s[1];var _c=useState(null),csv=_c[0],sC=_c[1];var _m=useState("merge"),md=_m[0],sMd=_m[1];
-  var _sc=useState("vegetables"),selCategory=_sc[0],setSelCategory=_sc[1];
-  var _uc=useState("vegetables"),uploadCategory=_uc[0],setUploadCategory=_uc[1];
+  var _sc=useState(defaultItemMasterCategory),selCategory=_sc[0],setSelCategory=_sc[1];
+  var _uc=useState(defaultItemMasterCategory),uploadCategory=_uc[0],setUploadCategory=_uc[1];
   var _sv=useState(null),selectedVendorKey=_sv[0],setSelectedVendorKey=_sv[1];
   var _uv=useState(null),uploadVendorKey=_uv[0],setUploadVendorKey=_uv[1];
   var _ut=useState(null),uploadTemplate=_ut[0],setUploadTemplate=_ut[1];
@@ -4637,6 +4675,12 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
   var _rvm=useState(false),showRawViewModal=_rvm[0],setShowRawViewModal=_rvm[1];
   var fR=useRef(null);
   var vendorOptions=Array.isArray(suppliers)?suppliers:[];
+  useEffect(function(){
+    if(!isWarehouseUser) return;
+    if(selCategory!=="vendor_orders") setSelCategory("vendor_orders");
+    if(uploadCategory!=="vendor_orders") setUploadCategory("vendor_orders");
+    if(nI.category!=="vendor_orders") sNI(function(prev){return Object.assign({},prev,{category:"vendor_orders"});});
+  },[isWarehouseUser,selCategory,uploadCategory,nI.category]);
   useEffect(function(){
     if(selCategory==="vendor_orders"){
       return;
@@ -4845,7 +4889,7 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
     <div style={S.cH}>
       <div><div style={S.t}>Item Master</div><div style={S.d}>{sorted.length} items in {CATEGORY_LABELS[selCategory]}</div></div>
       <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-        <div style={S.tabs}>{ORDER_CATEGORIES.map(function(cat){return <button key={cat.id} style={Object.assign({},S.tab,selCategory===cat.id?S.tA:S.tI)} onClick={function(){setSelCategory(cat.id);setUploadCategory(cat.id);sNI(function(prev){return Object.assign({},prev,{category:cat.id});});}}>{cat.label}</button>;})}</div>
+        <div style={S.tabs}>{itemMasterCategories.map(function(cat){return <button key={cat.id} style={Object.assign({},S.tab,selCategory===cat.id?S.tA:S.tI)} onClick={function(){setSelCategory(cat.id);setUploadCategory(cat.id);sNI(function(prev){return Object.assign({},prev,{category:cat.id});});}}>{cat.label}</button>;})}</div>
         {selCategory==="vendor_orders"&&<select style={Object.assign({},S.inp,{width:220})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setUploadVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{vendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>}
         <div style={S.sB}><Ic type="search" size={13}/><input style={S.sI} placeholder="Search..." value={sr} onChange={function(e){sSr(e.target.value);}}/></div>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){fR.current&&fR.current.click();}}>Upload CSV/Excel/Word</button>
@@ -4869,13 +4913,13 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Add New Item</div>
       <div style={S.fg}><div style={S.lb}>Code *</div><input style={S.inp} value={nI.code} onChange={function(e){sNI(Object.assign({},nI,{code:e.target.value}));}}/></div>
       <div style={S.fg}><div style={S.lb}>Name *</div><input style={S.inp} value={nI.name} onChange={function(e){sNI(Object.assign({},nI,{name:e.target.value}));}}/></div>
-      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Category</div><select style={S.inp} value={nI.category} onChange={function(e){sNI(Object.assign({},nI,{category:e.target.value}));}}>{ORDER_CATEGORIES.map(function(cat){return <option key={cat.id} value={cat.id}>{cat.label}</option>;})}</select></div>
+      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Category</div><select style={S.inp} value={nI.category} onChange={function(e){sNI(Object.assign({},nI,{category:e.target.value}));}}>{itemMasterCategories.map(function(cat){return <option key={cat.id} value={cat.id}>{cat.label}</option>;})}</select></div>
         <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Unit</div><input style={S.inp} value={nI.unit} onChange={function(e){sNI(Object.assign({},nI,{unit:e.target.value}));}}/></div></div>
       {nI.category==="vendor_orders"&&<div style={S.fg}><div style={S.lb}>Vendor</div><select style={S.inp} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{vendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select></div>}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sA(false);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={add}>Add</button></div></div></div>)}
     {shU&&csv&&(<div style={S.ov} onClick={function(){sU(false);sC(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Upload {CATEGORY_LABELS[uploadCategory]} - {csv.length} items found</div>
-      <div style={S.fg}><div style={S.lb}>Category</div><select style={S.inp} value={uploadCategory} onChange={function(e){setUploadCategory(e.target.value);}}>{ORDER_CATEGORIES.map(function(cat){return <option key={cat.id} value={cat.id}>{cat.label}</option>;})}</select></div>
+      <div style={S.fg}><div style={S.lb}>Category</div><select style={S.inp} value={uploadCategory} onChange={function(e){setUploadCategory(e.target.value);}}>{itemMasterCategories.map(function(cat){return <option key={cat.id} value={cat.id}>{cat.label}</option>;})}</select></div>
       {uploadCategory==="vendor_orders"&&<div style={S.fg}><div style={S.lb}>Vendor</div><select style={S.inp} value={uploadVendorKey||""} onChange={function(e){setUploadVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{vendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select></div>}
       <div style={S.fg}><div style={S.lb}>Mode</div><select style={S.inp} value={md} onChange={function(e){sMd(e.target.value);}}><option value="merge">Merge</option><option value="replace">Replace</option></select></div>
       {uploadTemplate&&<div style={S.nI}>{uploadTemplate.kind==="docx_vendor_form"?"Word template layout detected. Store documents will preserve the uploaded vendor form format.":"Template layout detected from the uploaded form. This category will use the same row/column layout for document output."}</div>}
@@ -4906,24 +4950,24 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
 /* ═══ USER MANAGEMENT (with phone) ═══ */
 function UserMgmt({users,setUsers,toast,stores}){
   var _a=useState(false),shA=_a[0],sA=_a[1];
-  var _n=useState({username:"",password:"",name:"",phone:"",role:"manager",storeId:stores[0]?stores[0].id:"",active:true}),nu=_n[0],sN=_n[1];
+  var _n=useState({username:"",password:"",name:"",phone:"",email:"",role:"manager",storeId:stores[0]?stores[0].id:"",active:true}),nu=_n[0],sN=_n[1];
   var _cs=useState(""),customStore=_cs[0],setCustomStore=_cs[1];
   var _osm=useState(false),otherStoreMode=_osm[0],setOtherStoreMode=_osm[1];
   var _r=useState(null),rP=_r[0],sRP=_r[1];var _pw=useState(""),nPw=_pw[0],sNP=_pw[1];
   var _eu=useState(null),editUserId=_eu[0],setEditUserId=_eu[1];
-  var _ef=useState({username:"",name:"",phone:"",role:"manager",storeId:"",active:true}),editF=_ef[0],setEditF=_ef[1];
+  var _ef=useState({username:"",name:"",phone:"",email:"",role:"manager",storeId:"",active:true}),editF=_ef[0],setEditF=_ef[1];
   var _ecs=useState(""),editCustomStore=_ecs[0],setEditCustomStore=_ecs[1];
   var _eosm=useState(false),editOtherStoreMode=_eosm[0],setEditOtherStoreMode=_eosm[1];
   var add=async function(){
       var resolvedStoreId=otherStoreMode?customStore.trim():nu.storeId;
-      if(!nu.username||!nu.password||!nu.name||!nu.phone){toast("All fields including phone required",true);return;}
+      if(!nu.username||!nu.password||!nu.name||!nu.phone||!nu.email){toast("Name, phone, email, username and password are required",true);return;}
       if(nu.role==="manager"&&!resolvedStoreId){toast("Store is required for manager",true);return;}
       if(users.find(function(u){return u.username===nu.username;})){toast("Username exists",true);return;}
       try{
         await apiClient.users.create(Object.assign({},nu,{storeId:resolvedStoreId||null}));
         const all=await apiClient.users.getAll();
         setUsers(all);
-        sN({username:"",password:"",name:"",phone:"",role:"manager",storeId:stores[0]?stores[0].id:"",active:true});
+        sN({username:"",password:"",name:"",phone:"",email:"",role:"manager",storeId:stores[0]?stores[0].id:"",active:true});
         setCustomStore("");
         setOtherStoreMode(false);
         sA(false);
@@ -4947,7 +4991,7 @@ function UserMgmt({users,setUsers,toast,stores}){
       }catch(e){toast(e.message,true);}    };
   var openEdit=function(u){
       setEditUserId(u.id||u.username);
-      setEditF({username:u.username||"",name:u.name||"",phone:u.phone||"",role:u.role||"manager",storeId:u.storeId||"",active:!!u.active});
+      setEditF({username:u.username||"",name:u.name||"",phone:u.phone||"",email:u.email||"",role:u.role||"manager",storeId:u.storeId||"",active:!!u.active});
       var known=stores.some(function(s){return s.id===(u.storeId||"");});
       setEditOtherStoreMode(!!(u.storeId&&!known));
       setEditCustomStore(known?"":(u.storeId||""));
@@ -4955,7 +4999,7 @@ function UserMgmt({users,setUsers,toast,stores}){
   var saveEdit=async function(){
       if(!editUserId) return;
       var resolvedStoreId=editOtherStoreMode?editCustomStore.trim():editF.storeId;
-      if(!editF.username||!editF.name||!editF.phone){toast("Name, username and phone are required",true);return;}
+      if(!editF.username||!editF.name||!editF.phone||!editF.email){toast("Name, username, phone and email are required",true);return;}
       if(editF.role==="manager"&&!resolvedStoreId){toast("Store is required for manager",true);return;}
       try{
         await apiClient.users.update(editUserId, Object.assign({},editF,{storeId:resolvedStoreId||null}));
@@ -4976,10 +5020,10 @@ function UserMgmt({users,setUsers,toast,stores}){
       }catch(e){toast(e.message,true);}    };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>Users</div><div style={S.d}>{users.length} total</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sA(true);}}>+ Add</button></div>
-    <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Phone</th><th style={S.th}>Role</th><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>
+    <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Phone</th><th style={S.th}>Email</th><th style={S.th}>Role</th><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>
       {users.map(function(u){var sn=u.storeId?((stores.find(function(s){return s.id===u.storeId;})||{}).name||u.storeId):"-";return(<tr key={u.username}>
-        <td style={Object.assign({},S.td,{fontWeight:500})}>{u.name}</td><td style={S.tm}>{u.username}</td><td style={S.tm}>{u.phone||"-"}</td>
-        <td style={S.td}><span style={Object.assign({},S.bg,u.role==="admin"?S.bgB:S.bgG)}>{u.role}</span></td><td style={S.td}>{sn}</td>
+        <td style={Object.assign({},S.td,{fontWeight:500})}>{u.name}</td><td style={S.tm}>{u.username}</td><td style={S.tm}>{u.phone||"-"}</td><td style={S.tm}>{u.email||"-"}</td>
+        <td style={S.td}><span style={Object.assign({},S.bg,u.role==="admin"?S.bgB:(u.role==="warehouse"?S.bgW:S.bgG))}>{u.role}</span></td><td style={S.td}>{sn}</td>
         <td style={S.td}><span style={Object.assign({},S.bg,u.active?S.bgG:S.bgR)}>{u.active?"Active":"Off"}</span></td>
         <td style={S.td}><div style={{display:"flex",gap:3}}>
           <button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){toggle(u.id||u.username);}}>{u.active?"Disable":"Enable"}</button>
@@ -4992,7 +5036,8 @@ function UserMgmt({users,setUsers,toast,stores}){
       <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Username *</div><input style={S.inp} value={nu.username} onChange={function(e){sN(Object.assign({},nu,{username:e.target.value}));}}/></div>
         <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Password *</div><input style={S.inp} type="password" value={nu.password} onChange={function(e){sN(Object.assign({},nu,{password:e.target.value}));}}/></div></div>
       <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Phone *</div><input style={S.inp} value={nu.phone} onChange={function(e){sN(Object.assign({},nu,{phone:e.target.value}));}} placeholder="555-0100"/></div>
-        <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Role</div><select style={S.inp} value={nu.role} onChange={function(e){sN(Object.assign({},nu,{role:e.target.value}));}}><option value="manager">Manager</option><option value="admin">Admin</option></select></div></div>
+        <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Email *</div><input style={S.inp} value={nu.email} onChange={function(e){sN(Object.assign({},nu,{email:e.target.value}));}} placeholder="name@example.com"/></div></div>
+      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Role</div><select style={S.inp} value={nu.role} onChange={function(e){sN(Object.assign({},nu,{role:e.target.value}));}}><option value="manager">Manager</option><option value="warehouse">Warehouse</option><option value="admin">Admin</option></select></div></div>
       <div style={S.fg}><div style={S.lb}>Store</div><select style={S.inp} value={otherStoreMode?"__other__":(nu.storeId||"")} onChange={function(e){
         if(e.target.value==="__other__"){setOtherStoreMode(true);}
         else{setOtherStoreMode(false);sN(Object.assign({},nu,{storeId:e.target.value}));}
@@ -5008,7 +5053,8 @@ function UserMgmt({users,setUsers,toast,stores}){
       <div style={S.fg}><div style={S.lb}>Name *</div><input style={S.inp} value={editF.name} onChange={function(e){setEditF(Object.assign({},editF,{name:e.target.value}));}}/></div>
       <div style={S.fg}><div style={S.lb}>Username *</div><input style={S.inp} value={editF.username} onChange={function(e){setEditF(Object.assign({},editF,{username:e.target.value}));}}/></div>
       <div style={S.fg}><div style={S.lb}>Phone *</div><input style={S.inp} value={editF.phone} onChange={function(e){setEditF(Object.assign({},editF,{phone:e.target.value}));}}/></div>
-      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Role</div><select style={S.inp} value={editF.role} onChange={function(e){setEditF(Object.assign({},editF,{role:e.target.value}));}}><option value="manager">Manager</option><option value="admin">Admin</option></select></div>
+      <div style={S.fg}><div style={S.lb}>Email *</div><input style={S.inp} value={editF.email} onChange={function(e){setEditF(Object.assign({},editF,{email:e.target.value}));}} placeholder="name@example.com"/></div>
+      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Role</div><select style={S.inp} value={editF.role} onChange={function(e){setEditF(Object.assign({},editF,{role:e.target.value}));}}><option value="manager">Manager</option><option value="warehouse">Warehouse</option><option value="admin">Admin</option></select></div>
       <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Store</div><select style={S.inp} value={editOtherStoreMode?"__other__":(editF.storeId||"")} onChange={function(e){
         if(e.target.value==="__other__"){setEditOtherStoreMode(true);}
         else{setEditOtherStoreMode(false);setEditF(Object.assign({},editF,{storeId:e.target.value}));}
@@ -5108,25 +5154,27 @@ function NotifMgmt({notifs,setNotifs,toast}){
 /* ═══ STORE LOCATIONS ═══ */
 function StoreMgmt({stores,setStores,toast}){
   var _e=useState(null),eId=_e[0],sEId=_e[1];var _en=useState(""),eN=_en[0],sEN=_en[1];
-  var _a=useState(false),sh=_a[0],sS=_a[1];var _n=useState({id:"",name:""}),ns=_n[0],sN=_n[1];
-  var startE=function(s){sEId(s.id);sEN(s.name);};
+  var _ee=useState(""),eEmail=_ee[0],sEEmail=_ee[1];
+  var _a=useState(false),sh=_a[0],sS=_a[1];var _n=useState({id:"",name:"",email:""}),ns=_n[0],sN=_n[1];
+  var startE=function(s){sEId(s.id);sEN(s.name);sEEmail(s.email||"");};
   var saveE=async function(){
       if(!eN.trim()){toast("Name required",true);return;}
       try{
-        await apiClient.stores.update(eId,{name:eN.trim()});
+        await apiClient.stores.update(eId,{name:eN.trim(),email:eEmail.trim()});
         const all=await apiClient.stores.getAll();
         setStores(all);
         sEId(null);
+        sEEmail("");
         toast("Updated");
       }catch(e){toast(e.message,true);}    };
   var addS=async function(){
       if(!ns.id||!ns.name){toast("ID and Name required",true);return;}
       if(stores.find(function(s){return s.id===ns.id;})){toast("ID exists",true);return;}
       try{
-        await apiClient.stores.create({id:ns.id.trim(),name:ns.name.trim()});
+        await apiClient.stores.create({id:ns.id.trim(),name:ns.name.trim(),email:ns.email.trim()});
         const all=await apiClient.stores.getAll();
         setStores(all);
-        sN({id:"",name:""});sS(false);
+        sN({id:"",name:"",email:""});sS(false);
         toast("Store added");
       }catch(e){toast(e.message,true);}    };
   var rmS=async function(id){
@@ -5138,45 +5186,49 @@ function StoreMgmt({stores,setStores,toast}){
         toast("Removed");
       }catch(e){toast(e.message,true);}    };
   return(<div><div style={S.card}><div style={S.cH}><div><div style={S.t}>Store Locations</div></div><button style={Object.assign({},S.b,S.bP)} onClick={function(){sS(true);}}>+ Add</button></div>
-    <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>ID</th><th style={S.th}>Name</th><th style={Object.assign({},S.th,{width:140})}>Actions</th></tr></thead><tbody>
-      {stores.map(function(s){return(<tr key={s.id}><td style={S.tm}>{s.id}</td><td style={S.td}>{eId===s.id?<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={Object.assign({},S.inp,{flex:1})} value={eN} onChange={function(e){sEN(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter")saveE();}}/><button style={Object.assign({},S.b,S.bG,{padding:"3px 8px"})} onClick={saveE}>Save</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px"})} onClick={function(){sEId(null);}}>X</button></div>:<span style={{fontWeight:500}}>{s.name}</span>}</td>
+    <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>ID</th><th style={S.th}>Name</th><th style={S.th}>Email</th><th style={Object.assign({},S.th,{width:140})}>Actions</th></tr></thead><tbody>
+      {stores.map(function(s){return(<tr key={s.id}><td style={S.tm}>{s.id}</td><td style={S.td}>{eId===s.id?<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={Object.assign({},S.inp,{flex:1})} value={eN} onChange={function(e){sEN(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter")saveE();}}/><button style={Object.assign({},S.b,S.bG,{padding:"3px 8px"})} onClick={saveE}>Save</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px"})} onClick={function(){sEId(null);sEEmail("");}}>X</button></div>:<span style={{fontWeight:500}}>{s.name}</span>}</td><td style={S.tm}>{eId===s.id?<input style={Object.assign({},S.inp,{minWidth:220})} value={eEmail} onChange={function(e){sEEmail(e.target.value);}} placeholder="store@example.com"/>:(s.email||"-")}</td>
         <td style={S.td}>{eId!==s.id&&<div style={{display:"flex",gap:3}}><button style={Object.assign({},S.b,S.bS,{padding:"2px 8px",fontSize:10})} onClick={function(){startE(s);}}>Edit</button><button style={Object.assign({},S.b,S.bD,{padding:"2px 8px",fontSize:10})} onClick={function(){rmS(s.id);}}>Del</button></div>}</td></tr>);})}</tbody></table></div></div>
     {sh&&(<div style={S.ov} onClick={function(){sS(false);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Add Store</div>
       <div style={S.fg}><div style={S.lb}>Store ID *</div><input style={S.inp} value={ns.id} onChange={function(e){sN(Object.assign({},ns,{id:e.target.value}));}} placeholder="S6"/></div>
       <div style={S.fg}><div style={S.lb}>Store Name *</div><input style={S.inp} value={ns.name} onChange={function(e){sN(Object.assign({},ns,{name:e.target.value}));}}/></div>
+      <div style={S.fg}><div style={S.lb}>Store Email</div><input style={S.inp} value={ns.email} onChange={function(e){sN(Object.assign({},ns,{email:e.target.value}));}} placeholder="store@example.com"/></div>
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sS(false);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={addS}>Add</button></div></div></div>)}
   </div>);
 }
 
 /* ═══ REPORTS ═══ */
-function Reports({orders,items,stores}){
+function Reports({orders,items,stores,user}){
   var _tab=useState("top"),tab=_tab[0],sTab=_tab[1];
-  // Aggregate all order data
+  var isWarehouseUser=isWarehouseRole(user);
+  // Aggregate report data, filtering warehouse users to vendor orders only.
   var agg=useMemo(function(){
     var itemTotals={};var storeTotals={};var catTotals={};var orderCount=0;
-    Object.entries(orders).forEach(function(e){var o=e[1];if(!o.items)return;orderCount++;
+    Object.entries(orders).forEach(function(e){var o=e[1];if(!o.items)return;
+      if(isWarehouseUser&&normalizeCategory(o.category||"vegetables")!=="vendor_orders") return;
+      orderCount++;
       var sid=o.store;if(!storeTotals[sid])storeTotals[sid]={submitted:0,processed:0,draft:0,total:0};storeTotals[sid][o.status]=(storeTotals[sid][o.status]||0)+1;storeTotals[sid].total++;
-      Object.entries(o.items).forEach(function(ie){var code=ie[0],qty=ie[1];if(qty<=0)return;if(!itemTotals[code])itemTotals[code]={qty:0,orders:0};itemTotals[code].qty+=qty;itemTotals[code].orders++;
-        var it=items.find(function(i){return i.code===code;});if(it){var cat=it.category||"Other";if(!catTotals[cat])catTotals[cat]={qty:0,items:{}};catTotals[cat].qty+=qty;catTotals[cat].items[code]=true;}});});
+      Object.entries(o.items).forEach(function(ie){var code=ie[0],qtyEntry=normalizeOrderItemEntry(ie[1]),qty=qtyEntry.qty;if(qty<=0)return;if(!itemTotals[code])itemTotals[code]={qty:0,orders:0};itemTotals[code].qty+=qty;itemTotals[code].orders++;
+        var it=items.find(function(i){return i.code===code;});var cat=it?it.category:(o.category||"Other");if(!catTotals[cat])catTotals[cat]={qty:0,items:{}};catTotals[cat].qty+=qty;catTotals[cat].items[code]=true;});});
     // Top items sorted by qty
     var topItems=Object.entries(itemTotals).map(function(e){var it=items.find(function(i){return i.code===e[0];});return{code:e[0],codeDisplay:String(e[0]||"").indexOf("XLS::")===0?String(e[0]).slice(5):e[0],name:it?it.name:displayNameForOrderKey(e[0],items),category:it?it.category:"",qty:e[1].qty,orders:e[1].orders};}).sort(function(a,b){return b.qty-a.qty;});
     var catList=Object.entries(catTotals).map(function(e){return{category:e[0],qty:e[1].qty,uniqueItems:Object.keys(e[1].items).length};}).sort(function(a,b){return b.qty-a.qty;});
     var storeList=Object.entries(storeTotals).map(function(e){var st=stores.find(function(s){return s.id===e[0];});return Object.assign({id:e[0],name:st?st.name:e[0]},e[1]);});
     return{topItems:topItems,catList:catList,storeList:storeList,orderCount:orderCount};
-  },[orders,items,stores]);
+  },[orders,items,stores,isWarehouseUser]);
 
   return(<div>
     <div style={S.tabs}>
       {[["top","Top Items"],["category","By Category"],["store","By Store"]].map(function(t){return <button key={t[0]} style={Object.assign({},S.tab,tab===t[0]?S.tA:S.tI)} onClick={function(){sTab(t[0]);}}>{t[1]}</button>;})}
     </div>
     <div style={S.sg}>
-      <div style={S.sc}><div style={S.sL}>Total Orders</div><div style={Object.assign({},S.sV,{color:"#166534"})}>{agg.orderCount}</div></div>
-      <div style={S.sc}><div style={S.sL}>Unique Items Ordered</div><div style={Object.assign({},S.sV,{color:"#34D399"})}>{agg.topItems.length}</div></div>
-      <div style={S.sc}><div style={S.sL}>Categories Active</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{agg.catList.length}</div></div>
+      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Orders":"Total Orders"}</div><div style={Object.assign({},S.sV,{color:"#166534"})}>{agg.orderCount}</div></div>
+      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Items Ordered":"Unique Items Ordered"}</div><div style={Object.assign({},S.sV,{color:"#34D399"})}>{agg.topItems.length}</div></div>
+      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Categories":"Categories Active"}</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{agg.catList.length}</div></div>
     </div>
 
-    {tab==="top"&&(<div style={S.card}><div style={S.t}>Most Ordered Items</div><div style={S.d}>Ranked by total quantity across all orders</div>
+    {tab==="top"&&(<div style={S.card}><div style={S.t}>{isWarehouseUser?"Most Ordered Vendor Items":"Most Ordered Items"}</div><div style={S.d}>{isWarehouseUser?"Ranked by total quantity across vendor orders":"Ranked by total quantity across all orders"}</div>
       {agg.topItems.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No order data yet. Submit some orders first.</div>:
       <div style={Object.assign({},S.tw,{marginTop:10})}><table style={S.tbl}><thead><tr><th style={S.th}>#</th><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={S.th}>Category</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Total Qty</th><th style={Object.assign({},S.th,{textAlign:"right"})}>In Orders</th><th style={S.th}>Bar</th></tr></thead><tbody>
         {agg.topItems.slice(0,20).map(function(it,i){var maxQ=agg.topItems[0].qty;var pct=maxQ>0?Math.round(it.qty/maxQ*100):0;return(<tr key={it.code}><td style={Object.assign({},S.td,{fontWeight:700,color:"#6B7186"})}>{i+1}</td><td style={S.tm}>{it.codeDisplay}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category}</td>
@@ -5184,7 +5236,7 @@ function Reports({orders,items,stores}){
           <td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{it.orders}</td>
           <td style={Object.assign({},S.td,{width:120})}><div style={{height:8,borderRadius:4,background:"rgba(148,163,184,.22)",overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",background:"linear-gradient(90deg,#16A34A,#22C55E)",borderRadius:4}}/></div></td></tr>);})}</tbody></table></div>}</div>)}
 
-    {tab==="category"&&(<div style={S.card}><div style={S.t}>Orders by Category</div>
+    {tab==="category"&&(<div style={S.card}><div style={S.t}>{isWarehouseUser?"Vendor Orders by Category":"Orders by Category"}</div>
       {agg.catList.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No data</div>:
       <div style={Object.assign({},S.tw,{marginTop:10})}><table style={S.tbl}><thead><tr><th style={S.th}>Category</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Total Qty</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Unique Items</th><th style={S.th}>Bar</th></tr></thead><tbody>
         {agg.catList.map(function(c){var maxQ=agg.catList[0].qty;var pct=maxQ>0?Math.round(c.qty/maxQ*100):0;return(<tr key={c.category}><td style={Object.assign({},S.td,{fontWeight:600})}>{c.category}</td>
@@ -5192,7 +5244,7 @@ function Reports({orders,items,stores}){
           <td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{c.uniqueItems}</td>
           <td style={Object.assign({},S.td,{width:120})}><div style={{height:8,borderRadius:4,background:"rgba(148,163,184,.22)",overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",background:"linear-gradient(90deg,#34D399,#059669)",borderRadius:4}}/></div></td></tr>);})}</tbody></table></div>}</div>)}
 
-    {tab==="store"&&(<div style={S.card}><div style={S.t}>Orders by Store</div>
+    {tab==="store"&&(<div style={S.card}><div style={S.t}>{isWarehouseUser?"Vendor Orders by Store":"Orders by Store"}</div>
       {agg.storeList.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No data</div>:
       <div style={Object.assign({},S.tw,{marginTop:10})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Total</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Submitted</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Processed</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Drafts</th></tr></thead><tbody>
         {agg.storeList.map(function(s){return(<tr key={s.id}><td style={Object.assign({},S.td,{fontWeight:500})}>{s.name}</td>
@@ -5204,7 +5256,7 @@ function Reports({orders,items,stores}){
 }
 
 /* ═══ SETTINGS (editable schedule + order messages) ═══ */
-function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrder,manualOpenSeq,setManualOpenSeq,manualOpenLeaves,setManualOpenLeaves,vendorOrderConfigs,setVendorOrderConfigs,setVendorOrdersOpenVendors,setServerActiveVendorOrderIds,scheduleToday,setReopenedFromId,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo,suppliers}){
+function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrder,manualOpenSeq,setManualOpenSeq,manualOpenLeaves,setManualOpenLeaves,vendorOrderConfigs,setVendorOrderConfigs,setVendorOrdersOpenVendors,setServerActiveVendorOrderIds,scheduleToday,setReopenedFromId,orderMsgs,setOrderMsgs,toast,logo,setLogo,logoRef,handleLogo,suppliers,user}){
   var _e=useState(null),ed=_e[0],sEd=_e[1];var _v=useState(0),eV=_v[0],sEV=_v[1];
   var _em=useState(null),emT=_em[0],sEmT=_em[1];var _emV=useState(""),emV=_emV[0],sEmV=_emV[1];
   var _mo=useState(manualOpenOrder||""),moType=_mo[0],sMoType=_mo[1];
@@ -5213,6 +5265,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
   var _vws=useState(null),vendorWindowStartValue=_vws[0],setVendorWindowStartValue=_vws[1];
   var _vwe=useState(null),vendorWindowEndValue=_vwe[0],setVendorWindowEndValue=_vwe[1];
   var knownSupplierIds=normalizeVendorOrderList((suppliers||[]).map(function(s){return s&&s.id;}));
+  var isWarehouseUser=isWarehouseRole(user);
   var normalizedVendorConfigs=normalizeVendorOrderConfigs(vendorOrderConfigs).filter(function(config){
     return config&&knownSupplierIds.indexOf(String(config.vendorKey||""))>=0;
   });
@@ -5365,7 +5418,8 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       }catch(e){toast(e.message,true);}
     };
   return(<div>
-    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Vegetable Order Schedule</div><div style={S.d}>Edit day for each order type</div></div></div>
+    <div style={S.card}><div style={S.cH}><div><div style={S.t}>{isWarehouseUser?"Vendor Orders Activation":"Vegetable Order Schedule"}</div><div style={S.d}>{isWarehouseUser?"Open or schedule vendor orders for stores and notify store emails automatically.":"Edit day for each order type"}</div></div></div>
+      {!isWarehouseUser&&<Fragment>
       <div style={Object.assign({},S.tw,{marginTop:4})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Day</th><th style={Object.assign({},S.th,{width:120})}>Actions</th></tr></thead><tbody>
         {["A","B","C"].map(function(t){var isE=ed===t;return(<tr key={t}><td style={Object.assign({},S.td,{fontWeight:600,fontSize:13})}>Order {t}</td><td style={S.td}>{isE?<select style={Object.assign({},S.inp,{width:140})} value={eV} onChange={function(e){
                 var v=e.target.value;
@@ -5407,6 +5461,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
           {manualOpenLeaves&&<span style={Object.assign({},S.bg,S.bgW)}>Leaves Override Active</span>}
         </div>
       </div>
+      </Fragment>}
       <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(148,163,184,.24)"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#0F172A",marginBottom:4}}>Vendor Orders Activation</div>
         <div style={{fontSize:11,color:"#64748B",marginBottom:8}}>Select a supplier to open the schedule form. Set From and To day, cancel schedule, or use Open for 24 hours to auto-close after one day.</div>
@@ -5460,7 +5515,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
       </div>
     </div>
 
-    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Messages</div><div style={S.d}>Custom instructions shown to managers for each order type</div></div></div>
+    {!isWarehouseUser&&<div style={S.card}><div style={S.cH}><div><div style={S.t}>Order Messages</div><div style={S.d}>Custom instructions shown to managers for each order type</div></div></div>
       {["A","B","C"].map(function(t){var isE=emT===t;return(<div key={t} style={{padding:"10px 0",borderBottom:"1px solid rgba(148,163,184,.24)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
           <div style={{flex:1}}><div style={{fontSize:12,fontWeight:600,marginBottom:4}}>Order {t}</div>
@@ -5468,21 +5523,23 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
             :<div style={{fontSize:12,color:"#64748B",lineHeight:1.5}}>{orderMsgs[t]||"No message set"}</div>}</div>
           <div>{isE?<div style={{display:"flex",gap:3}}><button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10})} onClick={saveMsg}>Save</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){sEmT(null);}}>X</button></div>
             :<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){sEmT(t);sEmV(orderMsgs[t]||"");}}><Ic type="edit" size={11}/> Edit</button>}</div></div></div>);})}</div>
+    }
 
-    <div style={S.card}><div style={S.cH}><div><div style={S.t}>Company Logo</div><div style={S.d}>Upload your logo to replace the default "OM" icon (max 500KB)</div></div></div>
+    {!isWarehouseUser&&<div style={S.card}><div style={S.cH}><div><div style={S.t}>Company Logo</div><div style={S.d}>Upload your logo to replace the default "OM" icon (max 500KB)</div></div></div>
       <div style={{display:"flex",alignItems:"center",gap:14,marginTop:4}}>
         {logo?<img src={logo} alt="Logo" style={{width:48,height:48,borderRadius:10,objectFit:"cover",border:"1px solid rgba(148,163,184,.24)"}}/>:<div style={Object.assign({},S.logo,{width:48,height:48,fontSize:16})}>OM</div>}
         <div style={{display:"flex",gap:6}}>
           <button style={Object.assign({},S.b,S.bP)} onClick={function(){logoRef.current&&logoRef.current.click();}}>Upload Logo</button>
           {logo&&<button style={Object.assign({},S.b,S.bD)} onClick={async function(){setLogo(null);toast("Logo removed");try{await apiClient.settings.updateLogo(null);}catch(e){console.error('logo clear failed',e);toast('Unable to clear logo',true);} }}>Remove</button>}
         </div>
-      </div></div>
+      </div></div>}
 
-    <div style={S.card}><div style={S.t}>Stores</div>
+    {!isWarehouseUser&&<div style={S.card}><div style={S.t}>Stores</div>
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>ID</th><th style={S.th}>Name</th></tr></thead><tbody>
-        {stores.map(function(s){return <tr key={s.id}><td style={S.tm}>{s.id}</td><td style={S.td}>{s.name}</td></tr>;})}</tbody></table></div></div>
+        {stores.map(function(s){return <tr key={s.id}><td style={S.tm}>{s.id}</td><td style={S.td}>{s.name}</td></tr>;})}</tbody></table></div></div>}
 
-    <div style={{marginTop:10,padding:12,background:"rgba(148,163,184,.22)",borderRadius:6,border:"1px solid rgba(148,163,184,.24)",fontSize:12,color:"#64748B"}}>
+    {!isWarehouseUser&&<div style={{marginTop:10,padding:12,background:"rgba(148,163,184,.22)",borderRadius:6,border:"1px solid rgba(148,163,184,.24)",fontSize:12,color:"#64748B"}}>
       <strong style={{color:"#0F172A"}}>OrderManager v3.1</strong> - Supplier edit, submit confirm, sort options, mailto emails, company logo, custom messages.</div>
+    }
   </div>);
 }

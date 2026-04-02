@@ -3,6 +3,7 @@ import { authMiddleware } from '../auth.js';
 import Supplier from '../models/supplier.js';
 
 const router = express.Router();
+const canManageSuppliers = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 function normalizeEmails(inputEmail, inputEmails) {
   const fromArray = Array.isArray(inputEmails) ? inputEmails : [];
   const fromString = typeof inputEmails === 'string' ? inputEmails.split(/[,\n;]/) : [];
@@ -33,8 +34,8 @@ router.get('/', authMiddleware, async (req, res) => {
 // Create supplier
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageSuppliers(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const { id, name, email, emails, phone } = req.body;
@@ -60,8 +61,8 @@ router.post('/', authMiddleware, async (req, res) => {
 // Update supplier
 router.patch('/:supplierId', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageSuppliers(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const { name, email, emails, phone } = req.body;
@@ -83,8 +84,8 @@ router.patch('/:supplierId', authMiddleware, async (req, res) => {
 // Delete supplier
 router.delete('/:supplierId', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageSuppliers(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     await Supplier.deleteOne({ id: req.params.supplierId });
@@ -98,8 +99,8 @@ router.delete('/:supplierId', authMiddleware, async (req, res) => {
 // Assign items to supplier
 router.post('/:supplierId/items', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageSuppliers(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const { items } = req.body; // array of item codes

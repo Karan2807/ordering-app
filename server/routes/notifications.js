@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import Notification from '../models/notification.js';
 
 const router = express.Router();
+const canManageNotifications = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 
 // Get all notifications
 router.get('/', async (req, res) => {
@@ -19,8 +20,8 @@ router.get('/', async (req, res) => {
 // Create notification (admin only)
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageNotifications(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const { text, type } = req.body;
@@ -42,8 +43,8 @@ router.post('/', authMiddleware, async (req, res) => {
 // Delete notification (admin only)
 router.delete('/:notifId', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageNotifications(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     await Notification.deleteOne({ id: req.params.notifId });

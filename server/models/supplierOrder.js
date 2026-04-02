@@ -13,6 +13,9 @@ const supplierOrderSchema = new mongoose.Schema({
   snapshotLines: { type: [String], default: [] },
   excelBase64: { type: String, default: null },
   excelFilename: { type: String, default: null },
+  monitorSnapshotLines: { type: [String], default: [] },
+  monitorExcelBase64: { type: String, default: null },
+  monitorExcelFilename: { type: String, default: null },
   sentAt: { type: Date, default: Date.now },
   finished: { type: Boolean, default: true },
 });

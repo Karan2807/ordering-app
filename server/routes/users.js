@@ -7,14 +7,16 @@ const router = express.Router();
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const usernameRegex = (value) => new RegExp(`^${escapeRegex(String(value || '').trim())}$`, 'i');
 const normalizeUsername = (value) => String(value || '').trim();
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+const canViewUsers = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 const findUserByIdOrUsername = (userId) =>
   User.findOne({ $or: [{ id: userId }, { username: usernameRegex(userId) }] });
 
 // Get all users (admin only)
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canViewUsers(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const users = await User.find().sort({ name: 1 }).lean();
@@ -24,6 +26,7 @@ router.get('/', authMiddleware, async (req, res) => {
         username: u.username,
         name: u.name,
         phone: u.phone,
+        email: u.email,
         role: u.role,
         storeId: u.storeId,
         active: u.active,
@@ -42,9 +45,9 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
-    const { username, password, name, phone, role, storeId } = req.body;
+    const { username, password, name, phone, email, role, storeId } = req.body;
 
-    if (!username || !password || !name || !phone) {
+    if (!username || !password || !name || !phone || !email) {
       return res.status(400).json({ error: 'All fields required' });
     }
 
@@ -54,7 +57,7 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 
     const id = uuidv4();
-    await User.create({ id, username: normalizeUsername(username), password, name, phone, role, storeId, active: true });
+    await User.create({ id, username: normalizeUsername(username), password, name, phone, email: normalizeEmail(email), role, storeId, active: true });
     res.json({ success: true });
   } catch (err) {
     console.error('Create user error:', err);
@@ -72,7 +75,7 @@ router.patch('/:userId', authMiddleware, async (req, res) => {
     const user = await findUserByIdOrUsername(req.params.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const { username, name, phone, role, storeId, active } = req.body || {};
+    const { username, name, phone, email, role, storeId, active } = req.body || {};
 
     if (username && String(username).trim().toLowerCase() !== String(user.username || '').trim().toLowerCase()) {
       const exists = await User.findOne({ username: usernameRegex(username) });
@@ -81,6 +84,7 @@ router.patch('/:userId', authMiddleware, async (req, res) => {
     }
     if (name != null) user.name = name;
     if (phone != null) user.phone = phone;
+    if (email != null) user.email = normalizeEmail(email);
     if (role != null) user.role = role;
     if (storeId !== undefined) user.storeId = storeId || null;
     if (active !== undefined) user.active = !!active;

@@ -3,12 +3,13 @@ import { authMiddleware } from '../auth.js';
 import Store from '../models/store.js';
 
 const router = express.Router();
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 
 // Get all stores
 router.get('/', async (req, res) => {
   try {
     const stores = await Store.find().sort({ name: 1 }).lean();
-    res.json(stores.map((s) => ({ id: s.id, name: s.name })));
+    res.json(stores.map((s) => ({ id: s.id, name: s.name, email: s.email || '' })));
   } catch (err) {
     console.error('Get stores error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -22,7 +23,7 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
-    const { id, name } = req.body;
+    const { id, name, email } = req.body;
 
     if (!id || !name) {
       return res.status(400).json({ error: 'ID and name required' });
@@ -33,7 +34,7 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'ID already exists' });
     }
 
-    await Store.create({ id, name });
+    await Store.create({ id, name, email: normalizeEmail(email) });
     res.json({ success: true });
   } catch (err) {
     console.error('Create store error:', err);
@@ -48,13 +49,14 @@ router.patch('/:storeId', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin only' });
     }
 
-    const { name } = req.body;
+    const { name, email } = req.body;
+    const update = {};
 
-    if (!name) {
-      return res.status(400).json({ error: 'Name required' });
-    }
+    if (name != null && String(name).trim()) update.name = name;
+    if (email !== undefined) update.email = normalizeEmail(email);
+    if (!Object.keys(update).length) return res.status(400).json({ error: 'Name or email required' });
 
-    await Store.updateOne({ id: req.params.storeId }, { name });
+    await Store.updateOne({ id: req.params.storeId }, update);
 
     res.json({ success: true });
   } catch (err) {

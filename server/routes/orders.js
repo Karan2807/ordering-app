@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import { sendManualReminders } from '../services/reminderScheduler.js';
 import { sendGraphMail } from '../services/msSendMail.js';
 import { renderVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
+import { notifyWarehouseVendorSubmission } from '../services/warehouseNotifications.js';
 
 function listifyVendorInputs(input) {
   if (Array.isArray(input)) return input.slice();
@@ -102,6 +103,11 @@ function normalizeVendorOrderConfigs(input) {
     });
   });
   return Array.from(byVendorKey.values());
+}
+
+function canManageWarehouseOrders(user) {
+  const role = String(user && user.role || '').trim().toLowerCase();
+  return role === 'admin' || role === 'warehouse';
 }
 
 async function persistVendorOrderConfigs(configs) {
@@ -308,10 +314,6 @@ function getExcelRowKind(row, index) {
   if (row && typeof row === 'object' && !Array.isArray(row) && row.kind) {
     return row.kind;
   }
-  const cells = getExcelRowCells(row);
-  const first = String(cells[0] || '').trim();
-  const hasOtherValues = cells.slice(1).some((value) => String(value || '').trim());
-  if (index > 1 && first && !hasOtherValues) return 'heading';
   if (index === 0) return 'date';
   if (index === 1) return 'header';
   return 'data';
@@ -790,7 +792,7 @@ function getQtyWithUnit(value) {
     const customUnit = String(value.customUnit || '').trim();
     
     let unitLabel = 'CASE';
-    if (unitType === 'pcs') unitLabel = 'PCS';
+    if (unitType === 'pcs') unitLabel = 'PIECES';
     else if (unitType === 'pallet') unitLabel = 'PALLET';
     else if (unitType === 'master_case') unitLabel = 'MASTER CASE';
     else if (unitType === 'other') unitLabel = customUnit || 'OTHER';
@@ -1015,9 +1017,21 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     .sort({ sentAt: -1, _id: -1 })
     .lean();
 
+  // Vendor completed history should show the full monitor workbook with store
+  // details, not the supplier-facing total-only attachment.
+  if (normalizedCategory === 'vendor_orders' && latestSentLog && latestSentLog.monitorExcelBase64) {
+    return {
+      excelBuffer: Buffer.from(latestSentLog.monitorExcelBase64, 'base64'),
+      excelFilename: latestSentLog.monitorExcelFilename || buildConsolidatedFilename({
+        supplierName: latestSentLog.supplierName || latestSentLog.vendorKey || 'Vendor',
+        dateValue: latestSentLog.sentAt || latestSentLog.createdAt || new Date(),
+      }),
+    };
+  }
+
   // When a consolidated email was already sent, return the exact workbook that
   // was attached to the email so history matches what the supplier received.
-  if (latestSentLog && latestSentLog.excelBase64) {
+  if (normalizedCategory !== 'vendor_orders' && latestSentLog && latestSentLog.excelBase64) {
     const supplierDisplayName = await resolveConsolidatedSupplierName({
       category: normalizedCategory,
       vendorKey: normalizedVendorKey,
@@ -1038,7 +1052,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     normalizedType,
     normalizedCategory,
     normalizedVendorKey,
-    null,
+    normalizedCategory === 'vendor_orders' ? { documentMode: 'monitor' } : null,
     normalizedWeek
   );
   return { excelBuffer, excelFilename };
@@ -1157,6 +1171,49 @@ function buildVendorMonitorRowsFromPreviewLayout(layout) {
       return formatQtyValueWithUnit(qty, orderUnitByStoreId[storeId] || { unitType: 'cas', customUnit: '' });
     });
     rows.push(makeExcelRow([itemName, itemUnit, totalDisplay, ...qtyCols, String(entry.note || '').trim()], 'data'));
+  });
+
+  return rows;
+}
+
+function buildVendorMonitorRows({ dateText, slots, itemDocs, itemNameByCode, qtyByCodeStoreId, orderUnitByCodeStoreId, noteByCode }) {
+  const slotHeaders = (slots || []).map((slot) => {
+    if (slot && slot.store && slot.store.name) return String(slot.store.name);
+    if (slot && slot.store && slot.store.id) return String(slot.store.id);
+    return String((slot && slot.apna) || '');
+  });
+  const slotStoreIds = (slots || []).map((slot) => String(slot && slot.store && slot.store.id || ''));
+  const slotQtyHeaders = (slots || []).map(() => 'QTY');
+  const vendorEntries = buildCatalogOutlineEntries({
+    itemDocs,
+    selectedCodes: Object.keys(qtyByCodeStoreId || {}),
+    itemNameByCode,
+  });
+  const rows = [];
+
+  rows.push(makeExcelRow([`Date: ${dateText}`, '', '', ...slotHeaders, ''], 'date'));
+  rows.push(makeExcelRow(['PRODUCT', 'UNIT', 'TOTAL QTY', ...slotQtyHeaders, 'NOTE'], 'header'));
+
+  vendorEntries.forEach((entry) => {
+    if (entry.type === 'heading') {
+      rows.push(makeExcelRow([entry.text, '', '', ...slotHeaders.map(() => ''), ''], 'heading'));
+      return;
+    }
+
+    const qtyMap = qtyByCodeStoreId[entry.code] || {};
+    const unitMap = orderUnitByCodeStoreId[entry.code] || {};
+    const qtyCols = slotStoreIds.map((storeId) => {
+      const qty = Number(qtyMap[storeId]) || 0;
+      return formatQtyValueWithUnit(qty, unitMap[storeId] || { unitType: 'cas', customUnit: '' });
+    });
+
+    rows.push(makeExcelRow([
+      entry.itemName,
+      '',
+      formatQtySummaryByUnit(qtyMap, unitMap),
+      ...qtyCols,
+      String((noteByCode && noteByCode[entry.code]) || '').trim(),
+    ], 'data'));
   });
 
   return rows;
@@ -1514,6 +1571,16 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   // store-wise columns.
   if (resolvedCategory === 'vendor_orders' && vendorMonitorRows && vendorMonitorRows.length > 0) {
     excelRows = vendorMonitorRows;
+  } else if (resolvedCategory === 'vendor_orders' && splitData && splitData.documentMode === 'monitor') {
+    excelRows = buildVendorMonitorRows({
+      dateText,
+      slots,
+      itemDocs,
+      itemNameByCode,
+      qtyByCodeStoreId,
+      orderUnitByCodeStoreId,
+      noteByCode,
+    });
   } else if (resolvedCategory === 'vendor_orders' && vendorPreviewRows && vendorPreviewRows.length > 0) {
     excelRows = vendorPreviewRows;
   } else if (resolvedCategory === 'vendor_orders') {
@@ -1805,7 +1872,7 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
 // Get orders for user
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const storeId = req.user.role === 'admin' ? req.query.storeId : req.user.storeId;
+    const storeId = canManageWarehouseOrders(req.user) ? req.query.storeId : req.user.storeId;
     const filter = {};
     if (storeId) filter.storeId = storeId;
 
@@ -1848,10 +1915,11 @@ router.get('/', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const { type, category, vendorKey, items = {}, notes = {}, status, storeId: bodyStoreId, week: bodyWeek } = req.body;
-    // allow admin to specify a different store when creating/updating
-    const storeId = req.user.role === 'admin' && bodyStoreId ? bodyStoreId : req.user.storeId;
     const resolvedCategory = normalizeCategory(category);
     const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+    const canManageVendorOrders = resolvedCategory === 'vendor_orders' && canManageWarehouseOrders(req.user);
+    // allow warehouse/admin to specify a different store when managing vendor orders
+    const storeId = canManageVendorOrders && bodyStoreId ? bodyStoreId : req.user.storeId;
     const requestedWeekKey = normalizeRequestedWeekKey(bodyWeek);
     if (bodyWeek && !requestedWeekKey) {
       return res.status(400).json({ error: 'Invalid week key' });
@@ -1876,7 +1944,7 @@ router.post('/', authMiddleware, async (req, res) => {
     // NOTE: place this AFTER computing weekKey so we can compare week keys.
 
     let weekKey;
-    if (req.user.role === 'admin' && requestedWeekKey) {
+    if (canManageVendorOrders && requestedWeekKey) {
       weekKey = requestedWeekKey;
     } else if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
       const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
@@ -1885,7 +1953,11 @@ router.post('/', authMiddleware, async (req, res) => {
       weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
     }
 
-    if (resolvedCategory === 'vendor_orders' && resolvedVendorKey && req.user.role !== 'admin') {
+    const existingOrder = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey })
+      .select({ status: 1, _id: 0 })
+      .lean();
+
+    if (resolvedCategory === 'vendor_orders' && resolvedVendorKey && !canManageVendorOrders) {
       const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
       const submittedRecently = await Order.findOne({
         storeId,
@@ -1988,6 +2060,23 @@ router.post('/', authMiddleware, async (req, res) => {
     if (resolvedCategory === 'vendor_orders') {
       console.log(`Vendor order created/updated: vendorKey=${resolvedVendorKey}, week=${weekKey}, seq=${returnedVendorSeq}, status=${status}`);
     }
+
+    if (
+      resolvedCategory === 'vendor_orders' &&
+      status === 'submitted' &&
+      (!existingOrder || existingOrder.status !== 'submitted')
+    ) {
+      try {
+        await notifyWarehouseVendorSubmission({
+          storeId,
+          vendorKey: resolvedVendorKey,
+          week: weekKey,
+          submittedBy: req.user.name || req.user.username || req.user.id,
+        });
+      } catch (notificationErr) {
+        console.error('Warehouse vendor submission notification failed:', notificationErr);
+      }
+    }
     
     res.json({ 
       success: true, 
@@ -2004,8 +2093,8 @@ router.post('/', authMiddleware, async (req, res) => {
 // Process order (admin only)
 router.post('/:orderId/process', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     await Order.updateOne({ id: req.params.orderId }, { status: 'processed' });
@@ -2020,8 +2109,8 @@ router.post('/:orderId/process', authMiddleware, async (req, res) => {
 // Consolidated view (admin only)
 router.get('/consolidated/:type', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const category = normalizeCategory(req.query.category);
@@ -2076,8 +2165,8 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
 // send consolidated order summary via email (admin only)
 router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const { email, emails, supplierName, reopenedFromId, splitData, category, vendorKey, week } = req.body;
     const resolvedCategory = normalizeCategory(category);
@@ -2096,6 +2185,17 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
 
     const { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename } =
       await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, effectiveSplitData, requestedWeekKey);
+    const vendorMonitorHistory = resolvedCategory === 'vendor_orders'
+      ? await buildConsolidatedExcelPayload(
+          req.params.type,
+          resolvedCategory,
+          resolvedVendorKey,
+          effectiveSplitData && typeof effectiveSplitData === 'object'
+            ? { ...effectiveSplitData, documentMode: 'monitor' }
+            : { documentMode: 'monitor' },
+          requestedWeekKey
+        )
+      : null;
     const supplierDisplayName = (supplierName || 'Supplier').trim();
     let body = 'Please find attached the consolidated order';
 
@@ -2152,6 +2252,9 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
         snapshotLines,
         excelBase64: excelBuffer.toString('base64'),
         excelFilename,
+        monitorSnapshotLines: vendorMonitorHistory ? vendorMonitorHistory.snapshotLines : [],
+        monitorExcelBase64: vendorMonitorHistory ? vendorMonitorHistory.excelBuffer.toString('base64') : null,
+        monitorExcelFilename: vendorMonitorHistory ? vendorMonitorHistory.excelFilename : null,
         finished: finishedFlag,
       });
     } catch (historyErr) {
@@ -2194,8 +2297,8 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
 // build consolidated Excel preview without sending email (admin only)
 router.post('/consolidated/:type/excel-preview', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const { splitData, category, vendorKey, week } = req.body || {};
     const requestedWeekKey = normalizeRequestedWeekKey(week);
@@ -2225,7 +2328,7 @@ router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
   try {
     const { type, category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {}, itemDetails = {} } = req.body || {};
     if (!type) return res.status(400).json({ error: 'type is required' });
-    const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
+    const resolvedStoreId = canManageWarehouseOrders(req.user) && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
 
     const { fileBuffer, filename, contentType } = await buildStoreOrderDocumentPayload({
@@ -2260,7 +2363,7 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
     const type = body.type || req.params.type;
     const { category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {}, itemDetails = {} } = body;
     if (!type) return res.status(400).json({ error: 'type is required' });
-    const resolvedStoreId = req.user.role === 'admin' && storeId ? String(storeId) : String(req.user.storeId || '');
+    const resolvedStoreId = canManageWarehouseOrders(req.user) && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
 
     const { fileBuffer, filename, contentType } = await buildStoreOrderDocumentPayload({
@@ -2290,8 +2393,8 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
 
 router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const vendorKey = String(req.params.vendorKey || '').trim();
     const { email, emails, supplierName } = req.body || {};
@@ -2408,8 +2511,8 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
 
 router.get('/consolidated-history', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const days = parseInt(req.query.days, 10);
     const history = await buildConsolidatedHistory({ days: Number.isNaN(days) ? 7 : days });
@@ -2422,8 +2525,8 @@ router.get('/consolidated-history', authMiddleware, async (req, res) => {
 
 router.post('/consolidated-history/excel', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const { week, type, category, vendorKey } = req.body || {};
     if (!week || !type) {
@@ -2448,8 +2551,8 @@ router.post('/consolidated-history/excel', authMiddleware, async (req, res) => {
 
 router.post('/consolidated-history/sheet-preview', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const { week, type, category, vendorKey } = req.body || {};
     if (!week || !type) {
@@ -2472,12 +2575,12 @@ router.post('/consolidated-history/sheet-preview', authMiddleware, async (req, r
 // supplier order history endpoints (admin only)
 router.get('/supplier-orders', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const list = await SupplierOrder.find().sort({ sentAt: -1 }).lean();
     res.json(
-      list.map(({ excelBase64, ...row }) => {
+      list.map(({ excelBase64, monitorExcelBase64, ...row }) => {
         const emails = normalizeRecipientEmails(row.email, row.emails);
         return {
           ...row,
@@ -2497,8 +2600,8 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
 
 router.post('/supplier-orders', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const { supplierName, email, emails, type, category, vendorKey, week, items } = req.body;
     const recipients = normalizeRecipientEmails(email, emails);
@@ -2526,8 +2629,8 @@ router.post('/supplier-orders', authMiddleware, async (req, res) => {
 // Send SMS reminders manually (admin only)
 router.post('/reminders/:type/send', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const type = String(req.params.type || '').toUpperCase();
     if (!['A', 'B', 'C', 'VENDOR'].includes(type)) {
@@ -2549,8 +2652,8 @@ router.post('/reminders/:type/send', authMiddleware, async (req, res) => {
 
 router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const doc = await SupplierOrder.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
@@ -2571,8 +2674,8 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
 
 router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const doc = await SupplierOrder.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
@@ -2597,8 +2700,8 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
 
 router.patch('/supplier-orders/:id/reopen', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const doc = await SupplierOrder.findById(req.params.id);
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
@@ -2614,8 +2717,8 @@ router.patch('/supplier-orders/:id/reopen', authMiddleware, async (req, res) => 
 // generic email-sending endpoint (admin only)
 router.post('/email', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const { to, subject, text } = req.body;

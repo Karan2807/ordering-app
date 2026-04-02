@@ -50,7 +50,7 @@ function dateKey(type){var n=new Date();return n.getFullYear()+"-W"+String(weekN
 function lastWeekKey(type){var n=new Date();return n.getFullYear()+"-W"+String(weekNum(n)-1).padStart(2,"0")+"-"+type;}
 var ORDER_UNIT_TYPES=[
   {value:"cas",label:"CASE"},
-  {value:"pcs",label:"PCS"},
+  {value:"pcs",label:"PIECES"},
   {value:"pallet",label:"PALLET"},
   {value:"master_case",label:"MASTER CASE"},
   {value:"other",label:"OTHER"},
@@ -68,7 +68,7 @@ function normalizeOrderItemEntry(v){
 function getOrderItemQty(itemsMap,code){return normalizeOrderItemEntry(itemsMap&&itemsMap[code]).qty;}
 function getOrderItemUnitLabel(v){
   var d=normalizeOrderItemEntry(v);
-  if(d.unitType==="pcs") return "PCS";
+  if(d.unitType==="pcs") return "PIECES";
   if(d.unitType==="pallet") return "PALLET";
   if(d.unitType==="master_case") return "MASTER CASE";
   if(d.unitType==="other") return d.customUnit||"OTHER";

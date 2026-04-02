@@ -3,9 +3,11 @@ import { authMiddleware } from '../auth.js';
 import Setting from '../models/setting.js';
 import Supplier from '../models/supplier.js';
 import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
+import { notifyStoresVendorAccess } from '../services/warehouseNotifications.js';
 
 const router = express.Router();
 const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
+const canManageVendorSettings = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 
 function nowInTimezone(tz) {
   const text = new Date().toLocaleString('en-US', { timeZone: tz });
@@ -493,8 +495,8 @@ router.patch('/manual-open-leaves', authMiddleware, async (req, res) => {
 
 router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageVendorSettings(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const now = nowInTimezone(ORDER_TIMEZONE);
     const today = now.getDay();
@@ -596,6 +598,22 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
       today,
       now,
     });
+    if (String(req.user.role || '').trim().toLowerCase() === 'warehouse' && req.body && req.body.enabled !== false) {
+      const notifyVendorKey = extractVendorIdentifier(req.body.vendorKey);
+      if (notifyVendorKey) {
+        try {
+          await notifyStoresVendorAccess({
+            vendorKey: notifyVendorKey,
+            startDay: parseOptionalDay(req.body.startDay),
+            endDay: parseOptionalDay(req.body.endDay),
+            openToday24h: !!req.body.openToday24h,
+            updatedBy: req.user.name || req.user.username || req.user.id,
+          });
+        } catch (notificationErr) {
+          console.error('Store vendor access notification failed:', notificationErr);
+        }
+      }
+    }
     res.json({
       success: true,
       vendorOrderConfigs: result.vendorOrderConfigs,

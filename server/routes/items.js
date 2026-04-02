@@ -6,6 +6,7 @@ import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
 const router = express.Router();
 const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders'];
+const canManageItems = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 
 function normalizeCategory(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -187,8 +188,8 @@ function normalizeTemplatePayload(template) {
 
 router.post('/template/parse', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageItems(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const { filename, contentType, base64, category, vendorKey } = req.body || {};
     const resolvedCategory = normalizeCategory(category);
@@ -234,8 +235,8 @@ router.get('/', async (req, res) => {
 // Create item
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageItems(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const { code, name, category, vendorKey, unit, subheading, sortOrder } = req.body;
@@ -269,8 +270,8 @@ router.post('/', authMiddleware, async (req, res) => {
 // Delete item
 router.delete('/:code', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageItems(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     await Item.deleteOne({ code: req.params.code });
@@ -284,8 +285,8 @@ router.delete('/:code', authMiddleware, async (req, res) => {
 // Bulk import items (via CSV)
 router.post('/bulk/import', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
+    if (!canManageItems(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
     const { items, mode, category, vendorKey, template } = req.body; // mode: 'merge' or 'replace'
