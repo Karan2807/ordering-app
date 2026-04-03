@@ -550,18 +550,19 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);
 }
-async function sendEmailWithFallback({ to, subject, text, html, attachments = [] }) {
+async function sendEmailWithFallback({ to, subject, text, html, attachments = [], category, senderEmail }) {
+  const resolvedSenderEmail = String(senderEmail || resolveSenderEmailForCategory(category) || '').trim();
   try {
     // Prefer Microsoft Graph when Graph credentials are present.
-    if (process.env.TENANT_ID && process.env.CLIENT_ID && process.env.CLIENT_SECRET && process.env.SENDER_EMAIL) {
-      return await sendGraphMail({ to, subject, text, html, attachments });
+    if (process.env.TENANT_ID && process.env.CLIENT_ID && process.env.CLIENT_SECRET && resolvedSenderEmail) {
+      return await sendGraphMail({ to, subject, text, html, attachments, senderEmail: resolvedSenderEmail });
     }
   } catch (graphErr) {
     console.error('Graph send failed, falling back to SMTP:', graphErr.message || graphErr);
   }
 
   const mailOptions = {
-    from: process.env.EMAIL_FROM || 'noreply@ordermanager.local',
+    from: resolvedSenderEmail || process.env.EMAIL_FROM || 'noreply@ordermanager.local',
     to,
     subject,
     text,
@@ -583,6 +584,14 @@ function getWeekKey() {
   // Use UTC so every country generates the same date-based week key.
   const d = new Date();
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+function resolveSenderEmailForCategory(category) {
+  const resolvedCategory = normalizeCategory(category);
+  if (resolvedCategory === 'vendor_orders') {
+    return String(process.env.VENDOR_SENDER_EMAIL || process.env.SENDER_EMAIL || '').trim();
+  }
+  return String(process.env.SENDER_EMAIL || '').trim();
 }
 
 function getIsoWeekKeyForDate(value) {
@@ -2203,6 +2212,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
       to: recipients,
       subject: `Consolidated Order ${req.params.type} (Week ${weekKey})`,
       text: body,
+      category: resolvedCategory,
       attachments: [
         {
           filename: excelFilename,
@@ -2458,6 +2468,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
       to: recipients,
       subject: `Vendor Orders - Individual Store Documents (${weekKey})`,
       text: 'Please find attached the individual store order documents.',
+      category,
       attachments,
     });
 

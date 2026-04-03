@@ -74,17 +74,22 @@ function normalizeRecipientEmails(...inputs) {
   return [...new Set(merged)];
 }
 
-async function sendEmailWithFallback({ to, subject, text, html }) {
+function resolveVendorSenderEmail() {
+  return String(process.env.VENDOR_SENDER_EMAIL || process.env.SENDER_EMAIL || '').trim();
+}
+
+async function sendEmailWithFallback({ to, subject, text, html, senderEmail }) {
+  const resolvedSenderEmail = String(senderEmail || resolveVendorSenderEmail() || '').trim();
   try {
-    if (process.env.TENANT_ID && process.env.CLIENT_ID && process.env.CLIENT_SECRET && process.env.SENDER_EMAIL) {
-      return await sendGraphMail({ to, subject, text, html });
+    if (process.env.TENANT_ID && process.env.CLIENT_ID && process.env.CLIENT_SECRET && resolvedSenderEmail) {
+      return await sendGraphMail({ to, subject, text, html, senderEmail: resolvedSenderEmail });
     }
   } catch (graphErr) {
     console.error('Graph send failed, falling back to SMTP:', graphErr.message || graphErr);
   }
 
   return transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@ordermanager.local',
+    from: resolvedSenderEmail || process.env.EMAIL_FROM || 'noreply@ordermanager.local',
     to,
     subject,
     text,
