@@ -33,8 +33,9 @@ const API_BASE_URL = (() => {
 
 let authToken = localStorage.getItem('authToken');
 
-// log base URL once so developers can see which backend is being targeted
-console.log('API client initialized with base URL:', API_BASE_URL);
+if (import.meta.env.DEV) {
+  console.info('API client initialized with base URL:', API_BASE_URL);
+}
 
 export const apiClient = {
   setToken(token) {
