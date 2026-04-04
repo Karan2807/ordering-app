@@ -3556,7 +3556,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       }
       return scheduledWeekKey;
     }
-    if(preferScheduledNewGroup) return scheduledWeekKey;
+    if(preferScheduledNewGroup){
+      if(latestCurrentTypeInfo&&latestCurrentTypeInfo.week
+        &&extractWeekKeyCycleSuffix(latestCurrentTypeInfo.week)===extractWeekKeyCycleSuffix(scheduledWeekKey)
+        &&extractWeekKeyCycleSuffix(scheduledWeekKey)
+        &&!hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)){
+        return latestCurrentTypeInfo.week;
+      }
+      return scheduledWeekKey;
+    }
     if(!latestCurrentTypeInfo||!latestCurrentTypeInfo.week) return scheduledWeekKey;
     if(String(latestCurrentTypeInfo.week||"")===String(scheduledWeekKey||"")) return latestCurrentTypeInfo.week;
     if(hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)) return scheduledWeekKey;
@@ -3581,6 +3589,11 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         return;
       }
       if(preferScheduledNewGroup){
+        var fallbackP=findLatestMatchingOrder(orders,[sid],currentType,selCategory,resolvedVendorKey,visibleStatus,7*24*60*60*1000);
+        if(fallbackP&&fallbackP.order&&isSameOrAdjacentDateWeekKey(fallbackP.week,activeWeekKey)){
+          out[sid]={order:fallbackP.order,week:fallbackP.week||activeWeekKey};
+          return;
+        }
         out[sid]={order:exact||null,week:(exact&&exact.week)||activeWeekKey};
         return;
       }
