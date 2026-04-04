@@ -2063,6 +2063,10 @@ router.post('/', authMiddleware, async (req, res) => {
       });
     }
     if (status === 'submitted' && normalizedItems.length === 0) {
+      const allowEmptySubmittedUpdate = canManageAcrossStores && !!existingOrder;
+      if (allowEmptySubmittedUpdate) {
+        normalizedItems = [];
+      } else {
       const existingItems = Array.isArray(existingOrder && existingOrder.items) ? existingOrder.items : [];
       const existingVisibleItems = existingItems.filter((entry) => {
         return (Number(entry && entry.quantity) || 0) > 0 || String(entry && entry.note || '').trim();
@@ -2071,6 +2075,7 @@ router.post('/', authMiddleware, async (req, res) => {
         normalizedItems = existingVisibleItems;
       } else {
         return res.status(400).json({ error: 'Cannot submit an empty order. Add at least one quantity or note.' });
+      }
       }
     }
     const now = new Date();

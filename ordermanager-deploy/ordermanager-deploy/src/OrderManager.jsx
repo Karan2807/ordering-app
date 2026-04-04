@@ -2939,28 +2939,36 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
 }
 
 /* ═══ ORDER HISTORY ═══ */
-function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType,setDraftRequest,vendorOrderConfigs,categoryTemplates,suppliers}){
+function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,openOrderTypes,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType,setDraftRequest,vendorOrderConfigs,categoryTemplates,suppliers}){
   var my=Object.entries(orders).filter(function(e){return e[0].indexOf(user.storeId)===0;}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var vegOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
   var leavesOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});
   var vendorOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";});
   var _s=useState(null),sel=_s[0],setSel=_s[1];
   var statusBg=function(st){return st==="processed"?S.bgP:st==="submitted"?S.bgG:S.bgY;};
+  var visibleStatus={submitted:true,processed:true,draft_shared:true};
   var historyOrderLabel=function(o){
     if(!o) return "Order -";
     if(normalizeCategory(o.category||"vegetables")==="vendor_orders") return vendorDisplayName(suppliers,o.vendorKey||null)+"_Order";
     return "Order "+String(o.type||"");
   };
-  var openType=manualOpenOrder||aot||null;
+  var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
+  var openType=openTypes.length===1?openTypes[0]:null;
+  var isLatestUnsentCycle=function(o){
+    if(!o||o.supplierSent) return false;
+    var latestInfo=findLatestMatchingOrder(orders,[user.storeId],o.type,o.category||"vegetables",o.vendorKey||null,visibleStatus,7*24*60*60*1000);
+    return !!(latestInfo&&String(latestInfo.week||"")===String(o.week||""));
+  };
   var canReopenAsDraft=function(k,o){
     if(!o||!(o.status==="submitted"||o.status==="processed")) return false;
     if(o.supplierSent) return false;
-    if(!openType) return false;
-    if(o.type!==openType) return false;
-    if(!isCategoryOpenForType(o.category||"vegetables",openType,openType,manualOpenLeaves)) return false;
-    var openWeek=activeWeekLookupKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));
-    if(!isSameOrAdjacentDateWeekKey(o.week,openWeek)) return false;
-    return true;
+    var category=o.category||"vegetables";
+    var hasMatchingOpenType=openTypes.indexOf(o.type)>=0;
+    if(hasMatchingOpenType&&isCategoryOpenForType(category,o.type,o.type,manualOpenLeaves)){
+      var openWeek=activeWeekLookupKey(o.type,category,o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));
+      if(isSameOrAdjacentDateWeekKey(o.week,openWeek)) return true;
+    }
+    return isLatestUnsentCycle(o);
   };
   var downloadHistoryExcel=async function(o){
     try{
@@ -3022,12 +3030,12 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       <div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:18,color:"#6B7186"}}>No orders</div>:
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openWeek=activeWeekLookupKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var sameCurrentCycle=isSameOrAdjacentDateWeekKey(o.week,openWeek);var reopenTip=o.supplierSent?"Supplier order already sent":(!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):(!sameCurrentCycle?"Only the current open-slot submitted order can be reopened":"")));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countOrderItemsWithFallback(o)}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{(o.status==="submitted"||o.status==="processed")&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
+        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openWeek=activeWeekLookupKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var sameCurrentCycle=isSameOrAdjacentDateWeekKey(o.week,openWeek);var reopenTip=o.supplierSent?"Supplier order already sent":(canReopen?"":(openTypes.indexOf(o.type)>=0?(!sameCurrentCycle?"Only the current open-slot order can be reopened":""):"Only the latest unsent supplier cycle can be reopened"));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countOrderItemsWithFallback(o)}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{(o.status==="submitted"||o.status==="processed")&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
       </tbody></table></div>}
     </div>);
   };
   return(<div><div style={S.card}><div style={S.t}>Past Orders</div>
-    <div style={S.d}>Reopen as Draft is enabled for current open Order {openType||"-"} until supplier email is sent. Draft rows can be opened in Place Order and submitted from there.</div>
+    <div style={S.d}>Reopen as Draft stays available until supplier email is sent. Current open orders reopen directly; the latest unsent cycle also remains reopenable from history.</div>
     {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:
     <Fragment>{renderHistorySection("Vegetable Orders",vegOrders)}{renderHistorySection("Leaves Orders",leavesOrders)}{renderHistorySection("Vendor Orders",vendorOrders)}</Fragment>}</div>
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
