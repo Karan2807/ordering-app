@@ -1547,12 +1547,23 @@ function parseDateWeekKey(value){
   var ts=Date.UTC(year,month,day);
   return Number.isNaN(ts)?null:ts;
 }
+function extractWeekKeyCycleSuffix(value){
+  var match=String(value||"").trim().match(/(-M\d+|-VS\d+)$/);
+  return match?match[1]:"";
+}
 function isSameOrAdjacentDateWeekKey(left,right){
   if(String(left||"")===String(right||"")) return true;
   var leftTs=parseDateWeekKey(left);
   var rightTs=parseDateWeekKey(right);
   if(leftTs==null||rightTs==null) return false;
-  return Math.abs(leftTs-rightTs)<=24*60*60*1000;
+  var diff=Math.abs(leftTs-rightTs);
+  var leftSuffix=extractWeekKeyCycleSuffix(left);
+  var rightSuffix=extractWeekKeyCycleSuffix(right);
+  if(leftSuffix&&rightSuffix&&leftSuffix===rightSuffix){
+    return diff<=7*24*60*60*1000;
+  }
+  if(leftSuffix!==rightSuffix) return false;
+  return diff<=24*60*60*1000;
 }
 function findLatestMatchingOrder(orderMap, storeIds, type, category, vendorKey, statusMap, maxAgeMs){
   var ids=Array.isArray(storeIds)?storeIds.filter(Boolean).map(function(v){return String(v);}):[];
@@ -2285,7 +2296,13 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
   var _adlogs=useState([]),adminLogs=_adlogs[0],setAdminLogs=_adlogs[1];
   var isWarehouseUser=isWarehouseRole(user);
   var todayKey=cycleBaseKey(new Date());
-  var cycleOrders=Object.values(orders).filter(function(o){return !!(o&&isSameOrAdjacentDateWeekKey(o.week,todayKey));});
+  var todayKeyM=manualOpenOrder&&manualOpenSeq?(todayKey+"-M"+manualOpenSeq):null;
+  var cycleOrders=Object.values(orders).filter(function(o){
+    if(!o) return false;
+    if(isSameOrAdjacentDateWeekKey(o.week,todayKey)) return true;
+    if(todayKeyM&&isSameOrAdjacentDateWeekKey(o.week,todayKeyM)) return true;
+    return false;
+  });
   var vendorCycleOrders=cycleOrders.filter(function(o){return normalizeCategory(o&&o.category||"vegetables")==="vendor_orders";});
   var summaryOrders=isWarehouseUser?vendorCycleOrders:cycleOrders;
   var sub=summaryOrders.filter(function(o){return o.status==="submitted"||o.status==="draft_shared";}).length;
