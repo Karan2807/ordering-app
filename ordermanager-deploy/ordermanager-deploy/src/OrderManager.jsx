@@ -1471,6 +1471,7 @@ function normalizePreviewRows(rows){
   });
 }
 var REOPEN_TARGET_STORAGE_KEY="consolidatedReopenTargetV1";
+var CONSOLIDATED_VIEW_STORAGE_KEY="consolidatedViewStateV1";
 function loadPersistedReopenTarget(){
   if(typeof window==="undefined"||!window.sessionStorage) return null;
   try{
@@ -1500,6 +1501,34 @@ function persistReopenTarget(target){
       vendorKey:String(target.vendorKey||""),
       week:String(target.week||""),
       reopenedFromId:String(target.reopenedFromId||""),
+    }));
+  }catch(_e){}
+}
+function loadPersistedConsolidatedView(){
+  if(typeof window==="undefined"||!window.sessionStorage) return null;
+  try{
+    var raw=window.sessionStorage.getItem(CONSOLIDATED_VIEW_STORAGE_KEY);
+    if(!raw) return null;
+    var parsed=JSON.parse(raw);
+    if(!parsed||typeof parsed!=="object") return null;
+    return {
+      category:normalizeCategory(parsed.category||"vegetables"),
+      type:String(parsed.type||"A").toUpperCase(),
+      vendorKey:String(parsed.vendorKey||""),
+    };
+  }catch(_e){return null;}
+}
+function persistConsolidatedView(view){
+  if(typeof window==="undefined"||!window.sessionStorage) return;
+  try{
+    if(!view){
+      window.sessionStorage.removeItem(CONSOLIDATED_VIEW_STORAGE_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(CONSOLIDATED_VIEW_STORAGE_KEY,JSON.stringify({
+      category:normalizeCategory(view.category||"vegetables"),
+      type:String(view.type||"A").toUpperCase(),
+      vendorKey:String(view.vendorKey||""),
     }));
   }catch(_e){}
 }
@@ -3359,10 +3388,14 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
 
 /* ═══ CONSOLIDATED ═══ */
 function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendors,setVendorOrdersOpenVendors,setServerActiveVendorOrderIds,vendorOrderConfigs,setVendorOrderConfigs,consolidatedType,setConsolidatedType,consolidatedRequest,setConsolidatedRequest,reopenedFromId,setReopenedFromId,user}){
-  var _v=useState(consolidatedType||aot||"A"),vt=_v[0],sVt=_v[1];
   var isWarehouseUser=isWarehouseRole(user);
-  var _cat=useState(isWarehouseUser?"vendor_orders":"vegetables"),selCategory=_cat[0],setSelCategory=_cat[1];
-  var _vk=useState(null),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
+  var persistedConsolidatedView=loadPersistedConsolidatedView();
+  var initialCategory=isWarehouseUser?"vendor_orders":normalizeCategory(persistedConsolidatedView&&persistedConsolidatedView.category||"vegetables");
+  var initialType=String((persistedConsolidatedView&&persistedConsolidatedView.type)||consolidatedType||aot||"A").toUpperCase();
+  var initialVendorKey=initialCategory==="vendor_orders"?normalizeVendorKey("vendor_orders",persistedConsolidatedView&&persistedConsolidatedView.vendorKey||null):null;
+  var _v=useState(initialType),vt=_v[0],sVt=_v[1];
+  var _cat=useState(initialCategory),selCategory=_cat[0],setSelCategory=_cat[1];
+  var _vk=useState(initialVendorKey),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
   var _ea=useState(false),editingAll=_ea[0],setEditingAll=_ea[1];
   var _eb=useState({}),editQtyByStore=_eb[0],setEditQtyByStore=_eb[1];
   var _ec=useState({}),editNotesByStore=_ec[0],setEditNotesByStore=_ec[1];
@@ -3509,6 +3542,9 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   useEffect(function(){
     persistReopenTarget(reopenTarget);
   },[reopenTarget]);
+  useEffect(function(){
+    persistConsolidatedView({category:selCategory,type:vt,vendorKey:selCategory==="vendor_orders"?selectedVendorKey:null});
+  },[selCategory,vt,selectedVendorKey]);
   useEffect(function(){
     if(!setReopenedFromId) return;
     if(reopenedFromId) return;
