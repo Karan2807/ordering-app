@@ -1964,7 +1964,7 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 
     const existingOrder = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey })
-      .select({ status: 1, _id: 0 })
+      .select({ status: 1, items: 1, _id: 0 })
       .lean();
 
     if (resolvedCategory === 'vendor_orders' && resolvedVendorKey && !canManageVendorOrders) {
@@ -2027,6 +2027,17 @@ router.post('/', authMiddleware, async (req, res) => {
         if (validItemCodes.has(itemCode)) return true;
         return !/^\d+$/.test(itemCode);
       });
+    }
+    if (status === 'submitted' && normalizedItems.length === 0) {
+      const existingItems = Array.isArray(existingOrder && existingOrder.items) ? existingOrder.items : [];
+      const existingVisibleItems = existingItems.filter((entry) => {
+        return (Number(entry && entry.quantity) || 0) > 0 || String(entry && entry.note || '').trim();
+      });
+      if (existingVisibleItems.length > 0) {
+        normalizedItems = existingVisibleItems;
+      } else {
+        return res.status(400).json({ error: 'Cannot submit an empty order. Add at least one quantity or note.' });
+      }
     }
     const now = new Date();
     const orderId = uuidv4();
