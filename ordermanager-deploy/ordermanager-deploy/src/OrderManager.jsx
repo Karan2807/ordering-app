@@ -1559,10 +1559,14 @@ function isSameOrAdjacentDateWeekKey(left,right){
   var diff=Math.abs(leftTs-rightTs);
   var leftSuffix=extractWeekKeyCycleSuffix(left);
   var rightSuffix=extractWeekKeyCycleSuffix(right);
-  if(leftSuffix&&rightSuffix&&leftSuffix===rightSuffix){
-    return diff<=7*24*60*60*1000;
+  // Both sides have a cycle suffix: must be the SAME cycle to match,
+  // and we allow a 7-day window (same manual-open cycle can span multiple days).
+  if(leftSuffix&&rightSuffix){
+    return leftSuffix===rightSuffix&&diff<=7*24*60*60*1000;
   }
-  if(leftSuffix!==rightSuffix) return false;
+  // One side has a suffix, the other doesn't (e.g. admin cleared manual-open
+  // after stores submitted). Fall back to the plain date proximity check so
+  // the plain-date lookup can still find the suffixed order from the same day.
   return diff<=24*60*60*1000;
 }
 function findLatestMatchingOrder(orderMap, storeIds, type, category, vendorKey, statusMap, maxAgeMs){
