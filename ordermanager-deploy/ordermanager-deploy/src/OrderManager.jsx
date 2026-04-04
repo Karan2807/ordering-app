@@ -310,7 +310,8 @@ function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type
   if(category==="vendor_orders"){
     return getCurrentOrderForStoreType(orderMap,storeId,type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
   }
-  var best=null;
+  var bestVisible=null;
+  var bestAny=null;
   Object.values(orderMap||{}).forEach(function(o){
     if(!o) return;
     if(String(o.store||"")!==String(storeId||"")) return;
@@ -319,9 +320,13 @@ function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type
     if(normalizeVendorKey(category,o.vendorKey)!==normalizeVendorKey(category,vendorKey)) return;
     if(!isSameOrAdjacentDateWeekKey(o.week,referenceWeekKey)) return;
     var ts=orderTimestampMs(o);
-    if(!best||ts>best.ts) best={order:o,ts:ts};
+    if(!bestAny||ts>bestAny.ts) bestAny={order:o,ts:ts};
+    if(["submitted","processed","draft_shared"].indexOf(String(o.status||"").toLowerCase())>=0){
+      if(!bestVisible||ts>bestVisible.ts) bestVisible={order:o,ts:ts};
+    }
   });
-  return best&&best.order?best.order:null;
+  if(bestVisible&&bestVisible.order) return bestVisible.order;
+  return bestAny&&bestAny.order?bestAny.order:null;
 }
 function lastWeekKey(type, category, vendorKey){
   var n=new Date();
@@ -1279,6 +1284,31 @@ function displayNameForOrderKey(code, items){
   if(String(code||"").indexOf("XLS::")===0)return String(code).slice(5);
   return String(code||"");
 }
+function isIgnorableLegacyOrderCode(code, items, category, vendorKey){
+  var normalizedCode=String(code||"").trim();
+  var resolvedCategory=normalizeCategory(category||"vegetables");
+  var resolvedVendorKey=normalizeVendorKey(resolvedCategory,vendorKey);
+  if(!normalizedCode||resolvedCategory==="vendor_orders") return false;
+  if(!/^\d+$/.test(normalizedCode)) return false;
+  return !(items||[]).some(function(it){
+    return String(it&&it.code||"").trim()===normalizedCode
+      && normalizeCategory(it&&it.category||"vegetables")===resolvedCategory
+      && normalizeVendorKey(resolvedCategory,it&&it.vendorKey)===resolvedVendorKey;
+  });
+}
+function sanitizeOrderCodeMaps(itemMap, noteMap, items, category, vendorKey){
+  var sanitizedItems={};
+  var sanitizedNotes={};
+  Object.keys(itemMap||{}).forEach(function(code){
+    if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
+    sanitizedItems[code]=itemMap[code];
+  });
+  Object.keys(noteMap||{}).forEach(function(code){
+    if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
+    sanitizedNotes[code]=noteMap[code];
+  });
+  return {items:sanitizedItems,notes:sanitizedNotes};
+}
 function formatItemDetailName(name, unit){
   var trimmedName=String(name||"").trim();
   var trimmedUnit=String(unit||"").trim();
@@ -1397,13 +1427,14 @@ function ExcelSheetPreviewTable({rows,maxHeight}){
     </div>
   );
 }
-function buildOrderStateMap(list){
+function buildOrderStateMap(list, catalogItems){
   var orderMap={};
   (Array.isArray(list)?list:[]).forEach(function(o){
     var category=normalizeCategory(o.category);
     var vendorKey=normalizeVendorKey(category,o.vendorKey);
+    var sanitized=sanitizeOrderCodeMaps(o.items||{},o.notes||{},catalogItems,category,vendorKey);
     var key=o.storeId+"_"+o.week+"-"+o.type+"-"+categoryKey(category,vendorKey);
-    orderMap[key]={id:o.id,items:o.items||{},notes:o.notes||{},status:o.status,store:o.storeId,type:o.type,category:category,vendorKey:vendorKey,week:o.week||null,date:o.date||o.submittedAt||o.createdAt||new Date().toISOString(),submittedAt:o.submittedAt||null,createdAt:o.createdAt||null};
+    orderMap[key]={id:o.id,items:sanitized.items,notes:sanitized.notes,status:o.status,store:o.storeId,type:o.type,category:category,vendorKey:vendorKey,week:o.week||null,date:o.date||o.submittedAt||o.createdAt||new Date().toISOString(),submittedAt:o.submittedAt||null,createdAt:o.createdAt||null};
   });
   return orderMap;
 }
@@ -2020,7 +2051,7 @@ export default function App(){
         };
         setSchedule(function(prev){return sameJson(prev,schedMap)?prev:schedMap;});
         if(data.orders&&Array.isArray(data.orders)){
-          var orderMap=buildOrderStateMap(data.orders);
+          var orderMap=buildOrderStateMap(data.orders,nextItems);
           setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
         }else{
           setOrders(function(prev){return Object.keys(prev||{}).length?{}:prev;});
@@ -2064,7 +2095,7 @@ export default function App(){
     var isAdminUser=isPrivilegedRole(user);
     var requestedStoreId=(typeof storeId==="string"&&storeId)?storeId:null;
     var raw=await apiClient.orders.getAll(isAdminUser?requestedStoreId:(user&&user.storeId?user.storeId:null));
-    var orderMap=buildOrderStateMap(raw);
+    var orderMap=buildOrderStateMap(raw,items);
     setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
     
     // For vendor orders, also refresh settings to ensure vendorOrderConfigs are current
@@ -2080,7 +2111,7 @@ export default function App(){
     }
     
     return orderMap;
-  },[userKey]);
+  },[userKey,items]);
   useEffect(function(){
     // Keep reopen state until explicitly cleared by send/clear/settings close.
     setConsolidatedType(manualOpenOrder||null);

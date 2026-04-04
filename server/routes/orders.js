@@ -1926,9 +1926,10 @@ router.post('/', authMiddleware, async (req, res) => {
     const { type, category, vendorKey, items = {}, notes = {}, status, storeId: bodyStoreId, week: bodyWeek } = req.body;
     const resolvedCategory = normalizeCategory(category);
     const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
-    const canManageVendorOrders = resolvedCategory === 'vendor_orders' && canManageWarehouseOrders(req.user);
-    // allow warehouse/admin to specify a different store when managing vendor orders
-    const storeId = canManageVendorOrders && bodyStoreId ? bodyStoreId : req.user.storeId;
+    const canManageAcrossStores = canManageWarehouseOrders(req.user);
+    const canManageVendorOrders = resolvedCategory === 'vendor_orders' && canManageAcrossStores;
+    // allow warehouse/admin to target a specific store when managing consolidated edits
+    const storeId = canManageAcrossStores && bodyStoreId ? bodyStoreId : req.user.storeId;
     const requestedWeekKey = normalizeRequestedWeekKey(bodyWeek);
     if (bodyWeek && !requestedWeekKey) {
       return res.status(400).json({ error: 'Invalid week key' });
@@ -1953,7 +1954,7 @@ router.post('/', authMiddleware, async (req, res) => {
     // NOTE: place this AFTER computing weekKey so we can compare week keys.
 
     let weekKey;
-    if (canManageVendorOrders && requestedWeekKey) {
+    if (canManageAcrossStores && requestedWeekKey) {
       weekKey = requestedWeekKey;
     } else if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
       const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
@@ -2011,7 +2012,22 @@ router.post('/', authMiddleware, async (req, res) => {
         }
       }
     }
-    const normalizedItems = normalizeOrderItems(items, notes);
+    let normalizedItems = normalizeOrderItems(items, notes);
+    if (resolvedCategory !== 'vendor_orders' && normalizedItems.length) {
+      const validItemCodes = new Set(
+        (await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey })
+          .select({ code: 1, _id: 0 })
+          .lean())
+          .map((item) => String(item && item.code || '').trim())
+          .filter(Boolean)
+      );
+      normalizedItems = normalizedItems.filter((entry) => {
+        const itemCode = String(entry && entry.itemCode || '').trim();
+        if (!itemCode) return false;
+        if (validItemCodes.has(itemCode)) return true;
+        return !/^\d+$/.test(itemCode);
+      });
+    }
     const now = new Date();
     const orderId = uuidv4();
     const query = { storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey };
