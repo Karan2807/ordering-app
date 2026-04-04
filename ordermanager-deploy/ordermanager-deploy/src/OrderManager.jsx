@@ -1284,6 +1284,86 @@ function displayNameForOrderKey(code, items){
   if(String(code||"").indexOf("XLS::")===0)return String(code).slice(5);
   return String(code||"");
 }
+function normalizeCatalogAliasToken(value){
+  return String(value||"").trim().toLowerCase().replace(/\s+/g," ");
+}
+function buildCatalogAliasCodeMap(items, category, vendorKey){
+  var resolvedCategory=normalizeCategory(category||"vegetables");
+  var resolvedVendorKey=normalizeVendorKey(resolvedCategory,vendorKey);
+  var aliasBuckets={};
+  (items||[]).forEach(function(it){
+    if(normalizeCategory(it&&it.category||"vegetables")!==resolvedCategory) return;
+    if(normalizeVendorKey(resolvedCategory,it&&it.vendorKey)!==resolvedVendorKey) return;
+    var code=String(it&&it.code||"").trim();
+    var name=String(it&&it.name||"").trim();
+    var unit=String(it&&it.unit||"").trim();
+    if(!code) return;
+    [
+      code,
+      name,
+      buildItemMasterCode(name,unit),
+      formatItemDetailName(name,unit),
+      name?"XLS::"+name:"",
+    ].forEach(function(alias){
+      var token=normalizeCatalogAliasToken(alias);
+      if(!token) return;
+      if(!aliasBuckets[token]) aliasBuckets[token]={};
+      aliasBuckets[token][code]=true;
+    });
+  });
+  return Object.keys(aliasBuckets).reduce(function(out,token){
+    var codes=Object.keys(aliasBuckets[token]);
+    out[token]=codes.length===1?codes[0]:null;
+    return out;
+  },{});
+}
+function resolveCanonicalOrderCode(code, items, category, vendorKey, aliasCodeMap){
+  var normalizedCode=String(code||"").trim();
+  var resolvedCategory=normalizeCategory(category||"vegetables");
+  var resolvedVendorKey=normalizeVendorKey(resolvedCategory,vendorKey);
+  if(!normalizedCode) return "";
+  var exact=(items||[]).some(function(it){
+    return String(it&&it.code||"").trim()===normalizedCode
+      && normalizeCategory(it&&it.category||"vegetables")===resolvedCategory
+      && normalizeVendorKey(resolvedCategory,it&&it.vendorKey)===resolvedVendorKey;
+  });
+  if(exact) return normalizedCode;
+  var suffixTrimmed=normalizedCode.replace(/\s*\(\d+\)$/,""
+  );
+  var candidates=[
+    normalizedCode,
+    String(normalizedCode).indexOf("XLS::")===0?String(normalizedCode).slice(5):"",
+    suffixTrimmed,
+    suffixTrimmed&&String(suffixTrimmed).indexOf("XLS::")!==0?"XLS::"+suffixTrimmed:"",
+  ].filter(function(value,idx,list){return !!value&&list.indexOf(value)===idx;});
+  for(var i=0;i<candidates.length;i+=1){
+    var token=normalizeCatalogAliasToken(candidates[i]);
+    if(token&&aliasCodeMap&&aliasCodeMap[token]) return aliasCodeMap[token];
+  }
+  return normalizedCode;
+}
+function mergeCanonicalOrderItemValues(currentValue, nextValue){
+  var current=normalizeOrderItemEntry(currentValue);
+  var next=normalizeOrderItemEntry(nextValue);
+  var unitType=current.qty>0?current.unitType:next.unitType;
+  if(current.qty>0&&next.qty>0&&current.unitType!==next.unitType){
+    unitType=current.unitType;
+  }
+  return {
+    qty:current.qty+next.qty,
+    unitType:unitType,
+    customUnit:unitType==="other"?(current.customUnit||next.customUnit||""):"",
+  };
+}
+function mergeCanonicalOrderNotes(currentNote, nextNote){
+  var current=String(currentNote||"").trim();
+  var next=String(nextNote||"").trim();
+  if(!current) return next;
+  if(!next) return current;
+  var parts=current.split(" | ");
+  if(parts.indexOf(next)>=0) return current;
+  return current+" | "+next;
+}
 function isIgnorableLegacyOrderCode(code, items, category, vendorKey){
   var normalizedCode=String(code||"").trim();
   var resolvedCategory=normalizeCategory(category||"vegetables");
@@ -1299,13 +1379,20 @@ function isIgnorableLegacyOrderCode(code, items, category, vendorKey){
 function sanitizeOrderCodeMaps(itemMap, noteMap, items, category, vendorKey){
   var sanitizedItems={};
   var sanitizedNotes={};
+  var aliasCodeMap=buildCatalogAliasCodeMap(items,category,vendorKey);
   Object.keys(itemMap||{}).forEach(function(code){
     if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
-    sanitizedItems[code]=itemMap[code];
+    var resolvedCode=resolveCanonicalOrderCode(code,items,category,vendorKey,aliasCodeMap);
+    if(!resolvedCode) return;
+    sanitizedItems[resolvedCode]=sanitizedItems[resolvedCode]==null
+      ?itemMap[code]
+      :mergeCanonicalOrderItemValues(sanitizedItems[resolvedCode],itemMap[code]);
   });
   Object.keys(noteMap||{}).forEach(function(code){
     if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
-    sanitizedNotes[code]=noteMap[code];
+    var resolvedCode=resolveCanonicalOrderCode(code,items,category,vendorKey,aliasCodeMap);
+    if(!resolvedCode) return;
+    sanitizedNotes[resolvedCode]=mergeCanonicalOrderNotes(sanitizedNotes[resolvedCode],noteMap[code]);
   });
   return {items:sanitizedItems,notes:sanitizedNotes};
 }
