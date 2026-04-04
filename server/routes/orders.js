@@ -920,6 +920,12 @@ function consolidatedHistoryKey(week, type, category, vendorKey) {
   return [String(week || ''), String(type || '').toUpperCase(), normalizedCategory, normalizedVendorKey || ''].join('::');
 }
 
+function supplierGroupKey(week, type, category, vendorKey) {
+  const normalizedCategory = normalizeCategory(category);
+  const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
+  return [String(week || ''), String(type || '').toUpperCase(), normalizedCategory, normalizedVendorKey || ''].join('::');
+}
+
 async function buildConsolidatedHistory({ days = 7 } = {}) {
   const parsedDays = Number(days);
   const safeDays = Number.isFinite(parsedDays) && parsedDays > 0 ? Math.min(Math.floor(parsedDays), 60) : 7;
@@ -1887,7 +1893,35 @@ router.get('/', authMiddleware, async (req, res) => {
 
     let orders = await Order.find(filter).sort({ submittedAt: -1, createdAt: -1 }).lean();
 
+    const groupKeys = new Set(
+      orders.map((order) => supplierGroupKey(order.week, order.type, order.category, order.vendorKey))
+    );
+    const supplierSentByGroup = new Map();
+    if (groupKeys.size > 0) {
+      const sentLogs = await SupplierOrder.find({ finished: true })
+        .select({ week: 1, type: 1, category: 1, vendorKey: 1, sentAt: 1, _id: 0 })
+        .lean();
+      sentLogs.forEach((log) => {
+        const key = supplierGroupKey(log.week, log.type, log.category, log.vendorKey);
+        if (!groupKeys.has(key)) return;
+        const prev = supplierSentByGroup.get(key);
+        const currentSentAt = log.sentAt || null;
+        if (!prev || new Date(currentSentAt || 0) > new Date(prev.sentAt || 0)) {
+          supplierSentByGroup.set(key, { sent: true, sentAt: currentSentAt });
+        }
+      });
+    }
+
     const result = orders.map((order) => ({
+      ...(function() {
+        const sentInfo = supplierSentByGroup.get(
+          supplierGroupKey(order.week, order.type, order.category, order.vendorKey)
+        ) || { sent: false, sentAt: null };
+        return {
+          supplierSent: !!sentInfo.sent,
+          supplierSentAt: sentInfo.sentAt,
+        };
+      })(),
       id: order.id,
       storeId: order.storeId,
       type: order.type,
