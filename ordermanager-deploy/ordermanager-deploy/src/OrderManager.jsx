@@ -166,6 +166,12 @@ function normalizeOrderItemEntry(v){
 }
 function hasOrderItemQty(v){return normalizeOrderItemEntry(v).qty>0;}
 function countFilledOrderItems(itemsMap){return Object.values(itemsMap||{}).filter(function(v){return hasOrderItemQty(v);}).length;}
+function countOrderItemsWithFallback(order){
+  var visibleCount=countFilledOrderItems(order&&order.items||{});
+  if(visibleCount>0) return visibleCount;
+  var rawCount=parseInt(order&&order.rawItemCount,10);
+  return Number.isFinite(rawCount)&&rawCount>0?rawCount:0;
+}
 function getOrderItemQty(itemsMap,code){return normalizeOrderItemEntry(itemsMap&&itemsMap[code]).qty;}
 function getOrderItemUnitLabel(v){
   var d=normalizeOrderItemEntry(v);
@@ -1522,8 +1528,17 @@ function buildOrderStateMap(list, catalogItems){
     var category=normalizeCategory(o.category);
     var vendorKey=normalizeVendorKey(category,o.vendorKey);
     var sanitized=sanitizeOrderCodeMaps(o.items||{},o.notes||{},catalogItems,category,vendorKey);
+    var rawItems=Object.assign({},o.items||{});
+    var rawNotes=Object.assign({},o.notes||{});
+    var sanitizedItemsEmpty=Object.keys(sanitized.items||{}).length===0;
+    var sanitizedNotesEmpty=Object.keys(sanitized.notes||{}).length===0;
+    var rawItemsPresent=Object.keys(rawItems).length>0;
+    var rawNotesPresent=Object.keys(rawNotes).length>0;
+    if(sanitizedItemsEmpty&&sanitizedNotesEmpty&&(rawItemsPresent||rawNotesPresent)){
+      sanitized={items:rawItems,notes:rawNotes};
+    }
     var key=o.storeId+"_"+o.week+"-"+o.type+"-"+categoryKey(category,vendorKey);
-    orderMap[key]={id:o.id,items:sanitized.items,notes:sanitized.notes,status:o.status,store:o.storeId,type:o.type,category:category,vendorKey:vendorKey,week:o.week||null,date:o.date||o.submittedAt||o.createdAt||new Date().toISOString(),submittedAt:o.submittedAt||null,createdAt:o.createdAt||null};
+    orderMap[key]={id:o.id,items:sanitized.items,notes:sanitized.notes,status:o.status,store:o.storeId,type:o.type,category:category,vendorKey:vendorKey,week:o.week||null,date:o.date||o.submittedAt||o.createdAt||new Date().toISOString(),submittedAt:o.submittedAt||null,createdAt:o.createdAt||null,rawItemCount:o.itemCount||0};
   });
   return orderMap;
 }
@@ -3001,7 +3016,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       <div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:18,color:"#6B7186"}}>No orders</div>:
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countFilledOrderItems(o.items||{})}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
+        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openKey=user.storeId+"_"+dateKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var reopenTip=!openType?"No order is open right now":(o.type!==openType?("Only Order "+openType+" can be reopened now"):((k!==openKey)?"Only the current open-slot submitted order can be reopened":""));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countOrderItemsWithFallback(o)}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{o.status==="submitted"&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
       </tbody></table></div>}
     </div>);
   };
