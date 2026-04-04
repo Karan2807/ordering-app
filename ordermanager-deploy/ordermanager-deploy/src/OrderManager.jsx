@@ -306,10 +306,11 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
 }
 function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
   var exact=getStoreOrderForWeek(orderMap,storeId,referenceWeekKey,type,category,vendorKey);
-  if(exact) return exact;
   if(category==="vendor_orders"){
     return getCurrentOrderForStoreType(orderMap,storeId,type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
   }
+  var exactStatus=String(exact&&exact.status||"").toLowerCase();
+  if(exact&&["submitted","processed","draft_shared"].indexOf(exactStatus)>=0) return exact;
   var bestVisible=null;
   var bestAny=null;
   Object.values(orderMap||{}).forEach(function(o){
@@ -326,6 +327,7 @@ function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type
     }
   });
   if(bestVisible&&bestVisible.order) return bestVisible.order;
+  if(exact) return exact;
   return bestAny&&bestAny.order?bestAny.order:null;
 }
 function lastWeekKey(type, category, vendorKey){
