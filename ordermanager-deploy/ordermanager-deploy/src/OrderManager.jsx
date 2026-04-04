@@ -3465,7 +3465,9 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       if(!sl||!sl.store||!sl.store.id) return;
       var sid=sl.store.id;
       var exact=getStoreOrderForWeek(orders,sid,activeWeekKey,currentType,selCategory,resolvedVendorKey);
-      if(exact){
+      var exactStatus=String(exact&&exact.status||"").toLowerCase();
+      var exactVisible=!!(exact&&visibleStatus[exactStatus]);
+      if(exactVisible){
         out[sid]={order:exact,week:exact.week||activeWeekKey};
         return;
       }
@@ -3475,7 +3477,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         return;
       }
       if(preferScheduledNewGroup){
-        out[sid]={order:null,week:activeWeekKey};
+        out[sid]={order:exact||null,week:(exact&&exact.week)||activeWeekKey};
         return;
       }
       var fallback=findLatestMatchingOrder(orders,[sid],currentType,selCategory,resolvedVendorKey,visibleStatus,7*24*60*60*1000);
@@ -3483,7 +3485,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         out[sid]={order:fallback.order,week:fallback.week||activeWeekKey};
         return;
       }
-      out[sid]={order:null,week:activeWeekKey};
+      out[sid]={order:exact||null,week:(exact&&exact.week)||activeWeekKey};
     });
     return out;
   },[slots,orders,activeWeekKey,currentType,selCategory,resolvedVendorKey,isSingleVendorFlow,preferScheduledNewGroup,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
