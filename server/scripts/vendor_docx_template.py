@@ -53,7 +53,11 @@ def extract_paragraphs(root):
     body = root.find("w:body", NS)
     if body is None:
         return []
-    return [child for child in list(body) if child.tag == qn("p")]
+    # Vendor forms can place headings and item rows inside table cells, where
+    # paragraphs are nested under w:tbl/w:tr/w:tc rather than directly under
+    # w:body. Preserve document order by walking the body tree and collecting
+    # every paragraph node.
+    return [node for node in body.iter() if node.tag == qn("p")]
 
 
 def parse_template(input_path):

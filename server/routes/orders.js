@@ -1781,10 +1781,46 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   let usePlainWorkbook = false;
   let excelBuffer = null;
   if (hasDocxStoreTemplate) {
+    // Build name → item-master-code lookup so we can bridge between the
+    // original docx template codes (e.g. "ABC123") and the codes actually
+    // stored in orders (e.g. "Tomatoes" from buildItemMasterCode).
+    const masterCodeByName = {};
+    (itemDocs || []).forEach((item) => {
+      if (item && item.name) {
+        masterCodeByName[String(item.name || '').trim().toLowerCase()] = String(item.code || '').trim();
+      }
+    });
+
+    const templateItemRows =
+      template.docxMap && Array.isArray(template.docxMap.itemRows)
+        ? template.docxMap.itemRows
+        : [];
+
     const quantitiesByCode = {};
+    templateItemRows.forEach((row) => {
+      const templateCode = String(row && row.code || '').trim();
+      if (!templateCode) return;
+
+      // 1. Direct lookup: template code already matches item master code (reconciled).
+      let qtyInfo = getQtyWithUnit(normalizedItems[templateCode]);
+
+      // 2. Fallback: look up by item name – handles docx templates whose codes
+      //    (e.g. "ABC123") differ from the item master codes ("Tomatoes").
+      if (!qtyInfo.qty) {
+        const rowName = String(row && row.name || '').trim().toLowerCase();
+        const masterCode = masterCodeByName[rowName];
+        if (masterCode) qtyInfo = getQtyWithUnit(normalizedItems[masterCode]);
+      }
+
+      if (qtyInfo.qty > 0) quantitiesByCode[templateCode] = qtyInfo.formatted;
+    });
+
+    // Also include any items stored directly under template codes (edge-case).
     codes.forEach((code) => {
-      const qtyInfo = getQtyWithUnit(normalizedItems[code]);
-      if (qtyInfo.qty > 0) quantitiesByCode[code] = qtyInfo.formatted;
+      if (!quantitiesByCode[code]) {
+        const qtyInfo = getQtyWithUnit(normalizedItems[code]);
+        if (qtyInfo.qty > 0) quantitiesByCode[code] = qtyInfo.formatted;
+      }
     });
     const rendered = await renderVendorDocxTemplate({
       template,

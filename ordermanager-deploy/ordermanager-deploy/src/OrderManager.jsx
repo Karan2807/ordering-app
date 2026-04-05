@@ -453,6 +453,23 @@ function looksLikeObviousHeadingText(value){
   if(/^total\b|^subtotal\b|^grand\s*total\b/i.test(text)) return true;
   return /\b(products?|items?|section|category|group)\b/i.test(text);
 }
+function getNextNonEmptyRow(rows,startIndex){
+  for(var i=Number(startIndex)+1;i<(rows||[]).length;i++){
+    var row=rows[i]||[];
+    if(row.some(function(cell){return String(cell||"").trim()!=="";})) return row;
+  }
+  return null;
+}
+function shouldTreatStandaloneLabelAsHeading(category,labelText,nextRow){
+  var text=String(labelText||"").trim();
+  if(!text) return false;
+  if(looksLikeObviousHeadingText(text)) return true;
+  if(normalizeCategory(category)!=="vendor_orders") return false;
+  var nextCells=(Array.isArray(nextRow)?nextRow:[]).map(function(cell){return String(cell||"").trim();}).filter(Boolean);
+  if(!nextCells.length) return false;
+  if(nextCells.length>=2) return true;
+  return nextCells.some(function(cell){return /\d/.test(cell);});
+}
 function findDateCell(rows, startRow, endRow){
   for(var r=Math.max(0,startRow||0);r<Math.min(rows.length,endRow||rows.length);r++){
     var row=rows[r]||[];
@@ -599,7 +616,8 @@ function parseTemplateItemSheet(rows, category, vendorKey, sourceFilename, sheet
 
         var hasDataCell=rawCode!==""||unitText!==""||hasStoreCell||totalText!=="";
         if(!hasDataCell){
-          if(hasExplicitItemCell&&!looksLikeObviousHeadingText(name)){
+          var nextNonEmptyRow=getNextNonEmptyRow(rows,i);
+          if(hasExplicitItemCell&&!shouldTreatStandaloneLabelAsHeading(category,name,nextNonEmptyRow)){
             var codeNoData=buildUniqueItemMasterCode(name,unitText,seenCodes);
             var noDataSortOrder=itemRows.length;
             itemRows.push({code:codeNoData,name:name,rowIndex:i,colIndex:group.itemCol});
@@ -709,7 +727,8 @@ function parseTemplateItemSheet(rows, category, vendorKey, sourceFilename, sheet
     if(!itemName&&!rawQty&&!rawNote&&!rawUnit) continue;
     if(!itemName||/^date\b/i.test(itemName)) continue;
     if(!rawCode&&!rawQty&&!rawNote&&!rawUnit&&itemName){
-      if(!looksLikeObviousHeadingText(itemName)){
+      var nextTabRow=getNextNonEmptyRow(rows,ti);
+      if(!shouldTreatStandaloneLabelAsHeading(category,itemName,nextTabRow)){
         var itemCodeNoData=buildUniqueItemMasterCode(itemName,rawUnit,seenCodes);
         tabRows.push({code:itemCodeNoData,name:itemName,rowIndex:ti,colIndex:itemCol});
         tabItems.push({code:itemCodeNoData,name:itemName,category:normalizeCategory(category),vendorKey:normalizeVendorKey(category,vendorKey),unit:rawUnit,subheading:activeHeading,sortOrder:tabItems.length});
@@ -847,7 +866,8 @@ function parseLooseSheetItems(rows, category, vendorKey, sheetName, startOrder){
       continue;
     }
     if(nonHeaderCount<=1&&!hasNumberish){
-      if(!looksLikeObviousHeadingText(first)){
+      var nextLooseRow=getNextNonEmptyRow(rows,r);
+      if(!shouldTreatStandaloneLabelAsHeading(category,first,nextLooseRow)){
         var looseCode=buildUniqueItemMasterCode(first,"",seenCodes);
         if(looseCode){
           outItems.push({
@@ -2944,7 +2964,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
         var navRow=-1;
         return displayRows.map(function(row){
         if(row.type==="heading"){
-          return <tr key={row.key}><td colSpan={showNoteColumn?4:3} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
+          return <tr key={row.key}><td colSpan={showNoteColumn?4:3} style={Object.assign({},S.td,{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{row.text}</td></tr>;
         }
         var it=row.item;
         navRow+=1;
@@ -3753,7 +3773,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         if(noteTxt&&noteParts.indexOf(noteTxt)===-1) noteParts.push(noteTxt);
         qtyByStoreId[sl.store.id]=q;if(selCategory==="vendor_orders")orderUnitByStoreId[sl.store.id]={unitType:entry.unitType,customUnit:entry.customUnit||""};total+=q;
       });
-      return {code:it.code,name:it.name,unit:it.unit||"",qtyByStoreId:qtyByStoreId,orderUnitByStoreId:orderUnitByStoreId,total:total,totalDisplay:selCategory==="vendor_orders"?formatQtySummaryByUnit(qtyByStoreId,orderUnitByStoreId):String(total||""),note:noteParts.join(" | ")};
+      return {code:it.code,name:it.name,unit:it.unit||"",subheading:String(it.subheading||"").trim(),qtyByStoreId:qtyByStoreId,orderUnitByStoreId:orderUnitByStoreId,total:total,totalDisplay:selCategory==="vendor_orders"?formatQtySummaryByUnit(qtyByStoreId,orderUnitByStoreId):String(total||""),note:noteParts.join(" | ")};
     });
   },[items,orders,slots,currentType,selCategory,manualOpenOrder,manualOpenSeq,resolvedVendorKey,activeTemplate,activeWeekKey]);
   var editableStoreSlots=useMemo(function(){
@@ -4079,12 +4099,20 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         var notes=Object.assign({},editNotesByStore[sid]||{});
         var targetWeek=getStoreOrderWeek(sid);
         var nextStatus=(existing.status==="submitted"||existing.status==="processed"||existing.status==="draft_shared")?existing.status:"draft";
+        // Skip stores with no existing visible order and no entered quantities/notes.
+        // Saving an empty payload for such stores would overwrite any non-visible draft
+        // the store user had already saved, erasing their work.
+        var hasExistingVisibleOrder=!!(existing&&existing.status);
+        var hasQty=Object.values(qty).some(function(v){return normalizeOrderItemEntry(v).qty>0;});
+        var hasNote=Object.values(notes).some(function(v){return String(v||"").trim();});
+        if(!hasExistingVisibleOrder&&!hasQty&&!hasNote){return null;}
         var resp=await apiClient.orders.create({type:currentType,category:selCategory,vendorKey:resolvedVendorKey,items:qty,notes:notes,status:nextStatus,storeId:sid,week:targetWeek});
         return {sid:sid,orderId:resp&&resp.orderId,qty:qty,notes:notes,status:nextStatus,existing:existing,targetWeek:targetWeek};
       }));
       setOrders(function(prev){
         var n=Object.assign({},prev);
         results.forEach(function(r){
+          if(!r) return;
           var k=orderStateKey(r.sid,r.targetWeek,currentType,selCategory,resolvedVendorKey);
           n[k]=Object.assign({},prev[k]||{},{
             id:r.orderId||(prev[k]||{}).id||((r.existing&&r.existing.id)||null),
@@ -4321,6 +4349,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var vendorConsolidatedDisplayRows=useMemo(function(){
     if(!isSingleVendorFlow) return [];
     return buildTemplateDataRows(activeTemplate,baseRows);
+  },[isSingleVendorFlow,activeTemplate,baseRows]);
+  var nonVendorConsolidatedDisplayRows=useMemo(function(){
+    if(isSingleVendorFlow) return [];
+    return buildTemplateDisplayRows(activeTemplate,baseRows);
   },[isSingleVendorFlow,activeTemplate,baseRows]);
   var getVendorConsolidatedDocumentMode=function(){
     return vendorSendMode==="consolidated_with_details"?"monitor":null;
@@ -4716,7 +4748,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </thead><tbody>
         {vendorConsolidatedDisplayRows.map(function(entry,rowIdx){
           if(entry.type==="heading"){
-            return <tr key={entry.key}><td colSpan={slots.length+3} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
+            return <tr key={entry.key}><td colSpan={slots.length+3} style={Object.assign({},tProductCell,{background:"#475569",color:"#FFFFFF",fontWeight:700,letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{entry.text}</td></tr>;
           }
           var r=entry.row;
           var liveVendorState=editingAll?getEditableVendorRowState(r):null;
@@ -4749,12 +4781,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
         <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadTopCenter,{minWidth:68})}>UNIT</th>}{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
         <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadSub,{minWidth:68})}>UNIT</th>}{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
-      </thead><tbody>{baseRows.map(function(it,rowIdx){
+      </thead><tbody>{(function(){var itemRowIdx=-1;return nonVendorConsolidatedDisplayRows.map(function(entry){
+        if(entry.type==="heading"){return <tr key={entry.key}><td colSpan={slots.length+3} style={{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px",border:"1px solid #B9BEC9"}}>{entry.text}</td></tr>;}
+        var it=entry.item;itemRowIdx+=1;var rowIdx=itemRowIdx;
         var liveVendorState=selCategory==="vendor_orders"&&editingAll?getEditableVendorRowState(it):null;
         var totalQty=liveVendorState?liveVendorState.totalQty:it.total;
         var unitLabel=liveVendorState?liveVendorState.unitLabel:(getOrderItemUnitLabel({unitType:Object.values(it.unitTypeByStoreId||{})[0]||"cas"})||"CASE");
         return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{totalQty||""}</td>{selCategory==="vendor_orders"&&<td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534",fontSize:11,textAlign:"center"})}>{unitLabel}</td>}{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var fallbackMeta=sid&&it.orderUnitByStoreId&&it.orderUnitByStoreId[sid]?it.orderUnitByStoreId[sid]:{unitType:"cas",customUnit:""};var storeCol=sid!=null?editableStoreIndexById[sid]:null;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid&&selCategory==="vendor_orders"?renderVendorQtyEditor(sid,it.code,fallbackMeta,rowIdx,storeCol):editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={Number((editQtyByStore[sid]||{})[it.code])||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){if(storeCol==null) return;handleGridNavigation(e,consolidatedNavGroup,rowIdx,storeCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={storeCol} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:baseQ>0?"#0F172A":"#64748B"}}>{selCategory==="vendor_orders"?formatQtyValueWithUnit(baseQ,fallbackMeta):(baseQ||"")}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{editableStoreSlots.map(function(sl,noteIdx){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");var noteCol=editableStoreSlots.length+noteIdx;return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"5px 7px",fontSize:12.5,minHeight:28})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,noteCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={noteCol} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
-      })}</tbody></table></div>
+      });})()}</tbody></table></div>
     </div>))}
 
     {step===2&&(isSingleVendorFlow?(<div style={S.card}>
@@ -4904,7 +4938,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
             </thead><tbody>
               {displayRows.map(function(entry){
                 if(entry.type==="heading"){
-                  return <tr key={entry.key}><td colSpan={(useVendorMonitorPreview||useVendorDocumentPreview)?(useVendorMonitorPreview?(slots.length+3):3):(slots.length+3)} style={Object.assign({},tProductCell,{background:"rgba(226,232,240,.42)",fontWeight:700})}>{entry.text}</td></tr>;
+                  return <tr key={entry.key}><td colSpan={(useVendorMonitorPreview||useVendorDocumentPreview)?(useVendorMonitorPreview?(slots.length+3):3):(slots.length+3)} style={Object.assign({},tProductCell,{background:"#475569",color:"#FFFFFF",fontWeight:700,letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{entry.text}</td></tr>;
                 }
                 var r=entry.row;
                 return useVendorMonitorPreview
@@ -4945,7 +4979,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       <div style={Object.assign({},S.tw,{maxHeight:"55vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>UNIT</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
         {vendorStoreDialogDisplayRows.map(function(entry){
           if(entry.type==="heading"){
-            return <tr key={entry.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{entry.text}</td></tr>;
+            return <tr key={entry.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{entry.text}</td></tr>;
           }
           var row=entry.row;
           return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.name||""}</td><td style={S.td}>{row.unit||""}</td><td style={Object.assign({},S.td,{textAlign:"center"})}>{vendorStoreDialogEditing?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={vendorStoreDialogQty[row.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value,10)||0);setVendorStoreDialogQty(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog}/>:<span style={{fontFamily:"monospace"}}>{row.qtyDisplay||""}</span>}</td><td style={S.td}>{vendorStoreDialogEditing?<input style={Object.assign({},S.inp,{padding:"5px 8px",fontSize:11.5})} value={vendorStoreDialogNotes[row.code]||""} onChange={function(e){var v=e.target.value;setVendorStoreDialogNotes(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog} placeholder="note"/>:(row.note||"-")}</td></tr>;
@@ -5502,7 +5536,7 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
       <div style={Object.assign({},S.tw,{width:"100%",maxWidth:1120})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{width:40})}></th></tr></thead>
         <tbody>{displayRows.map(function(row){
           if(row.type==="heading"){
-            return <tr key={row.key}><td colSpan={5} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
+            return <tr key={row.key}><td colSpan={5} style={Object.assign({},S.td,{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{row.text}</td></tr>;
           }
           var it=row.item;
           return(<tr key={row.key}><td style={S.tm}>{buildItemMasterCode(it.name,it.unit)||it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit||"-"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(it.code);}}>Del</button></td></tr>);
@@ -5527,7 +5561,7 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
       <div style={Object.assign({},S.tw,{maxHeight:180})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th></tr></thead><tbody>
         {(uploadTemplate&&uploadTemplate.kind==="docx_vendor_form"?uploadPreviewRows.slice(0,12).map(function(row){
           if(row.type==="heading"){
-            return <tr key={row.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#0F172A",background:"rgba(226,232,240,.42)"})}>{row.text}</td></tr>;
+            return <tr key={row.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{row.text}</td></tr>;
           }
           var it=row.item;
           return <tr key={row.key}><td style={S.tm}>{buildItemMasterCode(it.name,it.unit)||it.code}</td><td style={S.td}>{it.name}</td><td style={S.td}>{it.category||"-"}</td><td style={S.td}>{it.unit||"-"}</td></tr>;
