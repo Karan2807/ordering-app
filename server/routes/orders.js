@@ -1034,11 +1034,11 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
 
   // Vendor completed history should show the full monitor workbook with store
   // details, not the supplier-facing total-only attachment.
-  if (normalizedCategory === 'vendor_orders' && latestSentLog && latestSentLog.monitorExcelBase64) {
+  if ((normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') && latestSentLog && latestSentLog.monitorExcelBase64) {
     return {
       excelBuffer: Buffer.from(latestSentLog.monitorExcelBase64, 'base64'),
       excelFilename: latestSentLog.monitorExcelFilename || buildConsolidatedFilename({
-        supplierName: latestSentLog.supplierName || latestSentLog.vendorKey || 'Vendor',
+        supplierName: latestSentLog.supplierName || latestSentLog.vendorKey || latestSentLog.category || 'Supplier',
         dateValue: latestSentLog.sentAt || latestSentLog.createdAt || new Date(),
       }),
     };
@@ -1046,7 +1046,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
 
   // When a consolidated email was already sent, return the exact workbook that
   // was attached to the email so history matches what the supplier received.
-  if (normalizedCategory !== 'vendor_orders' && latestSentLog && latestSentLog.excelBase64) {
+  if (normalizedCategory !== 'vendor_orders' && normalizedCategory !== 'leaves' && latestSentLog && latestSentLog.excelBase64) {
     const supplierDisplayName = await resolveConsolidatedSupplierName({
       category: normalizedCategory,
       vendorKey: normalizedVendorKey,
@@ -1067,7 +1067,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     normalizedType,
     normalizedCategory,
     normalizedVendorKey,
-    normalizedCategory === 'vendor_orders' ? { documentMode: 'monitor' } : null,
+    (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') ? { documentMode: 'monitor' } : null,
     normalizedWeek
   );
   return { excelBuffer, excelFilename };
@@ -1505,6 +1505,9 @@ async function buildExcelPreviewFromBuffer(excelBuffer) {
 async function buildConsolidatedExcelPayload(type, category, vendorKey, splitData, requestedWeekKey = null) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const requestedDocumentMode =
+    splitData && typeof splitData === 'object' ? String(splitData.documentMode || '').trim().toLowerCase() : '';
+  const useDetailedLeavesWorkbook = resolvedCategory === 'leaves' && requestedDocumentMode === 'monitor';
   const weekBase = getWeekKey();
   const mo = await getManualOpenState();
   const resolvedRequestedWeekKey = normalizeRequestedWeekKey(requestedWeekKey);
@@ -1628,7 +1631,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       excelRows.push(makeExcelRow([entry.itemName, itemUnit, totalDisplay, '', '', '', ''], 'data'));
     });
   // Leaves supplier exports should include only product + total qty (no store-wise columns).
-  } else if (resolvedCategory === 'leaves') {
+  } else if (resolvedCategory === 'leaves' && !useDetailedLeavesWorkbook) {
     excelRows.push([`Date: ${dateText}`, '', '', '', '', '', '']);
     excelRows.push(['PRODUCT', 'TOTAL QTY', '', '', '', '', '']);
     const leavesRows = splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0
@@ -2296,7 +2299,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
 
     const { weekKey, stores, slots, slotOrders, snapshotLines, excelBuffer, excelFilename } =
       await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, effectiveSplitData, requestedWeekKey);
-    const vendorMonitorHistory = resolvedCategory === 'vendor_orders'
+    const monitorHistory = (resolvedCategory === 'vendor_orders' || resolvedCategory === 'leaves')
       ? await buildConsolidatedExcelPayload(
           req.params.type,
           resolvedCategory,
@@ -2364,9 +2367,9 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
         snapshotLines,
         excelBase64: excelBuffer.toString('base64'),
         excelFilename,
-        monitorSnapshotLines: vendorMonitorHistory ? vendorMonitorHistory.snapshotLines : [],
-        monitorExcelBase64: vendorMonitorHistory ? vendorMonitorHistory.excelBuffer.toString('base64') : null,
-        monitorExcelFilename: vendorMonitorHistory ? vendorMonitorHistory.excelFilename : null,
+        monitorSnapshotLines: monitorHistory ? monitorHistory.snapshotLines : [],
+        monitorExcelBase64: monitorHistory ? monitorHistory.excelBuffer.toString('base64') : null,
+        monitorExcelFilename: monitorHistory ? monitorHistory.excelFilename : null,
         finished: finishedFlag,
       });
     } catch (historyErr) {
@@ -2770,8 +2773,23 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
     }
     const doc = await SupplierOrder.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
-    if (!doc.excelBase64) return res.status(404).json({ error: 'Excel file not stored for this record' });
-    const excelBuffer = Buffer.from(doc.excelBase64, 'base64');
+    const normalizedCategory = normalizeCategory(doc.category);
+    let excelBuffer = null;
+    if (normalizedCategory === 'leaves') {
+      const detailedHistory = await buildConsolidatedHistoryExcelPayload({
+        week: doc.week,
+        type: doc.type,
+        category: normalizedCategory,
+        vendorKey: doc.vendorKey,
+      });
+      excelBuffer = detailedHistory && detailedHistory.excelBuffer ? detailedHistory.excelBuffer : null;
+    } else {
+      const storedExcelBase64 = doc.excelBase64;
+      if (storedExcelBase64) {
+        excelBuffer = Buffer.from(storedExcelBase64, 'base64');
+      }
+    }
+    if (!excelBuffer) return res.status(404).json({ error: 'Excel file not stored for this record' });
     const downloadFilename = buildConsolidatedFilename({
       supplierName: doc.supplierName || doc.vendorKey || doc.category || 'Supplier',
       dateValue: doc.sentAt || doc.createdAt || new Date(),
@@ -2792,9 +2810,21 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
     }
     const doc = await SupplierOrder.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
-    if (!doc.excelBase64) return res.status(404).json({ error: 'Excel file not stored for this record' });
+    const normalizedCategory = normalizeCategory(doc.category);
+    let excelBuffer = null;
+    if (normalizedCategory === 'leaves') {
+      const detailedHistory = await buildConsolidatedHistoryExcelPayload({
+        week: doc.week,
+        type: doc.type,
+        category: normalizedCategory,
+        vendorKey: doc.vendorKey,
+      });
+      excelBuffer = detailedHistory && detailedHistory.excelBuffer ? detailedHistory.excelBuffer : null;
+    } else if (doc.excelBase64) {
+      excelBuffer = Buffer.from(doc.excelBase64, 'base64');
+    }
+    if (!excelBuffer) return res.status(404).json({ error: 'Excel file not stored for this record' });
 
-    const excelBuffer = Buffer.from(doc.excelBase64, 'base64');
     const preview = await buildExcelPreviewFromBuffer(excelBuffer);
     res.json({
       success: true,
