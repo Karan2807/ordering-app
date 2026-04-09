@@ -3147,7 +3147,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var _hspl=useState({}),historySheetPreviewLoadingById=_hspl[0],setHistorySheetPreviewLoadingById=_hspl[1];
   var all=Object.entries(orders).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var f=(ft==="all"||ft==="completed")?all:all.filter(function(e){return e[1].type===ft;});
-  var monitorTabs=isWarehouseUser?["all","completed"]:["all","A","B","C","completed"];
+  var monitorTabs=["all","A","B","C","completed"];
   var vegSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
   var leavesSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});
   var vendorSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";});
@@ -3208,6 +3208,9 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var historyGroupKey=function(rec){
     return String(rec&&rec.week||"")+"::"+String(rec&&rec.type||"")+"::"+String(normalizeCategory(rec&&rec.category||"vegetables"))+"::"+String(normalizeVendorKey(rec&&rec.category,rec&&rec.vendorKey)||"");
   };
+  var sentLogActionKey=function(log){
+    return "sentlog::"+String(log&&log._id||"");
+  };
   var loadSheetPreviewForHistory=async function(rec){
     if(!rec||!rec.week||!rec.type) return null;
     var k=historyGroupKey(rec);
@@ -3244,6 +3247,31 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     }catch(e){toast(e.message||"Failed to download sheet",true);}
     finally{
       setHistoryDownloading(function(prev){var n=Object.assign({},prev);delete n[k];return n;});
+    }
+  };
+  var downloadSentLogExcel=async function(log){
+    if(!log||!log._id){toast("Missing sent file details",true);return;}
+    var k=sentLogActionKey(log);
+    try{
+      setHistoryDownloading(function(prev){var n=Object.assign({},prev);n[k]=true;return n;});
+      await apiClient.supplierOrders.downloadExcel(log._id, log.excelFilename || undefined);
+      toast("Sent supplier file downloaded");
+    }catch(e){toast(e.message||"Failed to download sent file",true);}
+    finally{
+      setHistoryDownloading(function(prev){var n=Object.assign({},prev);delete n[k];return n;});
+    }
+  };
+  var printSentLogExcel=async function(log){
+    var printWindow;
+    try{
+      if(!log||!log._id){toast("Missing sent file details",true);return;}
+      printWindow=openPendingPrintWindow("Preparing document...");
+      var resp=await apiClient.supplierOrders.previewExcel(log._id);
+      await printSheetSections((log.supplierName||log._id||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
+      toast("Print dialog opened");
+    }catch(e){
+      if(printWindow&&!printWindow.closed) printWindow.close();
+      toast(e.message||"Failed to print sent file",true);
     }
   };
   var printConsolidatedHistoryExcel=async function(rec){
@@ -3341,7 +3369,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var completedVegetableLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vegetables";});
   var completedLeavesLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="leaves";});
   var completedVendorLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vendor_orders";});
-  var visibleConsolidatedHistory=isWarehouseUser?consolidatedHistory.filter(function(r){return normalizeCategory((r&&r.category)||"vegetables")==="vendor_orders";}):consolidatedHistory;
+  var visibleConsolidatedHistory=consolidatedHistory;
   var renderCompletedSection=function(title,rows){
     return(<div style={S.card}><div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>No completed orders</div>:
@@ -3366,14 +3394,14 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   };
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:14}}>
-      <div style={S.tabs}>{monitorTabs.map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?(isWarehouseUser?"Vendor Orders":"All"):t==="completed"?"Completed":"Order "+t}</button>;})}</div>
+      <div style={S.tabs}>{monitorTabs.map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?"All":t==="completed"?"Completed":"Order "+t}</button>;})}</div>
       {ft!=="all"&&ft!=="completed"&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){processAll(ft);}}>Process Order {ft} (All Stores)</button>}
     </div>
     {ft==="completed" ? (
       <Fragment>
         <div style={S.card}>
           <div style={S.cH}>
-            <div><div style={S.t}>{isWarehouseUser?"Vendor Consolidated History (Last 7 Days)":"Consolidated History (Last 7 Days)"}</div><div style={S.d}>{isWarehouseUser?"Vendor consolidated groups with sent/not sent status and store-level order details.":"All consolidated groups with sent/not sent status and store-level order details."}</div></div>
+            <div><div style={S.t}>Consolidated History (Last 7 Days)</div><div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div></div>
             <button style={Object.assign({},S.b,S.bS)} onClick={refreshConsolidatedHistory} disabled={historyLoading}>{historyLoading?"Refreshing...":"Refresh"}</button>
           </div>
           {historyLoading?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>Loading consolidated history...</div>:
@@ -3395,11 +3423,11 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
             })}
           </tbody></table></div>}
         </div>
-        {!isWarehouseUser&&renderCompletedSection("Completed Vegetable Orders",completedVegetableLogs)}
-        {!isWarehouseUser&&renderCompletedSection("Completed Leaves Orders",completedLeavesLogs)}
+        {renderCompletedSection("Completed Vegetable Orders",completedVegetableLogs)}
+        {renderCompletedSection("Completed Leaves Orders",completedLeavesLogs)}
         {renderCompletedSection("Completed Vendor Orders",completedVendorLogs)}
       </Fragment>
-    ) : (<Fragment>{!isWarehouseUser&&renderSubmissionSection("Vegetable Orders",vegSubmissions)}{!isWarehouseUser&&renderSubmissionSection("Leaves Orders",leavesSubmissions)}{renderSubmissionSection("Vendor Orders",vendorSubmissions)}</Fragment>)}
+    ) : (<Fragment>{renderSubmissionSection("Vegetable Orders",vegSubmissions)}{renderSubmissionSection("Leaves Orders",leavesSubmissions)}{renderSubmissionSection("Vendor Orders",vendorSubmissions)}</Fragment>)}
     {selDone&&(<div style={S.ov} onClick={function(){setSelDone(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>Sent Consolidated Order {selDone.type} - {fmtDT(selDone.sentAt)}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:8}}>Supplier: {selDone.supplierName} | {selDone.email} | Week: {selDone.week}</div>
@@ -3414,6 +3442,26 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     {selHistory&&(<div style={S.ov} onClick={function(){setSelHistory(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>Consolidated Week {selHistory.week} - Order {selHistory.type}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:10}}>{historyCategoryLabel(selHistory.category)} | Vendor: {historyVendorLabel(selHistory.vendorKey)} | Sent: {selHistory.sent?("Yes ("+(selHistory.sentCount||0)+")"):"No"}</div>
+      {selHistory.sentLogs&&selHistory.sentLogs.length>0&&<div style={Object.assign({},S.card,{marginBottom:10,padding:"10px 12px"})}>
+        <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:8}}>Sent Supplier Files</div>
+        <div style={{display:"grid",gap:8}}>
+          {selHistory.sentLogs.map(function(log){
+            var actionKey=sentLogActionKey(log);
+            var isDownloadingSent=!!historyDownloading[actionKey];
+            return <div key={String(log._id||actionKey)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap",border:"1px solid rgba(148,163,184,.24)",borderRadius:10,padding:"8px 10px",background:"rgba(255,255,255,.7)"}}>
+              <div style={{minWidth:220,flex:"1 1 260px"}}>
+                <div style={{fontSize:12.5,fontWeight:700,color:"#0F172A"}}>{log.supplierName||"Supplier"}</div>
+                <div style={{fontSize:11.5,color:"#64748B"}}>{log.email||"-"} | {fmtDT(log.sentAt)}</div>
+              </div>
+              <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelDone(log);loadSheetPreviewForLog(log);}}>View Sent File</button>
+                <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadSentLogExcel(log);}} disabled={isDownloadingSent||!log.hasExcel}>{isDownloadingSent?"Downloading...":"Download"}</button>
+                <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printSentLogExcel(log);}} disabled={!log.hasExcel}>Print</button>
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>}
       {(function(){
         var hk=historyGroupKey(selHistory);
         var hprev=historySheetPreviewById[hk];

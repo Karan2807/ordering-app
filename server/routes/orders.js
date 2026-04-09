@@ -16,6 +16,8 @@ import { sendGraphMail } from '../services/msSendMail.js';
 import { renderVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 import { notifyWarehouseVendorSubmission } from '../services/warehouseNotifications.js';
 
+const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
+
 function listifyVendorInputs(input) {
   if (Array.isArray(input)) return input.slice();
   if (input && typeof input.values === 'function' && typeof input.size === 'number') {
@@ -647,13 +649,73 @@ function safeFilenamePart(value) {
   return String(value || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'document';
 }
 
+function datePartsInTimezone(value, timeZone = ORDER_TIMEZONE) {
+  const raw = value ? new Date(value) : new Date();
+  const safeDate = Number.isNaN(raw.getTime()) ? new Date() : raw;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(safeDate);
+  const map = {};
+  parts.forEach((part) => {
+    if (part.type !== 'literal') map[part.type] = part.value;
+  });
+  return {
+    year: map.year || String(safeDate.getFullYear()),
+    month: map.month || String(safeDate.getMonth() + 1).padStart(2, '0'),
+    day: map.day || String(safeDate.getDate()).padStart(2, '0'),
+  };
+}
+
+function workbookDateLabel(value, timeZone = ORDER_TIMEZONE) {
+  const { month, day, year } = datePartsInTimezone(value, timeZone);
+  return `Date: ${month}/${day}/${year}`;
+}
+
 function consolidatedFilenameDate(value) {
-  const date = value ? new Date(value) : new Date();
-  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
-  const year = safeDate.getFullYear();
-  const month = String(safeDate.getMonth() + 1).padStart(2, '0');
-  const day = String(safeDate.getDate()).padStart(2, '0');
+  const { year, month, day } = datePartsInTimezone(value);
   return `${year}-${month}-${day}`;
+}
+
+function workbookCellText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    if (Array.isArray(value.richText)) return value.richText.map((part) => String(part && part.text || '')).join('');
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.result === 'string' || typeof value.result === 'number') return String(value.result);
+    if (typeof value.formula === 'string') return String(value.formula);
+  }
+  return String(value);
+}
+
+async function withWorkbookDateLabel(excelBuffer, dateValue) {
+  if (!excelBuffer || !dateValue) return excelBuffer;
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(excelBuffer);
+    const label = workbookDateLabel(dateValue);
+    workbook.worksheets.forEach((worksheet) => {
+      const maxRows = Math.min(Math.max(worksheet.rowCount || 0, 3), 5);
+      for (let rowNum = 1; rowNum <= maxRows; rowNum += 1) {
+        const row = worksheet.getRow(rowNum);
+        for (let colNum = 1; colNum <= 6; colNum += 1) {
+          const cell = row.getCell(colNum);
+          const text = workbookCellText(cell.value).trim();
+          if (/^Date\s*:/i.test(text)) {
+            cell.value = label;
+          }
+        }
+      }
+    });
+    return workbook.xlsx.writeBuffer();
+  } catch (_err) {
+    return excelBuffer;
+  }
 }
 
 async function resolveConsolidatedSupplierName({ category, vendorKey, supplierName }) {
@@ -947,12 +1009,24 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
   sentLogs.forEach((log) => {
     const key = consolidatedHistoryKey(log.week, log.type, log.category, log.vendorKey);
     if (!sentByGroup[key]) {
-      sentByGroup[key] = { sentCount: 0, lastSentAt: null };
+      sentByGroup[key] = { sentCount: 0, lastSentAt: null, sentLogs: [] };
     }
     sentByGroup[key].sentCount += 1;
     if (!sentByGroup[key].lastSentAt || new Date(log.sentAt || 0) > new Date(sentByGroup[key].lastSentAt)) {
       sentByGroup[key].lastSentAt = log.sentAt || null;
     }
+    sentByGroup[key].sentLogs.push({
+      _id: log._id,
+      week: log.week,
+      type: String(log.type || '').toUpperCase(),
+      supplierName: log.supplierName || '',
+      email: normalizeRecipientEmails(log.email, log.emails).join(', '),
+      emails: normalizeRecipientEmails(log.email, log.emails),
+      sentAt: log.sentAt || null,
+      category: normalizeCategory(log.category),
+      vendorKey: normalizeVendorKey(log.category, log.vendorKey),
+      hasExcel: !!(log.excelBase64 || log.monitorExcelBase64),
+    });
   });
 
   const grouped = {};
@@ -998,10 +1072,13 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
   return Object.values(grouped)
     .map((group) => {
       const key = consolidatedHistoryKey(group.week, group.type, group.category, group.vendorKey);
-      const sentInfo = sentByGroup[key] || { sentCount: 0, lastSentAt: null };
+      const sentInfo = sentByGroup[key] || { sentCount: 0, lastSentAt: null, sentLogs: [] };
       const sortedStoreOrders = (group.storeOrders || [])
         .slice()
         .sort((a, b) => String(a.storeName || '').localeCompare(String(b.storeName || '')));
+      const sortedSentLogs = (sentInfo.sentLogs || [])
+        .slice()
+        .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0));
       return {
         week: group.week,
         type: group.type,
@@ -1011,6 +1088,7 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
         sent: sentInfo.sentCount > 0,
         sentCount: sentInfo.sentCount,
         lastSentAt: sentInfo.lastSentAt,
+        sentLogs: sortedSentLogs,
         storeCount: sortedStoreOrders.length,
         storeOrders: sortedStoreOrders,
       };
@@ -1035,8 +1113,12 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
   // Vendor completed history should show the full monitor workbook with store
   // details, not the supplier-facing total-only attachment.
   if ((normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') && latestSentLog && latestSentLog.monitorExcelBase64) {
+    const excelBuffer = await withWorkbookDateLabel(
+      Buffer.from(latestSentLog.monitorExcelBase64, 'base64'),
+      latestSentLog.sentAt || latestSentLog.createdAt || normalizedWeek
+    );
     return {
-      excelBuffer: Buffer.from(latestSentLog.monitorExcelBase64, 'base64'),
+      excelBuffer,
       excelFilename: latestSentLog.monitorExcelFilename || buildConsolidatedFilename({
         supplierName: latestSentLog.supplierName || latestSentLog.vendorKey || latestSentLog.category || 'Supplier',
         dateValue: latestSentLog.sentAt || latestSentLog.createdAt || new Date(),
@@ -1052,8 +1134,12 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
       vendorKey: normalizedVendorKey,
       supplierName: latestSentLog.supplierName,
     });
+    const excelBuffer = await withWorkbookDateLabel(
+      Buffer.from(latestSentLog.excelBase64, 'base64'),
+      latestSentLog.sentAt || latestSentLog.createdAt || normalizedWeek
+    );
     return {
-      excelBuffer: Buffer.from(latestSentLog.excelBase64, 'base64'),
+      excelBuffer,
       excelFilename: buildConsolidatedFilename({
         supplierName: supplierDisplayName,
         dateValue: latestSentLog.sentAt || latestSentLog.createdAt || new Date(),
@@ -1068,7 +1154,8 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     normalizedCategory,
     normalizedVendorKey,
     (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') ? { documentMode: 'monitor' } : null,
-    normalizedWeek
+    normalizedWeek,
+    latestSentLog ? (latestSentLog.sentAt || latestSentLog.createdAt || normalizedWeek) : normalizedWeek
   );
   return { excelBuffer, excelFilename };
 }
@@ -1118,7 +1205,7 @@ function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNam
 
 function buildVendorRowsFromPreviewLayout(layout) {
   if (!layout || typeof layout !== 'object') return null;
-  const dateLabel = String(layout.dateLabel || `Date: ${new Date().toLocaleDateString('en-US')}`).trim();
+  const dateLabel = String(layout.dateLabel || workbookDateLabel()).trim();
   const itemHeader = String(layout.itemHeader || 'PRODUCT').trim() || 'PRODUCT';
   const totalHeader = String(layout.totalHeader || 'TOTAL QTY').trim() || 'TOTAL QTY';
   const previewRows = Array.isArray(layout.rows) ? layout.rows : [];
@@ -1153,7 +1240,7 @@ function buildVendorRowsFromPreviewLayout(layout) {
 
 function buildVendorMonitorRowsFromPreviewLayout(layout) {
   if (!layout || typeof layout !== 'object') return null;
-  const dateLabel = String(layout.dateLabel || `Date: ${new Date().toLocaleDateString('en-US')}`).trim();
+  const dateLabel = String(layout.dateLabel || workbookDateLabel()).trim();
   const itemHeader = String(layout.itemHeader || 'PRODUCT').trim() || 'PRODUCT';
   const totalHeader = String(layout.totalHeader || 'TOTAL QTY').trim() || 'TOTAL QTY';
   const slotHeaders = Array.isArray(layout.slotHeaders) ? layout.slotHeaders : [];
@@ -1502,7 +1589,7 @@ async function buildExcelPreviewFromBuffer(excelBuffer) {
   };
 }
 
-async function buildConsolidatedExcelPayload(type, category, vendorKey, splitData, requestedWeekKey = null) {
+async function buildConsolidatedExcelPayload(type, category, vendorKey, splitData, requestedWeekKey = null, renderDateValue = null) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const requestedDocumentMode =
@@ -1544,8 +1631,8 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     );
   }
 
-  const now = new Date();
-  const dateText = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
+  const now = renderDateValue ? new Date(renderDateValue) : new Date();
+  const dateText = workbookDateLabel(renderDateValue || now).replace(/^Date:\s*/, '');
   let excelRows = [];
   let usePlainWorkbook = false;
   let excelBuffer = null;
@@ -2786,7 +2873,10 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
     } else {
       const storedExcelBase64 = doc.excelBase64;
       if (storedExcelBase64) {
-        excelBuffer = Buffer.from(storedExcelBase64, 'base64');
+        excelBuffer = await withWorkbookDateLabel(
+          Buffer.from(storedExcelBase64, 'base64'),
+          doc.sentAt || doc.createdAt || doc.week
+        );
       }
     }
     if (!excelBuffer) return res.status(404).json({ error: 'Excel file not stored for this record' });
@@ -2821,7 +2911,10 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
       });
       excelBuffer = detailedHistory && detailedHistory.excelBuffer ? detailedHistory.excelBuffer : null;
     } else if (doc.excelBase64) {
-      excelBuffer = Buffer.from(doc.excelBase64, 'base64');
+      excelBuffer = await withWorkbookDateLabel(
+        Buffer.from(doc.excelBase64, 'base64'),
+        doc.sentAt || doc.createdAt || doc.week
+      );
     }
     if (!excelBuffer) return res.status(404).json({ error: 'Excel file not stored for this record' });
 
