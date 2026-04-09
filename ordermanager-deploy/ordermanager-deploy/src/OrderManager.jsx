@@ -1212,7 +1212,13 @@ function repairLoadedTemplatesAndItems(items, categoryTemplates){
   });
   return {items:nextItems,categoryTemplates:nextTemplates};
 }
-function fmtDT(iso){if(!iso)return"-";var d=new Date(iso);return d.toLocaleDateString()+" "+d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
+function fmtDT(iso){
+  if(!iso)return"-";
+  var d=new Date(iso);
+  var optsDate={timeZone:"America/Los_Angeles"};
+  var optsTime={timeZone:"America/Los_Angeles",hour:"2-digit",minute:"2-digit"};
+  return d.toLocaleDateString([],optsDate)+" "+d.toLocaleTimeString([],optsTime);
+}
 function parseCSV(text, forcedCategory){var lines=text.split(/\r?\n/).filter(function(l){return l.trim();});if(lines.length<2)return[];var hdr=lines[0].split(",").map(function(h){return h.trim().toLowerCase().replace(/[^a-z0-9]/g,"");});var ni=hdr.findIndex(function(h){return h.indexOf("name")>=0||h==="item"||h==="description";});var cti=hdr.findIndex(function(h){return h.indexOf("cat")>=0||h==="group";});var ui=hdr.findIndex(function(h){return h.indexOf("unit")>=0||h==="uom";});if(ni===-1)return[];var r=[];var usedCodes={};for(var i=1;i<lines.length;i++){var cols=lines[i].split(",").map(function(c){return c.trim().replace(/"/g,"");});if(!cols[ni])continue;var rowCategory=forcedCategory||(cti>=0?(cols[cti]||""):"vegetables");var unitText=ui>=0?(cols[ui]||""):"";r.push({code:buildUniqueItemMasterCode(cols[ni],unitText,usedCodes),name:cols[ni],category:normalizeCategory(rowCategory),unit:unitText,subheading:"",sortOrder:r.length});}return r;}
 function parseOrderSheetRows(rows){
   if(!rows||rows.length<2)return[];

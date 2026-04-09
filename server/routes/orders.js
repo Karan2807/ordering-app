@@ -1073,6 +1073,10 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
     .map((group) => {
       const key = consolidatedHistoryKey(group.week, group.type, group.category, group.vendorKey);
       const sentInfo = sentByGroup[key] || { sentCount: 0, lastSentAt: null, sentLogs: [] };
+      const displayLatestAt =
+        sentInfo.lastSentAt && new Date(sentInfo.lastSentAt || 0) > new Date(group.latestAt || 0)
+          ? sentInfo.lastSentAt
+          : group.latestAt;
       const sortedStoreOrders = (group.storeOrders || [])
         .slice()
         .sort((a, b) => String(a.storeName || '').localeCompare(String(b.storeName || '')));
@@ -1081,14 +1085,14 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
         .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0))
         .map((log) => ({
           ...log,
-          latestAt: group.latestAt,
+          latestAt: displayLatestAt,
         }));
       return {
         week: group.week,
         type: group.type,
         category: group.category,
         vendorKey: group.vendorKey || null,
-        latestAt: group.latestAt,
+        latestAt: displayLatestAt,
         sent: sentInfo.sentCount > 0,
         sentCount: sentInfo.sentCount,
         lastSentAt: sentInfo.lastSentAt,
