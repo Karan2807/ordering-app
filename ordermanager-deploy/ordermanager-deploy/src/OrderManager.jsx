@@ -242,11 +242,16 @@ function cycleBaseKey(d){
   return dt.getUTCFullYear()+"-"+String(dt.getUTCMonth()+1).padStart(2,"0")+"-"+String(dt.getUTCDate()).padStart(2,"0");
 }
 function categoryKey(category,vendorKey){var cat=normalizeCategory(category);var vendor=normalizeVendorKey(cat,vendorKey);return vendor?cat+"-"+vendor:cat;}
+function resolvedOrderTypeForCategory(category,type){
+  var cat=normalizeCategory(category);
+  if(cat==="leaves") return "B";
+  return String(type||"").toUpperCase();
+}
 function isCategoryOpenForType(category, type, aot, manualOpenLeaves){
   var openTypes=normalizeOpenOrderTypes(aot);
   var cat=normalizeCategory(category);
-  if(cat==="leaves") return type==="B"&&(openTypes.indexOf("B")>=0||!!manualOpenLeaves);
-  return openTypes.indexOf(String(type||"").toUpperCase())>=0;
+  if(cat==="leaves") return openTypes.indexOf("B")>=0||!!manualOpenLeaves;
+  return openTypes.indexOf(resolvedOrderTypeForCategory(cat,type))>=0;
 }
 function dateKey(type, category, vendorKey, manualOpenOrder, manualOpenSeq, vendorSeq){
   var base=cycleBaseKey(new Date());
@@ -2362,7 +2367,7 @@ export default function App(){
 }
 
 /* ═══ ADMIN DASHBOARD ═══ */
-function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,activeVendorOrderIds,suppliers,setConsolidatedRequest,vendorOrderConfigs,user}){
+function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,schedule,toast,manualOpenOrder,manualOpenSeq,manualOpenLeaves,activeVendorOrderIds,suppliers,setConsolidatedRequest,vendorOrderConfigs,user}){
   var _adlogs=useState([]),adminLogs=_adlogs[0],setAdminLogs=_adlogs[1];
   var isWarehouseUser=isWarehouseRole(user);
   var todayKey=cycleBaseKey(new Date());
@@ -2391,6 +2396,8 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
     return o.status==="submitted"||o.status==="processed"||o.status==="draft_shared";
   };
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
+  var leavesOpen=isCategoryOpenForType("leaves","B",openTypes,manualOpenLeaves);
+  var standaloneLeavesOpen=leavesOpen&&openTypes.indexOf("B")<0;
   var dashboardTypes=openTypes;
   var pendingGroups=dashboardTypes.map(function(openType){
     var pendingByStore={};
@@ -2417,7 +2424,19 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
     }
     return {type:openType,pendingAlerts:Object.values(pendingByStore)};
   });
-  var pendingTotal=pendingGroups.reduce(function(acc,group){return acc+group.pendingAlerts.length;},0);
+  var standaloneLeavesPendingAlerts=standaloneLeavesOpen?(function(){
+    var leavesWeekKey=activeWeekLookupKey("B","leaves",null,manualOpenOrder,manualOpenSeq);
+    var pendingByStore={};
+    stores.forEach(function(st){
+      var leavesOrder=getDashboardOrderForStoreType(orders,st.id,leavesWeekKey,"B","leaves",null,manualOpenOrder,manualOpenSeq);
+      if(!isStoreOrderSent(leavesOrder)){
+        var leavesMgr=users.find(function(u){return u.storeId===st.id&&u.role==="manager"&&u.active;});
+        pendingByStore[st.id]={storeId:st.id,store:st.name,manager:leavesMgr?leavesMgr.name:"N/A",phone:leavesMgr?leavesMgr.phone:"N/A",missing:["leaves"]};
+      }
+    });
+    return Object.values(pendingByStore);
+  })():[];
+  var pendingTotal=pendingGroups.reduce(function(acc,group){return acc+group.pendingAlerts.length;},0)+(standaloneLeavesOpen?standaloneLeavesPendingAlerts.length:0);
   var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
     var vendorName=vendorDisplayName(suppliers,vendorKey);
     var pending=[];
@@ -2432,16 +2451,22 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
   });
   var vendorPendingTotal=vendorGroups.reduce(function(acc,group){return acc+group.pendingAlerts.length;},0);
   var vendorStatValue=!vendorGroups.length?"Locked":(vendorGroups.length===1?vendorGroups[0].vendorName:(vendorGroups.length+" Open"));
+  var openSummaryLabels=openTypes.map(function(t){return "Order "+t;});
+  if(standaloneLeavesOpen) openSummaryLabels.push("Leaves");
   var openVendorOrdersPage=function(vendorKey){
     if(vendorKey&&setConsolidatedRequest){
       setConsolidatedRequest({category:"vendor_orders",vendorKey:vendorKey});
     }
     setPage("consolidated");
   };
-  var sendOneReminder=async function(row,orderType){
+  var openLeavesConsolidated=function(){
+    if(setConsolidatedRequest) setConsolidatedRequest({type:"B",category:"leaves"});
+    setPage("consolidated");
+  };
+  var sendOneReminder=async function(row,orderType,category,vendorKey){
     try{
       if(!orderType) return;
-      var resp=await apiClient.orders.sendReminder(orderType,row.storeId);
+      var resp=await apiClient.orders.sendReminder(orderType,row.storeId,category,vendorKey);
       if((resp.sent||0)>0){toast("SMS sent: "+(resp.sent||0));}
       else if((resp.failed||0)>0){
         var msg=(resp.errors&&resp.errors[0]&&resp.errors[0].error)?resp.errors[0].error:"SMS failed";
@@ -2451,10 +2476,10 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
       }
     }catch(e){toast(e.message,true);}
   };
-  var sendAllReminders=async function(orderType){
+  var sendAllReminders=async function(orderType,category,vendorKey){
     try{
       if(!orderType) return;
-      var resp=await apiClient.orders.sendReminder(orderType);
+      var resp=await apiClient.orders.sendReminder(orderType,null,category,vendorKey);
       if((resp.sent||0)>0){toast("SMS sent: "+(resp.sent||0)+" / "+(resp.total||0));}
       else if((resp.failed||0)>0){
         var msg=(resp.errors&&resp.errors[0]&&resp.errors[0].error)?resp.errors[0].error:"SMS failed";
@@ -2496,8 +2521,8 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
       {!isWarehouseUser&&<div style={S.sc}><div style={S.sL}>Items</div><div style={Object.assign({},S.sV,{color:"#166534"})}>{items.length}</div></div>}
       <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Submitted":"Submitted"}</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div></div>
       <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Processed":"Processed"}</div><div style={Object.assign({},S.sV,{color:"#0F766E"})}>{proc}</div></div>
-      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Pending":"Pending"}</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{isWarehouseUser?vendorPendingTotal:(dashboardTypes.length?pendingTotal:"-")}</div></div>
-      {!isWarehouseUser&&<div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div><div style={S.sS}>{openTypes.length?"Currently open":"No active cycle"}</div></div>}
+      <div style={S.sc}><div style={S.sL}>{isWarehouseUser?"Vendor Pending":"Pending"}</div><div style={Object.assign({},S.sV,{color:"#F87171"})}>{isWarehouseUser?vendorPendingTotal:((dashboardTypes.length||standaloneLeavesOpen)?pendingTotal:"-")}</div></div>
+      {!isWarehouseUser&&<div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:"#FB923C",fontSize:18})}>{openSummaryLabels.length?openSummaryLabels.join(", "):"None"}</div><div style={S.sS}>{openSummaryLabels.length?"Currently open":"No active cycle"}</div></div>}
       <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
     {!isWarehouseUser&&pendingGroups.map(function(group){return(<div key={group.type} style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Order {group.type}</div><div style={S.d}>These stores have not submitted yet. Auto SMS runs in final 1 hour window every 30 minutes.</div></div>{group.pendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){sendAllReminders(group.type);}}>Send Reminder to All</button>}</div>
@@ -2506,6 +2531,12 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
       </tbody></table></div>}
       {group.pendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted Order {group.type}.</div>}
     </div>);})}
+    {!isWarehouseUser&&standaloneLeavesOpen&&(<div style={S.card}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Pending Submissions - Leaves</div><div style={S.d}>Leaves manual override is active. These stores have not submitted their leaves order yet.</div></div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{standaloneLeavesPendingAlerts.length>0&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){sendAllReminders("B","leaves");}}>Send Reminder to All</button>}<button style={Object.assign({},S.b,S.bP)} onClick={openLeavesConsolidated}>Open Leaves</button></div></div>
+      {standaloneLeavesPendingAlerts.length>0&&<div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Manager</th><th style={S.th}>Phone</th><th style={S.th}>Missing</th><th style={S.th}>Action</th></tr></thead><tbody>
+        {standaloneLeavesPendingAlerts.map(function(row){return <tr key={"leaves-"+row.storeId}><td style={S.td}>{row.store}</td><td style={S.td}>{row.manager}</td><td style={S.tm}>{row.phone}</td><td style={S.td}>Leaves</td><td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){sendOneReminder(row,"B","leaves");}}>Send SMS</button></td></tr>;})}
+      </tbody></table></div>}
+      {standaloneLeavesPendingAlerts.length===0&&<div style={Object.assign({},S.nG,{marginBottom:0})}>All stores have submitted the active leaves order.</div>}
+    </div>)}
     {vendorGroups.map(function(group){return(<div key={group.vendorKey} style={S.card}>
       <div style={S.cH}>
         <div>
@@ -2526,6 +2557,7 @@ function AdminDash({orders,users,items,notifs,aot,openOrderTypes,setPage,stores,
     <div style={S.card}><div style={S.cH}><div style={S.t}>Quick Actions</div></div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
         <button style={Object.assign({},S.b,S.bP)} onClick={function(){setPage("consolidated");}}>Consolidated</button>
+        {!isWarehouseUser&&standaloneLeavesOpen&&<button style={Object.assign({},S.b,S.bS)} onClick={openLeavesConsolidated}>Leaves</button>}
         {vendorGroups.map(function(group){return <button key={group.vendorKey} style={Object.assign({},S.b,S.bS)} onClick={function(){openVendorOrdersPage(group.vendorKey);}}>{group.vendorName}</button>;})}
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("supplier-orders");}}>Supplier Orders</button>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){setPage("reports");}}>Reports</button>
@@ -2545,6 +2577,10 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
   var sub=my.filter(function(k){return orders[k].status==="submitted"||orders[k].status==="processed";}).length;
   var openTypes=normalizeOpenOrderTypes(openOrderTypes&&openOrderTypes.length?openOrderTypes:aot);
   var dashboardTypes=openTypes;
+  var leavesOpen=isCategoryOpenForType("leaves","B",openTypes,manualOpenLeaves);
+  var standaloneLeavesOpen=leavesOpen&&openTypes.indexOf("B")<0;
+  var openSummaryLabels=openTypes.map(function(type){return "Order "+type;});
+  if(standaloneLeavesOpen) openSummaryLabels.push("Leaves");
   var openTypeGroups=dashboardTypes.map(function(type){
     var currentWeekKey=activeWeekLookupKey(type,"vegetables",null,manualOpenOrder,manualOpenSeq);
     var currentOrder=getDashboardOrderForStoreType(orders,user.storeId,currentWeekKey,type,"vegetables",null,manualOpenOrder,manualOpenSeq);
@@ -2552,9 +2588,8 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
   });
   // Leaves order (only open on type B)
   var leavesWeekKey=activeWeekLookupKey("B","leaves",null,manualOpenOrder,manualOpenSeq);
-  var leavesOrder=openTypes.indexOf("B")>=0?getDashboardOrderForStoreType(orders,user.storeId,leavesWeekKey,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
+  var leavesOrder=leavesOpen?getDashboardOrderForStoreType(orders,user.storeId,leavesWeekKey,"B","leaves",null,manualOpenOrder,manualOpenSeq):null;
   var leavesStatus=leavesOrder?leavesOrder.status:null;
-  var leavesOpen=isCategoryOpenForType("leaves","B",openTypes,manualOpenLeaves);
   var showLeavesCard=leavesOpen;
   var vendorGroups=normalizeVendorOrderList(activeVendorOrderIds).map(function(vendorKey){
     var vendorName=vendorDisplayName(suppliers,vendorKey);
@@ -2571,7 +2606,7 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
     {notifs.map(function(n){return <div key={n.id} style={n.type==="promo"?S.nP:S.nI}>{n.text}</div>;})}
     <div style={S.sg}>
       <div style={S.sc}><div style={S.sL}>Your Store</div><div style={Object.assign({},S.sV,{color:"#166534",fontSize:16})}>{sName}</div></div>
-      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:openTypes.length?"#34D399":"#6B7280",fontSize:18})}>{openTypes.length?openTypes.map(function(t){return "Order "+t;}).join(", "):"None"}</div><div style={S.sS}>{openTypes.length?"Currently open":"No active cycle"}</div></div>
+      <div style={S.sc}><div style={S.sL}>Today</div><div style={Object.assign({},S.sV,{color:openSummaryLabels.length?"#34D399":"#6B7280",fontSize:18})}>{openSummaryLabels.length?openSummaryLabels.join(", "):"None"}</div><div style={S.sS}>{openSummaryLabels.length?"Currently open":"No active cycle"}</div></div>
       <div style={S.sc}><div style={S.sL}>Completed</div><div style={Object.assign({},S.sV,{color:"#FBBF24"})}>{sub}</div><div style={S.sS}>{my.length} total</div></div>
       <div style={S.sc}><div style={S.sL}>Open Suppliers</div><div style={Object.assign({},S.sV,{color:vendorGroups.length?"#16A34A":"#6B7280",fontSize:18})}>{vendorStatValue}</div><div style={S.sS}>{vendorGroups.length?vendorSummary:"No suppliers open"}</div></div>
     </div>
@@ -2657,7 +2692,8 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"Note";
   var showQtyType=selCategory==="vendor_orders";
   var showNoteColumn=selCategory!=="vendor_orders";
-  var currentType=selCategory==="vendor_orders"?"VENDOR":sel;
+  var displayOrderType=resolvedOrderTypeForCategory(selCategory,sel);
+  var currentType=selCategory==="vendor_orders"?"VENDOR":displayOrderType;
   var itemList=useMemo(function(){
     var filtered=items.filter(function(it){return normalizeCategory(it.category)===normalizeCategory(selCategory)&&normalizeVendorKey(selCategory,it.vendorKey)===resolvedVendorKey;});
     return selCategory==="vendor_orders"?orderRowsByTemplate(activeTemplate,filtered):sortItemsAlphabetical(filtered);
@@ -2940,13 +2976,13 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
       />
     </div>
     {selCategory==="vendor_orders"&&<div style={S.card}><div style={S.lb}>Supplier</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}} disabled={!isAdmin&&visibleVendorOptions.length===1&&!!selectedVendorKey}><option value="">Select supplier</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>{!isAdmin&&visibleVendorOptions.length>0&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{visibleVendorOptions.map(function(v){var isSelected=selectedVendorKey===v.id;return <button key={v.id} style={Object.assign({},S.b,isSelected?S.bP:S.bS,{padding:"4px 10px",fontSize:10.5})} onClick={function(){setSelectedVendorKey(v.id);}}>{v.name}</button>;})}</div>}{!isAdmin&&activeVendorIds.length===1&&selectedVendorKey&&<div style={Object.assign({},S.d,{marginTop:6})}>Admin opened {activeVendorName}. This store can place that supplier order now.</div>}{!isAdmin&&activeVendorIds.length>1&&<div style={Object.assign({},S.d,{marginTop:6})}>Admin opened multiple supplier orders. Select one of the open suppliers: {summarizeVendorKeys(activeVendorIds,suppliers)}.</div>}</div>}
-    {locked&&<div style={S.nP}>{selCategory==="vendor_orders"?"Vendor orders stay locked until admin/warehouse activates vendor access for stores.":(resolvedOpenTypes.length===0?("No vegetables order type is open right now."):(CATEGORY_LABELS[selCategory]+" for Order "+sel+" is locked. "+(selCategory==="leaves"?"Leaves opens automatically with VEG Order B, or when Leaves manual override is enabled in Settings.":("Open now: "+resolvedOpenTypes.map(function(t){return "Order "+t;}).join(", ")+"."))))}</div>}
+    {locked&&<div style={S.nP}>{selCategory==="vendor_orders"?"Vendor orders stay locked until admin/warehouse activates vendor access for stores.":(resolvedOpenTypes.length===0?("No vegetables order type is open right now."):(CATEGORY_LABELS[selCategory]+" for Order "+displayOrderType+" is locked. "+(selCategory==="leaves"?"Leaves opens automatically with VEG Order B, or when Leaves manual override is enabled in Settings.":("Open now: "+resolvedOpenTypes.map(function(t){return "Order "+t;}).join(", ")+"."))))}</div>}
     {selCategory==="vendor_orders"&&!resolvedVendorKey&&<div style={S.nP}>Select a vendor to work with vendor-specific orders.</div>}
-    {done&&<div style={S.nG}>{selCategory==="vendor_orders"?("Vendor Order for "+activeVendorName):(""+CATEGORY_LABELS[selCategory]+" Order "+sel)} has been {ex.status}. Read only.</div>}
+    {done&&<div style={S.nG}>{selCategory==="vendor_orders"?("Vendor Order for "+activeVendorName):(""+CATEGORY_LABELS[selCategory]+" Order "+displayOrderType)} has been {ex.status}. Read only.</div>}
     {isDraftOrder&&!isEditingDraft&&<div style={S.nP}>Draft saved only. It has not been sent yet. Click Edit Draft to modify it, or click Submit to send it to admin/consolidated and lock editing.</div>}
     {isDraftOrder&&isEditingDraft&&<div style={S.nI}>Editing draft. You can save draft again multiple times before final submit.</div>}
     <div style={S.card}><div style={S.cH}>
-      <div><div style={S.t}>{selCategory==="vendor_orders"?("Vendor Orders - "+activeVendorName+" - "+sName):(CATEGORY_LABELS[selCategory]+" - Order "+sel+" - "+sName)}</div><div style={S.d}>{filled} items | {ex?ex.status:"New"}</div></div>
+      <div><div style={S.t}>{selCategory==="vendor_orders"?("Vendor Orders - "+activeVendorName+" - "+sName):(CATEGORY_LABELS[selCategory]+" - Order "+displayOrderType+" - "+sName)}</div><div style={S.d}>{filled} items | {ex?ex.status:"New"}</div></div>
       <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){downloadOrderExcel({items:qty,notes:notePayload,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Download Document</button>
         <button style={Object.assign({},S.b,S.bS)} onClick={function(){printOrderDocument({items:qty,notes:notePayload,status:(ex&&ex.status)||"draft",date:(ex&&ex.date)||new Date().toISOString()});}} disabled={!hasLines}>Print</button>
@@ -2977,7 +3013,7 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     </table></div></div>
     {showConfirm&&(<div style={S.ov} onClick={function(){setShowConfirm(false);}}><div style={Object.assign({},S.mo,{width:420,textAlign:"center"})} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:40,marginBottom:8}}>⚠️</div>
-      <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Submit {selCategory==="vendor_orders"?("Vendor Order for "+activeVendorName):(CATEGORY_LABELS[selCategory]+" Order "+sel)}?</div>
+      <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Submit {selCategory==="vendor_orders"?("Vendor Order for "+activeVendorName):(CATEGORY_LABELS[selCategory]+" Order "+displayOrderType)}?</div>
       <div style={{fontSize:13,color:"#64748B",marginBottom:20,lineHeight:1.6}}>Are you sure you want to submit this order?<br/>This will send it to admin/consolidated and you will <strong style={{color:"#F87171"}}>not be able to edit</strong> it after submission.</div>
       <div style={{display:"flex",gap:8,justifyContent:"center"}}>
         <button style={Object.assign({},S.b,S.bS,{padding:"9px 24px"})} onClick={function(){setShowConfirm(false);}}>No, Go Back & Edit</button>
@@ -3449,7 +3485,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var qtyHeader=selCategory==="vendor_orders"?"QTY":(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QTY");
   var totalHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.total?templateHeaders.total:"TOTAL QTY";
   var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"NOTE";
-  var currentType=selCategory==="vendor_orders"?"VENDOR":vt;
+  var displayOrderType=resolvedOrderTypeForCategory(selCategory,vt);
+  var currentType=selCategory==="vendor_orders"?"VENDOR":displayOrderType;
   var isLeavesFlow=selCategory==="leaves";
   var slotHeaderForIndex=function(slot,idx){
     if(selCategory==="vendor_orders"){
@@ -3722,7 +3759,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(carryOpenType&&out.indexOf(carryOpenType)<0) out.push(carryOpenType);
     return out;
   },[primaryOpenType,carryOpenType]);
-  var hasAccessibleOpenType=selCategory==="vendor_orders"||allowedOpenTypes.length>0;
+  var hasAccessibleOpenType=selCategory==="vendor_orders"||allowedOpenTypes.length>0||isCategoryOpenForType(selCategory,vt,allowedOpenTypes,manualOpenLeaves);
   useEffect(function(){ if(consolidatedType&&consolidatedType!==vt) sVt(consolidatedType); },[consolidatedType]);
   useEffect(function(){
     var onlyOpen = primaryOpenType;
@@ -4687,7 +4724,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(selCategory!=="vendor_orders") return name;
     return unit?(name+" ("+unit+")"):name;
   };
-  var onlyOpen=(allowedOpenTypes[0]||vt);
+  var categoryAccessTypes=allowedOpenTypes.length?allowedOpenTypes:[];
 
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
@@ -4698,7 +4735,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         orderType={vt}
         setOrderType={function(t){if(editingAll){toast("Save quantities before switching order type",true);return;}sVt(t);if(setConsolidatedType)setConsolidatedType(t);}}
         categories={isWarehouseUser?[{id:"vendor_orders",label:"Vendors"}]:null}
-        getCategoryDisabled={function(catId){return catId==="vendor_orders"?visibleVendorOptions.length===0:!isCategoryOpenForType(catId,vt,onlyOpen||vt,manualOpenLeaves);}}
+        getCategoryDisabled={function(catId){return catId==="vendor_orders"?visibleVendorOptions.length===0:!isCategoryOpenForType(catId,vt,categoryAccessTypes,manualOpenLeaves);}}
         getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:true;}}
         onCategoryChanged={function(){setStep(1);}}
       />
@@ -4720,10 +4757,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     {selCategory!=="vendor_orders"&&carryOpenType&&carryOpenType!==primaryOpenType&&<div style={S.nI}>Order {carryOpenType} remains available for up to 48 hours because supplier email has not been sent yet.</div>}
     {selCategory!=="vendor_orders"&&!primaryOpenType&&!carryOpenType&&<div style={S.nP}>No consolidated order is open right now. The next order will open on its scheduled day unless an override or reopen is used.</div>}
     {selCategory==="vendor_orders"&&!selectedVendorKey&&visibleVendorOptions.length===0&&<div style={S.nP}>No vendor orders are currently configured. Reopen a vendor order from Order Monitor to edit or resend it.</div>}
-    {selCategory==="leaves"&&vt==="B"&&!leavesSentThisWeek&&<div style={S.nP}>Leaves Order B is pending. Send supplier email to complete it.</div>}
+    {selCategory==="leaves"&&currentType==="B"&&!leavesSentThisWeek&&<div style={S.nP}>Leaves Order B is pending. Send supplier email to complete it.</div>}
     {!latestTypeLog&&unsentHoursLeft!==null&&unsentHoursLeft>0&&<div style={S.nI}>This consolidated order remains open for {unsentHoursLeft} more hour(s) because supplier email has not been sent yet.</div>}
     {!latestTypeLog&&unsentHoursLeft===0&&<div style={S.nP}>This consolidated order is now locked because 48 hours elapsed without sending supplier email.</div>}
-    {isCompletedLocked&&<div style={S.nG}>{selCategory==="vendor_orders"?"Vendor Orders":"Consolidated Order "+vt} is completed and locked. {selCategory==="vendor_orders"?"Reopen from Settings to edit/send again.":"Reopen from Order Monitor to edit/send again."}</div>}
+    {isCompletedLocked&&<div style={S.nG}>{selCategory==="vendor_orders"?"Vendor Orders":"Consolidated Order "+displayOrderType} is completed and locked. {selCategory==="vendor_orders"?"Reopen from Settings to edit/send again.":"Reopen from Order Monitor to edit/send again."}</div>}
     {reopenedForCurrentGroup&&<div style={Object.assign({},S.nP,{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10})}><span>Resend mode active. This send will be stored as a reopened resend history entry.</span><button style={Object.assign({},S.b,S.bS,{padding:"4px 10px",fontSize:11})} onClick={function(){if(setReopenedFromId) setReopenedFromId(null);setReopenTarget(null);}}>Clear</button></div>}
     {editingAll&&<div style={S.nI}>Editing quantities, qty types, and notes for all stores. Click Save when finished.</div>}
 
@@ -4765,7 +4802,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </tbody></table></div>}
     </div>):(<div style={Object.assign({},S.card,{padding:0})}>
       <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(148,163,184,.24)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-        <div><div style={S.t}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" Consolidated"):(""+CATEGORY_LABELS[selCategory]+" Consolidated Order "+vt)}</div><div style={S.d}>Review store quantities, then save and continue to supplier split.</div></div>
+        <div><div style={S.t}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" Consolidated"):(""+CATEGORY_LABELS[selCategory]+" Consolidated Order "+displayOrderType)}</div><div style={S.d}>Review store quantities, then save and continue to supplier split.</div></div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
           {!editingAll&&<button style={Object.assign({},S.b,S.bS)} onClick={startEditAll} disabled={isCompletedLocked||!hasAccessibleOpenType}>Edit All Stores</button>}
           {editingAll&&<button style={Object.assign({},S.b,S.bP)} onClick={saveAllEdits} disabled={savingAll||isCompletedLocked||!hasAccessibleOpenType}>{savingAll?"Saving...":"Save"}</button>}
@@ -4849,7 +4886,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         {vendorSendMode==="individual"?<button style={Object.assign({},S.b,S.bP)} onClick={sendVendorIndividualDocs} disabled={eMailing||!selectedVendor||vendorStoreDocs.length<1||isCompletedLocked}>{eMailing?"Sending...":"Send Individual Store Documents"}</button>:<button style={Object.assign({},S.b,S.bP)} onClick={function(){setStep(3);}} disabled={!selectedVendor||isCompletedLocked}>{vendorSendMode==="consolidated_with_details"?"Continue to Detailed Consolidated Preview":"Continue to Consolidated Preview"}</button>}
       </div>
     </div>):(<div style={S.card}>
-      <div style={S.cH}><div><div style={S.t}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" Split by Supplier"):(""+CATEGORY_LABELS[selCategory]+" Split Order "+vt+" by Supplier")}</div><div style={S.d}>Set product-level split percentages for each supplier.</div></div></div>
+      <div style={S.cH}><div><div style={S.t}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" Split by Supplier"):(""+CATEGORY_LABELS[selCategory]+" Split Order "+displayOrderType+" by Supplier")}</div><div style={S.d}>Set product-level split percentages for each supplier.</div></div></div>
       {isLeavesFlow&&(<Fragment>
         <div style={S.dWrap}>
           <div style={S.dCard}>
@@ -5005,7 +5042,8 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
   var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"Item";
   var totalHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.total?templateHeaders.total:"Total Qty";
-  var currentType=selCategory==="vendor_orders"?"VENDOR":vt;
+  var displayOrderType=resolvedOrderTypeForCategory(selCategory,vt);
+  var currentType=selCategory==="vendor_orders"?"VENDOR":displayOrderType;
   var dk=dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
 
   useEffect(function(){
@@ -5051,7 +5089,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   var sendEmail=function(sup,supItems){
     var recipients=supplierEmailsArray(sup);
     if(!recipients.length){toast("Supplier email missing",true);return;}
-    var subject="Purchase Order - "+(selCategory==="vendor_orders"?"Vendor Orders":"Order "+vt)+" - "+new Date().toLocaleDateString();
+    var subject="Purchase Order - "+(selCategory==="vendor_orders"?"Vendor Orders":"Order "+displayOrderType)+" - "+new Date().toLocaleDateString();
     var body="Dear "+sup.name+",\n\nPlease find our order details below:\n\n";
     supItems.forEach(function(it){body+=it.name+" ("+it.code+") - Qty: "+totals[it.code]+"\n";});
     body+="\nThank you.";
@@ -5070,7 +5108,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
         stores.forEach(function(st){var k=st.id+"_"+dk;if(n[k]&&(n[k].status==="submitted"||n[k].status==="draft")){n[k]=Object.assign({},n[k],{status:"processed"});}});
         return n;
       });
-      toast((selCategory==="vendor_orders"?"Vendor orders":"Order "+vt)+" marked processed for all stores");
+      toast((selCategory==="vendor_orders"?"Vendor orders":"Order "+displayOrderType)+" marked processed for all stores");
     }catch(e){toast(e.message,true);}  };
   var allSent=supplierGroups.every(function(g){return sent[g.supplier.id+"_"+currentType+"_"+selCategory];});
   var downloadExcelForHistory=async function(r){
@@ -5257,8 +5295,8 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
         </div>
       </div>
     )}
-    {selCategory!=="vendor_orders"&&<div style={S.nI}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" by supplier. Send emails, then mark as processed."):(""+CATEGORY_LABELS[selCategory]+" Order "+vt+" by supplier. Send emails, then mark as processed.")}</div>}
-    {selCategory!=="vendor_orders"&&supplierGroups.length===0&&<div style={S.card}><div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No order data for {selCategory==="vendor_orders"?CATEGORY_LABELS[selCategory]:(CATEGORY_LABELS[selCategory]+" Order "+vt)}. Submit orders first.</div></div>}
+    {selCategory!=="vendor_orders"&&<div style={S.nI}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" by supplier. Send emails, then mark as processed."):(""+CATEGORY_LABELS[selCategory]+" Order "+displayOrderType+" by supplier. Send emails, then mark as processed.")}</div>}
+    {selCategory!=="vendor_orders"&&supplierGroups.length===0&&<div style={S.card}><div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No order data for {selCategory==="vendor_orders"?CATEGORY_LABELS[selCategory]:(CATEGORY_LABELS[selCategory]+" Order "+displayOrderType)}. Submit orders first.</div></div>}
     {selCategory!=="vendor_orders"&&supplierGroups.map(function(g){
       var isSent=sent[g.supplier.id+"_"+currentType+"_"+selCategory];
       return(<div key={g.supplier.id} style={Object.assign({},S.card,{border:isSent?"1px solid rgba(52,211,153,0.3)":"1px solid rgba(148,163,184,.24)"})}>
