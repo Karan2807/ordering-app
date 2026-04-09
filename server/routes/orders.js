@@ -1078,7 +1078,11 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
         .sort((a, b) => String(a.storeName || '').localeCompare(String(b.storeName || '')));
       const sortedSentLogs = (sentInfo.sentLogs || [])
         .slice()
-        .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0));
+        .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0))
+        .map((log) => ({
+          ...log,
+          latestAt: group.latestAt,
+        }));
       return {
         week: group.week,
         type: group.type,
@@ -1158,6 +1162,16 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     latestSentLog ? (latestSentLog.sentAt || latestSentLog.createdAt || normalizedWeek) : normalizedWeek
   );
   return { excelBuffer, excelFilename };
+}
+
+async function buildConsolidatedHistoryExcelPayloadWithDate({ week, type, category, vendorKey, dateValue }) {
+  const payload = await buildConsolidatedHistoryExcelPayload({ week, type, category, vendorKey });
+  if (!dateValue || !payload || !payload.excelBuffer) return payload;
+  const excelBuffer = await withWorkbookDateLabel(payload.excelBuffer, dateValue);
+  return {
+    ...payload,
+    excelBuffer,
+  };
 }
 
 function buildConsolidatedExcelRows({ type, dateText, slots, slotOrders, itemNameByCode }) {
@@ -2731,7 +2745,7 @@ router.post('/consolidated-history/excel', authMiddleware, async (req, res) => {
     if (!canManageWarehouseOrders(req.user)) {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
-    const { week, type, category, vendorKey } = req.body || {};
+    const { week, type, category, vendorKey, dateValue } = req.body || {};
     if (!week || !type) {
       return res.status(400).json({ error: 'week and type are required' });
     }
@@ -2740,6 +2754,15 @@ router.post('/consolidated-history/excel', authMiddleware, async (req, res) => {
       type: String(type),
       category: normalizeCategory(category),
       vendorKey: normalizeVendorKey(category, vendorKey),
+    }).then((payload) => {
+      if (!dateValue) return payload;
+      return buildConsolidatedHistoryExcelPayloadWithDate({
+        week: String(week),
+        type: String(type),
+        category: normalizeCategory(category),
+        vendorKey: normalizeVendorKey(category, vendorKey),
+        dateValue,
+      });
     });
     res.json({
       success: true,
@@ -2757,7 +2780,7 @@ router.post('/consolidated-history/sheet-preview', authMiddleware, async (req, r
     if (!canManageWarehouseOrders(req.user)) {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
-    const { week, type, category, vendorKey } = req.body || {};
+    const { week, type, category, vendorKey, dateValue } = req.body || {};
     if (!week || !type) {
       return res.status(400).json({ error: 'week and type are required' });
     }
@@ -2766,6 +2789,15 @@ router.post('/consolidated-history/sheet-preview', authMiddleware, async (req, r
       type: String(type),
       category: normalizeCategory(category),
       vendorKey: normalizeVendorKey(category, vendorKey),
+    }).then((payload) => {
+      if (!dateValue) return payload;
+      return buildConsolidatedHistoryExcelPayloadWithDate({
+        week: String(week),
+        type: String(type),
+        category: normalizeCategory(category),
+        vendorKey: normalizeVendorKey(category, vendorKey),
+        dateValue,
+      });
     });
     const preview = await buildExcelPreviewFromBuffer(excelBuffer);
     res.json(preview);
@@ -2860,6 +2892,7 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
     }
     const doc = await SupplierOrder.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
+    const requestedDateValue = String(req.query && req.query.dateValue || '').trim() || null;
     const normalizedCategory = normalizeCategory(doc.category);
     let excelBuffer = null;
     if (normalizedCategory === 'leaves') {
@@ -2875,14 +2908,17 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
       if (storedExcelBase64) {
         excelBuffer = await withWorkbookDateLabel(
           Buffer.from(storedExcelBase64, 'base64'),
-          doc.sentAt || doc.createdAt || doc.week
+          requestedDateValue || doc.sentAt || doc.createdAt || doc.week
         );
       }
     }
     if (!excelBuffer) return res.status(404).json({ error: 'Excel file not stored for this record' });
+    if (normalizedCategory === 'leaves' && requestedDateValue) {
+      excelBuffer = await withWorkbookDateLabel(excelBuffer, requestedDateValue);
+    }
     const downloadFilename = buildConsolidatedFilename({
       supplierName: doc.supplierName || doc.vendorKey || doc.category || 'Supplier',
-      dateValue: doc.sentAt || doc.createdAt || new Date(),
+      dateValue: requestedDateValue || doc.sentAt || doc.createdAt || new Date(),
     });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
@@ -2900,6 +2936,7 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
     }
     const doc = await SupplierOrder.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
+    const requestedDateValue = String(req.query && req.query.dateValue || '').trim() || null;
     const normalizedCategory = normalizeCategory(doc.category);
     let excelBuffer = null;
     if (normalizedCategory === 'leaves') {
@@ -2913,17 +2950,20 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
     } else if (doc.excelBase64) {
       excelBuffer = await withWorkbookDateLabel(
         Buffer.from(doc.excelBase64, 'base64'),
-        doc.sentAt || doc.createdAt || doc.week
+        requestedDateValue || doc.sentAt || doc.createdAt || doc.week
       );
     }
     if (!excelBuffer) return res.status(404).json({ error: 'Excel file not stored for this record' });
+    if (normalizedCategory === 'leaves' && requestedDateValue) {
+      excelBuffer = await withWorkbookDateLabel(excelBuffer, requestedDateValue);
+    }
 
     const preview = await buildExcelPreviewFromBuffer(excelBuffer);
     res.json({
       success: true,
       filename: buildConsolidatedFilename({
         supplierName: doc.supplierName || doc.vendorKey || doc.category || 'Supplier',
-        dateValue: doc.sentAt || doc.createdAt || new Date(),
+        dateValue: requestedDateValue || doc.sentAt || doc.createdAt || new Date(),
       }),
       sheetName: preview.sheetName,
       rows: preview.rows,

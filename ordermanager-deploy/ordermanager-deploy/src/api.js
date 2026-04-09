@@ -204,25 +204,27 @@ export const apiClient = {
     getConsolidatedHistory(days = 7) {
       return apiClient.request(`/orders/consolidated-history?days=${encodeURIComponent(days)}`);
     },
-    consolidatedHistoryExcel(week, type, category, vendorKey) {
+    consolidatedHistoryExcel(week, type, category, vendorKey, dateValue) {
       const body = {
         week,
         type,
         category: category || 'vegetables',
       };
       if (vendorKey) body.vendorKey = vendorKey;
+      if (dateValue) body.dateValue = dateValue;
       return apiClient.request('/orders/consolidated-history/excel', {
         method: 'POST',
         body: JSON.stringify(body),
       });
     },
-    consolidatedHistorySheetPreview(week, type, category, vendorKey) {
+    consolidatedHistorySheetPreview(week, type, category, vendorKey, dateValue) {
       const body = {
         week,
         type,
         category: category || 'vegetables',
       };
       if (vendorKey) body.vendorKey = vendorKey;
+      if (dateValue) body.dateValue = dateValue;
       return apiClient.request('/orders/consolidated-history/sheet-preview', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -415,11 +417,13 @@ export const apiClient = {
         method: 'PATCH',
       });
     },
-    downloadExcel(id, filename) {
-      return apiClient.download(`/orders/supplier-orders/${id}/excel`, filename);
+    downloadExcel(id, filename, dateValue) {
+      const query=dateValue?`?dateValue=${encodeURIComponent(dateValue)}`:'';
+      return apiClient.download(`/orders/supplier-orders/${id}/excel${query}`, filename);
     },
-    previewExcel(id) {
-      return apiClient.request(`/orders/supplier-orders/${id}/excel-preview`);
+    previewExcel(id, dateValue) {
+      const query=dateValue?`?dateValue=${encodeURIComponent(dateValue)}`:'';
+      return apiClient.request(`/orders/supplier-orders/${id}/excel-preview${query}`);
     },
   },
 

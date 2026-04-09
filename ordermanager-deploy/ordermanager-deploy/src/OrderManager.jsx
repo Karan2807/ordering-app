@@ -3178,8 +3178,8 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     try{
       setSheetPreviewLoadingById(function(prev){var n=Object.assign({},prev);n[id]=true;return n;});
       var resp=isVendorLog
-        ? await apiClient.orders.consolidatedHistorySheetPreview(log.week,log.type,log.category||"vegetables",log.vendorKey||null)
-        : await apiClient.supplierOrders.previewExcel(id);
+        ? await apiClient.orders.consolidatedHistorySheetPreview(log.week,log.type,log.category||"vegetables",log.vendorKey||null,log.latestAt||null)
+        : await apiClient.supplierOrders.previewExcel(id,log.latestAt||null);
       var next={sheetName:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)};
       setSheetPreviewById(function(prev){var n=Object.assign({},prev);n[id]=next;return n;});
       return next;
@@ -3217,7 +3217,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     if(historySheetPreviewById[k]) return historySheetPreviewById[k];
     try{
       setHistorySheetPreviewLoadingById(function(prev){var n=Object.assign({},prev);n[k]=true;return n;});
-      var resp=await apiClient.orders.consolidatedHistorySheetPreview(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null);
+      var resp=await apiClient.orders.consolidatedHistorySheetPreview(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null,rec.latestAt||null);
       var next={sheetName:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)};
       setHistorySheetPreviewById(function(prev){var n=Object.assign({},prev);n[k]=next;return n;});
       return next;
@@ -3229,7 +3229,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     var k=historyGroupKey(rec);
     try{
       setHistoryDownloading(function(prev){var n=Object.assign({},prev);n[k]=true;return n;});
-      var resp=await apiClient.orders.consolidatedHistoryExcel(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null);
+      var resp=await apiClient.orders.consolidatedHistoryExcel(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null,rec.latestAt||null);
       if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
       var bin=atob(resp.excelBase64);
       var bytes=new Uint8Array(bin.length);
@@ -3254,7 +3254,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     var k=sentLogActionKey(log);
     try{
       setHistoryDownloading(function(prev){var n=Object.assign({},prev);n[k]=true;return n;});
-      await apiClient.supplierOrders.downloadExcel(log._id, log.excelFilename || undefined);
+      await apiClient.supplierOrders.downloadExcel(log._id, log.excelFilename || undefined, log.latestAt||null);
       toast("Sent supplier file downloaded");
     }catch(e){toast(e.message||"Failed to download sent file",true);}
     finally{
@@ -3266,7 +3266,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     try{
       if(!log||!log._id){toast("Missing sent file details",true);return;}
       printWindow=openPendingPrintWindow("Preparing document...");
-      var resp=await apiClient.supplierOrders.previewExcel(log._id);
+      var resp=await apiClient.supplierOrders.previewExcel(log._id,log.latestAt||null);
       await printSheetSections((log.supplierName||log._id||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
       toast("Print dialog opened");
     }catch(e){
@@ -3279,7 +3279,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     try{
       if(!rec||!rec.week||!rec.type){toast("Missing history record details",true);return;}
       printWindow=openPendingPrintWindow("Preparing document...");
-      var resp=await apiClient.orders.consolidatedHistoryExcel(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null);
+      var resp=await apiClient.orders.consolidatedHistoryExcel(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null,rec.latestAt||null);
       await printBase64File(resp&&resp.excelBase64,resp&&resp.filename,resp&&resp.contentType,printWindow);
       toast("Print dialog opened");
     }catch(e){
