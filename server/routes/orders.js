@@ -17,6 +17,7 @@ import { renderVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 import { notifyWarehouseVendorSubmission } from '../services/warehouseNotifications.js';
 
 const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
+const VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 function listifyVendorInputs(input) {
   if (Array.isArray(input)) return input.slice();
@@ -810,15 +811,14 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
     return exact;
   }
 
-  // Vendor orders can be submitted under earlier same-day VS sequences when settings
-  // refresh lags behind UI state. Recover only the latest record for the SAME
-  // VS sequence; if Settings opened a fresh cycle with a new seq, do not revive
-  // the prior seq here.
+  // Vendor orders can land on an adjacent UTC date while still belonging to the
+  // same scheduled opening. Recover only the SAME VS sequence inside a short
+  // boundary window; do not pull last week's unsent order into a fresh schedule.
   if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
     const requestedWeek = String(weekKey || '').trim();
     const seqMatch = requestedWeek.match(/-VS(\d+)$/i);
     const requestedSeq = seqMatch ? parseInt(seqMatch[1], 10) : null;
-    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const since = new Date(Date.now() - VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS);
     const sameSeqFilter = requestedSeq != null ? { week: { $regex: new RegExp(`-VS${requestedSeq}$`, 'i') } } : {};
     const submittedFallback = await Order.findOne({
       storeId,

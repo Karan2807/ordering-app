@@ -12,6 +12,8 @@ var ORDER_CATEGORIES=[
   {id:"leaves",label:"Leaves"},
   {id:"vendor_orders",label:"Vendor Orders"},
 ];
+var VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS=48*60*60*1000;
+var MANUAL_OPEN_CYCLE_MATCH_WINDOW_MS=7*24*60*60*1000;
 var CATEGORY_LABELS=ORDER_CATEGORIES.reduce(function(acc,c){acc[c.id]=c.label;return acc;},{});
 var SUPPLIER_CATEGORY_OPTIONS=[
   {id:"vegetables",label:"Vegetables Orders"},
@@ -271,17 +273,16 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
   var exactKey=storeId+"_"+dateKey(type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
   var exactOrder=orderMap&&orderMap[exactKey]?orderMap[exactKey]:null;
   // For vendor orders: even if there is an exact-key match, it might be a plain
-  // draft created after the UTC day boundary while the REAL submitted order lives
-  // under a prior-day key. Recover only records for the SAME VS sequence so
-  // Settings-driven reopen/cancel/open-24h starts a fresh cycle; older sequences
-  // should only be revived by explicit reopen flows from Order Monitor.
+  // draft created after the UTC day boundary while the real submitted order lives
+  // under an adjacent-day key. Recover only the SAME VS sequence inside a short
+  // boundary window so a fresh weekly schedule still opens as New by default.
   if(orderMap&&category==="vendor_orders"&&vendorKey){
     var suffix="-"+type+"-"+categoryKey(category,vendorKey);
     var requestedSeq=parseInt(vendorSeq,10);
     var bestSubmitted=null;
     var bestAny=null;
     var nowTs=Date.now();
-    var maxAgeMs=7*24*60*60*1000;
+    var maxAgeMs=VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS;
     var keyPrefix=String(storeId||"")+"_";
     Object.keys(orderMap).forEach(function(k){
       if(k.indexOf(keyPrefix)!==0) return;
@@ -1637,9 +1638,12 @@ function isSameOrAdjacentDateWeekKey(left,right){
   var leftSuffix=extractWeekKeyCycleSuffix(left);
   var rightSuffix=extractWeekKeyCycleSuffix(right);
   // Both sides have a cycle suffix: must be the SAME cycle to match,
-  // and we allow a 7-day window (same manual-open cycle can span multiple days).
+  // but vendor scheduled cycles should only bridge short UTC-boundary drift.
   if(leftSuffix&&rightSuffix){
-    return leftSuffix===rightSuffix&&diff<=7*24*60*60*1000;
+    if(leftSuffix!==rightSuffix) return false;
+    if(/^\-VS\d+$/i.test(leftSuffix)) return diff<=VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS;
+    if(/^\-M\d+$/i.test(leftSuffix)) return diff<=MANUAL_OPEN_CYCLE_MATCH_WINDOW_MS;
+    return diff<=24*60*60*1000;
   }
   // One side has a suffix, the other doesn't (e.g. admin cleared manual-open
   // after stores submitted). Fall back to the plain date proximity check so
