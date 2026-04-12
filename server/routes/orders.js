@@ -371,6 +371,185 @@ function formatItemDisplayName(name, unit) {
   return trimmedName;
 }
 
+function buildItemMasterCode(name, unit) {
+  const trimmedName = String(name || '').trim().replace(/\s+/g, ' ');
+  const trimmedUnit = String(unit || '').trim().replace(/\s+/g, ' ');
+  if (!trimmedName) return '';
+  return trimmedUnit ? `${trimmedName}:${trimmedUnit}` : trimmedName;
+}
+
+function normalizeLegacyAliasUnit(value) {
+  return String(value || '')
+    .replace(/([0-9])([a-z])/gi, '$1 $2')
+    .replace(/([a-z])([0-9])/gi, '$1 $2')
+    .replace(/\bpcs?\b/gi, 'pc')
+    .replace(/\bpieces?\b/gi, 'pc')
+    .replace(/\bcases?\b/gi, 'case')
+    .replace(/\bozs?\b/gi, 'oz')
+    .replace(/\bcts?\b/gi, 'ct')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeCatalogAliasToken(value) {
+  return normalizeLegacyAliasUnit(String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function safeCodePrefix(category) {
+  return normalizeCategory(category).replace(/[^a-z0-9]/g, '_').toUpperCase();
+}
+
+function extractLegacyOrderAliasCandidates(code, category, vendorKey) {
+  const normalizedCode = String(code || '').trim();
+  const resolvedCategory = normalizeCategory(category || 'vegetables');
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const out = [];
+  if (!normalizedCode) return out;
+  if (normalizedCode.startsWith('XLS::')) out.push(normalizedCode.slice(5));
+  if (resolvedCategory !== 'vendor_orders' || !resolvedVendorKey) return out;
+  const prefix = `${safeCodePrefix(resolvedCategory)}__${String(resolvedVendorKey).replace(/[^a-z0-9]/gi, '_').toUpperCase()}::`;
+  if (!normalizedCode.toUpperCase().startsWith(prefix)) return out;
+  const parts = normalizedCode.split('::').map((part) => String(part || '').trim()).filter(Boolean);
+  if (parts.length < 2) return out;
+  const legacyName = String(parts[1] || '').replace(/\s+/g, ' ').trim();
+  const legacyUnit = normalizeLegacyAliasUnit(parts.slice(2).join(' '));
+  if (legacyName) {
+    out.push(legacyName);
+    out.push(`XLS::${legacyName}`);
+    if (legacyUnit) {
+      out.push(buildItemMasterCode(legacyName, legacyUnit));
+      out.push(formatItemDisplayName(legacyName, legacyUnit));
+    }
+  }
+  return out.filter((value, index, list) => value && list.indexOf(value) === index);
+}
+
+function buildCatalogAliasCodeMap(itemDocs, category, vendorKey) {
+  const resolvedCategory = normalizeCategory(category || 'vegetables');
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const aliasBuckets = {};
+  (Array.isArray(itemDocs) ? itemDocs : []).forEach((item) => {
+    if (normalizeCategory(item && item.category || 'vegetables') !== resolvedCategory) return;
+    if (normalizeVendorKey(resolvedCategory, item && item.vendorKey) !== resolvedVendorKey) return;
+    const code = String(item && item.code || '').trim();
+    const name = String(item && item.name || '').trim();
+    const unit = String(item && item.unit || '').trim();
+    if (!code) return;
+    [
+      code,
+      name,
+      buildItemMasterCode(name, unit),
+      formatItemDisplayName(name, unit),
+      name ? `XLS::${name}` : '',
+    ].forEach((alias) => {
+      const token = normalizeCatalogAliasToken(alias);
+      if (!token) return;
+      if (!aliasBuckets[token]) aliasBuckets[token] = {};
+      aliasBuckets[token][code] = true;
+    });
+  });
+  return Object.keys(aliasBuckets).reduce((out, token) => {
+    const codes = Object.keys(aliasBuckets[token]);
+    out[token] = codes.length === 1 ? codes[0] : null;
+    return out;
+  }, {});
+}
+
+function resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCodeMap) {
+  const normalizedCode = String(code || '').trim();
+  const resolvedCategory = normalizeCategory(category || 'vegetables');
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  if (!normalizedCode) return '';
+  const exact = (Array.isArray(itemDocs) ? itemDocs : []).some((item) => {
+    return String(item && item.code || '').trim() === normalizedCode
+      && normalizeCategory(item && item.category || 'vegetables') === resolvedCategory
+      && normalizeVendorKey(resolvedCategory, item && item.vendorKey) === resolvedVendorKey;
+  });
+  if (exact) return normalizedCode;
+  const suffixTrimmed = normalizedCode.replace(/\s*\(\d+\)$/, '');
+  const candidates = [
+    normalizedCode,
+    normalizedCode.startsWith('XLS::') ? normalizedCode.slice(5) : '',
+    suffixTrimmed,
+    suffixTrimmed && !suffixTrimmed.startsWith('XLS::') ? `XLS::${suffixTrimmed}` : '',
+    ...extractLegacyOrderAliasCandidates(normalizedCode, resolvedCategory, resolvedVendorKey),
+  ].filter((value, index, list) => value && list.indexOf(value) === index);
+  for (const candidate of candidates) {
+    const token = normalizeCatalogAliasToken(candidate);
+    if (token && aliasCodeMap && aliasCodeMap[token]) return aliasCodeMap[token];
+  }
+  return normalizedCode;
+}
+
+function normalizeOrderItemValue(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return {
+      qty: Number(value.qty != null ? value.qty : value.quantity) || 0,
+      unitType: String(value.unitType || value.type || 'cas').toLowerCase(),
+      customUnit: String(value.customUnit || value.otherUnit || '').trim(),
+    };
+  }
+  return { qty: Number(value) || 0, unitType: 'cas', customUnit: '' };
+}
+
+function mergeCanonicalOrderItemValues(currentValue, nextValue) {
+  const current = normalizeOrderItemValue(currentValue);
+  const next = normalizeOrderItemValue(nextValue);
+  const unitType = current.qty > 0 ? current.unitType : next.unitType;
+  return {
+    qty: current.qty + next.qty,
+    unitType,
+    customUnit: unitType === 'other' ? (current.customUnit || next.customUnit || '') : '',
+  };
+}
+
+function mergeCanonicalOrderNotes(currentNote, nextNote) {
+  const current = String(currentNote || '').trim();
+  const next = String(nextNote || '').trim();
+  if (!current) return next;
+  if (!next) return current;
+  const parts = current.split(' | ');
+  if (parts.includes(next)) return current;
+  return `${current} | ${next}`;
+}
+
+function orderItemsToMaps(rawItems) {
+  const items = {};
+  const notes = {};
+  orderItemsToList(rawItems).forEach((item) => {
+    const code = String(item && item.itemCode || '').trim();
+    if (!code) return;
+    items[code] = {
+      qty: Number(item.quantity) || 0,
+      unitType: item.unitType || 'cas',
+      customUnit: item.customUnit || '',
+    };
+    if (item.note) notes[code] = String(item.note || '').trim();
+  });
+  return { items, notes };
+}
+
+function sanitizeOrderCodeMaps(itemMap, noteMap, itemDocs, category, vendorKey) {
+  const sanitizedItems = {};
+  const sanitizedNotes = {};
+  const aliasCodeMap = buildCatalogAliasCodeMap(itemDocs, category, vendorKey);
+  Object.keys(itemMap || {}).forEach((code) => {
+    const resolvedCode = resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCodeMap);
+    if (!resolvedCode) return;
+    sanitizedItems[resolvedCode] = sanitizedItems[resolvedCode] == null
+      ? itemMap[code]
+      : mergeCanonicalOrderItemValues(sanitizedItems[resolvedCode], itemMap[code]);
+  });
+  Object.keys(noteMap || {}).forEach((code) => {
+    const resolvedCode = resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCodeMap);
+    if (!resolvedCode) return;
+    sanitizedNotes[resolvedCode] = mergeCanonicalOrderNotes(sanitizedNotes[resolvedCode], noteMap[code]);
+  });
+  return { items: sanitizedItems, notes: sanitizedNotes };
+}
+
 function buildItemDisplayMaps(itemDocs, providedItemNames = {}, providedItemDetails = {}) {
   const itemNameByCode = {};
   const itemUnitByCode = {};
@@ -1943,7 +2122,14 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
       group.latestAt = candidateLatest;
     }
 
-    const normalizedItems = orderItemsToList(order.items)
+    const rawOrderMaps = orderItemsToMaps(order.items);
+    const relevantItems = itemDocs.filter((item) => normalizeCategory(item && item.category) === normalizedCategory && normalizeVendorKey(normalizedCategory, item && item.vendorKey) === normalizedVendorKey);
+    const sanitizedOrderMaps = sanitizeOrderCodeMaps(rawOrderMaps.items, rawOrderMaps.notes, relevantItems, normalizedCategory, normalizedVendorKey);
+    const normalizedItems = orderItemsToList(sanitizedOrderMaps.items)
+      .map((entry) => ({
+        ...entry,
+        note: sanitizedOrderMaps.notes[entry.itemCode] || entry.note,
+      }))
       .filter((entry) => (Number(entry.quantity) || 0) > 0 || String(entry.note || '').trim())
       .map((entry) => ({
         itemCode: entry.itemCode,
@@ -2605,7 +2791,12 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     slots.forEach((slot) => {
       const order = slotOrders[slot.apna];
       if (!order || !slot.store) return;
-      orderItemsToList(order.items).forEach((item) => {
+      const rawOrderMaps = orderItemsToMaps(order.items);
+      const sanitizedOrderMaps = sanitizeOrderCodeMaps(rawOrderMaps.items, rawOrderMaps.notes, itemDocs, resolvedCategory, resolvedVendorKey);
+      orderItemsToList(sanitizedOrderMaps.items).map((item) => ({
+        ...item,
+        note: sanitizedOrderMaps.notes[item.itemCode] || item.note,
+      })).forEach((item) => {
         if (!qtyByCodeStoreId[item.itemCode]) qtyByCodeStoreId[item.itemCode] = {};
         if (!orderUnitByCodeStoreId[item.itemCode]) orderUnitByCodeStoreId[item.itemCode] = {};
         qtyByCodeStoreId[item.itemCode][slot.store.id] = Number(item.quantity) || 0;
@@ -3075,6 +3266,7 @@ router.get('/', authMiddleware, async (req, res) => {
     if (storeId) filter.storeId = storeId;
 
     let orders = await Order.find(filter).sort({ submittedAt: -1, createdAt: -1 }).lean();
+    const allItemDocs = await Item.find().select({ code: 1, name: 1, unit: 1, category: 1, vendorKey: 1, _id: 0 }).lean();
 
     const groupKeys = new Set(
       orders.map((order) => supplierGroupKey(order.week, order.type, order.category, order.vendorKey))
@@ -3095,7 +3287,13 @@ router.get('/', authMiddleware, async (req, res) => {
       });
     }
 
-    const result = orders.map((order) => ({
+    const result = orders.map((order) => {
+      const category = normalizeCategory(order.category);
+      const vendorKey = normalizeVendorKey(category, order.vendorKey);
+      const rawMaps = orderItemsToMaps(order.items);
+      const relevantItems = allItemDocs.filter((item) => normalizeCategory(item && item.category) === category && normalizeVendorKey(category, item && item.vendorKey) === vendorKey);
+      const sanitized = sanitizeOrderCodeMaps(rawMaps.items, rawMaps.notes, relevantItems, category, vendorKey);
+      return {
       ...(function() {
         const sentInfo = supplierSentByGroup.get(
           supplierGroupKey(order.week, order.type, order.category, order.vendorKey)
@@ -3108,11 +3306,11 @@ router.get('/', authMiddleware, async (req, res) => {
       id: order.id,
       storeId: order.storeId,
       type: order.type,
-      category: normalizeCategory(order.category),
-      vendorKey: order.vendorKey || null,
+      category,
+      vendorKey: vendorKey || null,
       status: order.status,
       week: order.week,
-      items: orderItemsToList(order.items).reduce((acc, i) => {
+      items: orderItemsToList(sanitized.items).reduce((acc, i) => {
         acc[i.itemCode] = {
           qty: Number(i.quantity) || 0,
           unitType: i.unitType || 'cas',
@@ -3120,15 +3318,15 @@ router.get('/', authMiddleware, async (req, res) => {
         };
         return acc;
       }, {}),
-      notes: orderItemsToList(order.items).reduce((acc, i) => {
-        if (i.note) acc[i.itemCode] = i.note;
+      notes: Object.keys(sanitized.notes || {}).reduce((acc, code) => {
+        if (sanitized.notes[code]) acc[code] = sanitized.notes[code];
         return acc;
       }, {}),
       date: order.submittedAt || order.createdAt,
       createdAt: order.createdAt,
       submittedAt: order.submittedAt || null,
       itemCount: order.items ? order.items.length : 0,
-    }));
+    };});
 
     res.json(result);
   } catch (err) {

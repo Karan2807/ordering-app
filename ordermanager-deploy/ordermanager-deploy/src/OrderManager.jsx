@@ -1370,8 +1370,46 @@ function displayNameForOrderKey(code, items){
   if(ci>0) c=c.slice(0,ci).trim();
   return c||String(code||"");
 }
+function normalizeLegacyAliasUnit(value){
+  return String(value||"")
+    .replace(/([0-9])([a-z])/gi,"$1 $2")
+    .replace(/([a-z])([0-9])/gi,"$1 $2")
+    .replace(/\bpcs?\b/gi,"pc")
+    .replace(/\bpieces?\b/gi,"pc")
+    .replace(/\bcases?\b/gi,"case")
+    .replace(/\bozs?\b/gi,"oz")
+    .replace(/\bcts?\b/gi,"ct")
+    .replace(/\s+/g," ")
+    .trim();
+}
 function normalizeCatalogAliasToken(value){
-  return String(value||"").trim().toLowerCase().replace(/\s+/g," ");
+  return normalizeLegacyAliasUnit(String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g," "))
+    .replace(/\s+/g," ")
+    .trim();
+}
+function extractLegacyOrderAliasCandidates(code, category, vendorKey){
+  var normalizedCode=String(code||"").trim();
+  var resolvedCategory=normalizeCategory(category||"vegetables");
+  var resolvedVendorKey=normalizeVendorKey(resolvedCategory,vendorKey);
+  var out=[];
+  if(!normalizedCode) return out;
+  if(normalizedCode.indexOf("XLS::")===0) out.push(String(normalizedCode).slice(5));
+  if(resolvedCategory!=="vendor_orders"||!resolvedVendorKey) return out;
+  var prefix=safeCodePrefix(resolvedCategory)+"__"+String(resolvedVendorKey).replace(/[^a-z0-9]/gi,"_").toUpperCase()+"::";
+  if(String(normalizedCode).toUpperCase().indexOf(prefix)!==0) return out;
+  var parts=String(normalizedCode).split("::").map(function(part){return String(part||"").trim();}).filter(Boolean);
+  if(parts.length<2) return out;
+  var legacyName=String(parts[1]||"").replace(/\s+/g," ").trim();
+  var legacyUnit=normalizeLegacyAliasUnit(parts.slice(2).join(" "));
+  if(legacyName){
+    out.push(legacyName);
+    out.push("XLS::"+legacyName);
+    if(legacyUnit){
+      out.push(buildItemMasterCode(legacyName,legacyUnit));
+      out.push(formatItemDetailName(legacyName,legacyUnit));
+    }
+  }
+  return out.filter(function(value,idx,list){return !!value&&list.indexOf(value)===idx;});
 }
 function buildCatalogAliasCodeMap(items, category, vendorKey){
   var resolvedCategory=normalizeCategory(category||"vegetables");
@@ -1421,7 +1459,7 @@ function resolveCanonicalOrderCode(code, items, category, vendorKey, aliasCodeMa
     String(normalizedCode).indexOf("XLS::")===0?String(normalizedCode).slice(5):"",
     suffixTrimmed,
     suffixTrimmed&&String(suffixTrimmed).indexOf("XLS::")!==0?"XLS::"+suffixTrimmed:"",
-  ].filter(function(value,idx,list){return !!value&&list.indexOf(value)===idx;});
+  ].concat(extractLegacyOrderAliasCandidates(normalizedCode,resolvedCategory,resolvedVendorKey)).filter(function(value,idx,list){return !!value&&list.indexOf(value)===idx;});
   for(var i=0;i<candidates.length;i+=1){
     var token=normalizeCatalogAliasToken(candidates[i]);
     if(token&&aliasCodeMap&&aliasCodeMap[token]) return aliasCodeMap[token];
