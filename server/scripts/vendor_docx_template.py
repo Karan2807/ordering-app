@@ -215,8 +215,8 @@ def render_template(input_path, payload_path, output_path):
             continue
         code = str(row.get("code") or "").strip()
         qty_value = quantities.get(code)
-        qty_number = int(qty_value) if qty_value is not None and str(qty_value).strip() else 0
-        line_text = format_item_line(row, qty_number if qty_number > 0 else "")
+        qty_text = "" if qty_value is None else str(qty_value).strip()
+        line_text = format_item_line(row, qty_text)
         set_paragraph_text(paragraphs[p_idx], line_text)
 
     file_map["word/document.xml"] = ET.tostring(doc_root, encoding="utf-8", xml_declaration=True)

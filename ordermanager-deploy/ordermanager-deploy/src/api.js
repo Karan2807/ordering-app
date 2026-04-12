@@ -122,14 +122,21 @@ export const apiClient = {
       });
     },
 
+    update(code, data) {
+      return apiClient.request(`/items/${encodeURIComponent(String(code || ''))}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
     delete(code) {
       return apiClient.request(`/items/${encodeURIComponent(String(code || ''))}`, { method: 'DELETE' });
     },
 
-    bulkImport(items, mode = 'merge', category = 'vegetables', template = null, vendorKey = null) {
+    bulkImport(items, mode = 'merge', category = 'vegetables', template = null, vendorKey = null, templateVariant = 'default') {
       return apiClient.request('/items/bulk/import', {
         method: 'POST',
-        body: JSON.stringify({ items, mode, category, template, vendorKey }),
+        body: JSON.stringify({ items, mode, category, template, vendorKey, templateVariant }),
       });
     },
     parseTemplate(data) {

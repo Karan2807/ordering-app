@@ -6,6 +6,7 @@ import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
 const router = express.Router();
 const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders'];
+const VALID_TEMPLATE_VARIANTS = ['default', 'supplier', 'monitor'];
 const canManageItems = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 
 function normalizeCategory(value) {
@@ -18,11 +19,103 @@ function normalizeVendorKey(category, vendorKey) {
     : null;
 }
 
+function normalizeTemplateVariant(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return VALID_TEMPLATE_VARIANTS.includes(raw) ? raw : 'default';
+}
+
 function buildItemMasterCode(name, unit) {
   const resolvedName = String(name || '').trim().replace(/\s+/g, ' ');
   const resolvedUnit = String(unit || '').trim().replace(/\s+/g, ' ');
   if (!resolvedName) return '';
   return resolvedUnit ? `${resolvedName}:${resolvedUnit}` : resolvedName;
+}
+
+function makeTemplateSettingKey(category, vendorKey, templateVariant = 'default') {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const resolvedTemplateVariant = normalizeTemplateVariant(templateVariant);
+  return `orderTemplate:${resolvedCategory}${resolvedVendorKey ? `:${resolvedVendorKey}` : ''}${resolvedTemplateVariant !== 'default' ? `::${resolvedTemplateVariant}` : ''}`;
+}
+
+function makeTemplateSettingKeyPrefix(category, vendorKey) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  return `orderTemplate:${resolvedCategory}${resolvedVendorKey ? `:${resolvedVendorKey}` : ''}`;
+}
+
+function updateTemplateItemReferences(template, oldCode, nextCode, nextName) {
+  const normalizedOldCode = String(oldCode || '').trim();
+  const normalizedNextCode = String(nextCode || '').trim();
+  const normalizedNextName = String(nextName || '').trim();
+  if (!normalizedOldCode || !normalizedNextCode || !template || typeof template !== 'object') {
+    return template;
+  }
+
+  if (String(template.kind || '').trim() === 'docx_vendor_form') {
+    const nextTemplate = {
+      ...template,
+      docxMap: template.docxMap && typeof template.docxMap === 'object'
+        ? {
+            ...template.docxMap,
+            outline: Array.isArray(template.docxMap.outline)
+              ? template.docxMap.outline.map((entry) => {
+                  if (!entry || String(entry.code || '').trim() !== normalizedOldCode) return entry;
+                  return {
+                    ...entry,
+                    code: normalizedNextCode,
+                    name: normalizedNextName || String(entry.name || '').trim(),
+                  };
+                })
+              : template.docxMap.outline,
+            itemRows: Array.isArray(template.docxMap.itemRows)
+              ? template.docxMap.itemRows.map((row) => {
+                  if (!row || String(row.code || '').trim() !== normalizedOldCode) return row;
+                  return {
+                    ...row,
+                    code: normalizedNextCode,
+                    name: normalizedNextName || String(row.name || '').trim(),
+                  };
+                })
+              : template.docxMap.itemRows,
+          }
+        : template.docxMap,
+    };
+    return nextTemplate;
+  }
+
+  return {
+    ...template,
+    outline: Array.isArray(template.outline)
+      ? template.outline.map((entry) => {
+          if (!entry || String(entry.code || '').trim() !== normalizedOldCode) return entry;
+          return {
+            ...entry,
+            code: normalizedNextCode,
+          };
+        })
+      : template.outline,
+    itemRows: Array.isArray(template.itemRows)
+      ? template.itemRows.map((row) => {
+          if (!row || String(row.code || '').trim() !== normalizedOldCode) return row;
+          return {
+            ...row,
+            code: normalizedNextCode,
+            name: normalizedNextName || String(row.name || '').trim(),
+          };
+        })
+      : template.itemRows,
+    multiSheetItemRows: Array.isArray(template.multiSheetItemRows)
+      ? template.multiSheetItemRows.map((row) => {
+          if (!row || String(row.code || '').trim() !== normalizedOldCode) return row;
+          return {
+            ...row,
+            code: normalizedNextCode,
+            name: normalizedNextName || String(row.name || '').trim(),
+          };
+        })
+      : template.multiSheetItemRows,
+  };
 }
 
 function normalizeTemplatePayload(template) {
@@ -275,6 +368,75 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
+// Update item
+router.patch('/:code', authMiddleware, async (req, res) => {
+  try {
+    if (!canManageItems(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
+    }
+
+    const existingItem = await Item.findOne({ code: req.params.code }).lean();
+    if (!existingItem) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    const nextName = String(req.body && req.body.name || '').trim();
+    const nextUnit = String(req.body && req.body.unit || '').trim();
+    const nextSubheading = String(req.body && req.body.subheading || '').trim();
+    const nextSortOrderRaw = req.body ? req.body.sortOrder : null;
+    const nextCode = buildItemMasterCode(nextName, nextUnit);
+
+    if (!nextCode || !nextName) {
+      return res.status(400).json({ error: 'Name required' });
+    }
+
+    if (nextCode !== existingItem.code) {
+      const duplicate = await Item.findOne({ code: nextCode }).lean();
+      if (duplicate) {
+        return res.status(400).json({ error: 'Code already exists' });
+      }
+    }
+
+    const nextSortOrder = Number.isFinite(Number(nextSortOrderRaw)) ? Number(nextSortOrderRaw) : null;
+
+    await Item.updateOne(
+      { code: existingItem.code },
+      {
+        $set: {
+          code: nextCode,
+          name: nextName,
+          unit: nextUnit,
+          subheading: nextSubheading,
+          sortOrder: nextSortOrder,
+        },
+      }
+    );
+
+    const templateKeyPrefix = makeTemplateSettingKeyPrefix(existingItem.category, existingItem.vendorKey);
+    const templateDocs = await Setting.find({
+      key: {
+        $in: [templateKeyPrefix, `${templateKeyPrefix}::supplier`, `${templateKeyPrefix}::monitor`],
+      },
+    }).lean();
+    for (const templateDoc of templateDocs) {
+      if (!templateDoc || !templateDoc.value) continue;
+      const nextTemplate = updateTemplateItemReferences(templateDoc.value, existingItem.code, nextCode, nextName);
+      const normalizedTemplate = normalizeTemplatePayload(nextTemplate);
+      if (!normalizedTemplate) continue;
+      await Setting.updateOne(
+        { key: templateDoc.key },
+        { value: normalizedTemplate },
+        { upsert: true }
+      );
+    }
+
+    res.json({ success: true, code: nextCode });
+  } catch (err) {
+    console.error('Update item error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Delete item
 router.delete('/:code', authMiddleware, async (req, res) => {
   try {
@@ -297,7 +459,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
-    const { items, mode, category, vendorKey, template } = req.body; // mode: 'merge' or 'replace'
+    const { items, mode, category, vendorKey, template, templateVariant } = req.body; // mode: 'merge' or 'replace'
 
     if (!Array.isArray(items)) {
       return res.status(400).json({ error: 'Items must be an array' });
@@ -305,6 +467,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
 
     const resolvedCategory = normalizeCategory(category);
     const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+    const resolvedTemplateVariant = normalizeTemplateVariant(templateVariant);
     if (resolvedCategory === 'vendor_orders' && !resolvedVendorKey) {
       return res.status(400).json({ error: 'vendorKey is required for vendor orders' });
     }
@@ -351,7 +514,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
     const normalizedTemplate = normalizeTemplatePayload(template);
     if (normalizedTemplate) {
       await Setting.updateOne(
-        { key: `orderTemplate:${resolvedCategory}${resolvedVendorKey ? `:${resolvedVendorKey}` : ''}` },
+        { key: makeTemplateSettingKey(resolvedCategory, resolvedVendorKey, resolvedTemplateVariant) },
         { value: normalizedTemplate },
         { upsert: true }
       );

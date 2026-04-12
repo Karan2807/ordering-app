@@ -38,6 +38,7 @@ function isPrivilegedRole(user){return isAdminRole(user)||isWarehouseRole(user);
 function displayRoleLabel(user){return isAdminRole(user)?"Admin":(isWarehouseRole(user)?"Warehouse":"Manager");}
 function normalizeCategory(v){var raw=String(v||"").trim().toLowerCase();return ORDER_CATEGORIES.some(function(c){return c.id===raw;})?raw:"vegetables";}
 function normalizeVendorKey(category,v){return normalizeCategory(category)==="vendor_orders"?(String(v||"").trim()||null):null;}
+function normalizeTemplateVariant(value){var raw=String(value||"").trim().toLowerCase();return raw==="supplier"||raw==="monitor"?raw:"default";}
 function extractVendorIdentifier(input){
   if(input==null) return "";
   if(typeof input==="string"||typeof input==="number"){
@@ -133,6 +134,37 @@ function supplierNameById(list,vendorKey){
   var found=all.find(function(v){return String(v&&v.id||"").trim()===normalizedKey;})||null;
   return found&&found.name?String(found.name):normalizedKey;
 }
+function normalizeSupplierList(input){
+  var list=Array.isArray(input)?input:[];
+  var byId={};
+  list.forEach(function(entry){
+    if(!entry||typeof entry!=="object") return;
+    var id=extractVendorIdentifier(entry.id);
+    if(!id) return;
+    var name=String(entry.name||id).trim()||id;
+    var emails=(Array.isArray(entry.emails)?entry.emails:[]).map(function(v){return String(v||"").trim();}).filter(Boolean);
+    var email=String(entry.email||emails[0]||"").trim();
+    if(email&&emails.indexOf(email)<0) emails.unshift(email);
+    byId[id]=Object.assign({},entry,{id:id,name:name,email:email,emails:emails});
+  });
+  return Object.keys(byId).map(function(id){return byId[id];}).sort(function(a,b){
+    return String(a&&a.name||a&&a.id||"").localeCompare(String(b&&b.name||b&&b.id||""),undefined,{sensitivity:"base"});
+  });
+}
+function mergeSupplierOptionsWithVendorIds(suppliers,vendorIds){
+  var normalizedSuppliers=normalizeSupplierList(suppliers);
+  var byId={};
+  normalizedSuppliers.forEach(function(entry){
+    byId[entry.id]=entry;
+  });
+  normalizeVendorOrderList(vendorIds).forEach(function(vendorId){
+    if(byId[vendorId]) return;
+    byId[vendorId]={id:vendorId,name:vendorDisplayName(normalizedSuppliers,vendorId),email:"",emails:[]};
+  });
+  return Object.keys(byId).map(function(id){return byId[id];}).sort(function(a,b){
+    return String(a&&a.name||a&&a.id||"").localeCompare(String(b&&b.name||b&&b.id||""),undefined,{sensitivity:"base"});
+  });
+}
 function vendorDisplayName(suppliers,vendorKey){
   return supplierNameById(suppliers,vendorKey)||extractVendorIdentifier(vendorKey)||"Vendor Order";
 }
@@ -150,11 +182,11 @@ function vendorWindowText(startDay,endDay){
   return (DAYS[start]||"Day "+start)+" to "+(DAYS[end]||"Day "+end);
 }
 var ORDER_UNIT_TYPES=[
-  {value:"cas",label:"CASE"},
-  {value:"pcs",label:"PIECES"},
-  {value:"pallet",label:"PALLET"},
-  {value:"master_case",label:"MASTER CASE"},
-  {value:"other",label:"OTHER"},
+  {value:"cas",label:"Case"},
+  {value:"pcs",label:"Piece"},
+  {value:"pallet",label:"Pallet"},
+  {value:"master_case",label:"Master Case"},
+  {value:"other",label:"Other"},
 ];
 function normalizeUnitType(v){return ORDER_UNIT_TYPES.some(function(o){return o.value===v;})?v:"cas";}
 function normalizeOrderItemEntry(v){
@@ -177,18 +209,19 @@ function countOrderItemsWithFallback(order){
 function getOrderItemQty(itemsMap,code){return normalizeOrderItemEntry(itemsMap&&itemsMap[code]).qty;}
 function getOrderItemUnitLabel(v){
   var d=normalizeOrderItemEntry(v);
-  if(d.unitType==="pcs") return "PIECES";
-  if(d.unitType==="pallet") return "PALLET";
-  if(d.unitType==="master_case") return "MASTER CASE";
-  if(d.unitType==="other") return d.customUnit||"OTHER";
-  return "CASE";
+  if(d.unitType==="pcs") return "Piece";
+  if(d.unitType==="pallet") return "Pallet";
+  if(d.unitType==="master_case") return "Master Case";
+  if(d.unitType==="other") return d.customUnit||"Other";
+  return "Case";
 }
-function formatQtyWithUnit(v){var d=normalizeOrderItemEntry(v);return d.qty+" "+getOrderItemUnitLabel(d);}
+function pluralizeUnit(label,qty){if(qty<=1)return label;if(label==="Case")return"Cases";if(label==="Piece")return"Pieces";if(label==="Pallet")return"Pallets";if(label==="Master Case")return"Master Cases";return label;}
+function formatQtyWithUnit(v){var d=normalizeOrderItemEntry(v);return d.qty+" "+pluralizeUnit(getOrderItemUnitLabel(d),d.qty);}
 function formatOrderItemQtyDisplay(v){var d=normalizeOrderItemEntry(v);return d.qty>0?formatQtyWithUnit(v):"0";}
 function formatQtyValueWithUnit(qty,unitMeta){
   var safeQty=Math.max(0,parseInt(qty,10)||0);
   if(!safeQty) return "";
-  return safeQty+" "+getOrderItemUnitLabel(unitMeta||{unitType:"cas",customUnit:""});
+  return safeQty+" "+pluralizeUnit(getOrderItemUnitLabel(unitMeta||{unitType:"cas",customUnit:""}),safeQty);
 }
 function formatQtySummaryByUnit(qtyByStoreId,orderUnitByStoreId){
   var totals={};
@@ -198,15 +231,15 @@ function formatQtySummaryByUnit(qtyByStoreId,orderUnitByStoreId){
     var label=getOrderItemUnitLabel(orderUnitByStoreId&&orderUnitByStoreId[storeId]?orderUnitByStoreId[storeId]:{unitType:"cas",customUnit:""});
     totals[label]=(totals[label]||0)+qty;
   });
-  return Object.keys(totals).map(function(label){return totals[label]+" "+label;}).join(", ");
+  return Object.keys(totals).map(function(label){return totals[label]+" "+pluralizeUnit(label,totals[label]);}).join(", ");
 }
 function aggregateQtyUnit(itemsMapList){
   var units={};
   itemsMapList.forEach(function(v){var d=normalizeOrderItemEntry(v);if(d.qty>0)units[getOrderItemUnitLabel(d)]=true;});
   var keys=Object.keys(units);
-  if(keys.length===0) return "CASE";
+  if(keys.length===0) return "Case";
   if(keys.length===1) return keys[0];
-  return "MIXED";
+  return "Mixed";
 }
 function isVendorConfigActiveNow(config, dayOverride, nowOverride){
   if(!config||config.enabled===false) return false;
@@ -564,7 +597,6 @@ function parseTemplateItemSheet(rows, category, vendorKey, sourceFilename, sheet
         if(unitCol===-1&&isUnit) unitCol=c;
       }
       if(itemCol===-1) itemCol=Math.max(0,firstCol-2);
-      if(codeCol===-1&&itemCol>0) codeCol=itemCol-1;
       if(unitCol===-1&&itemCol+1<firstCol) unitCol=itemCol+1;
 
       for(var tc=lastCol+1;tc<=Math.min(lastCol+4,(rows[headerRowIndex]||[]).length-1);tc++){
@@ -978,10 +1010,20 @@ function buildRawGridTemplateFromSheets(sheets, sourceFilename, originalFile){
   };
 }
 function parseCategoryTemplateKey(templateKey){
-  var parts=String(templateKey||"").trim().split(":");
+  var rawKey=String(templateKey||"").trim();
+  var variantSplit=rawKey.split("::");
+  var baseKey=variantSplit[0]||"";
+  var templateVariant=normalizeTemplateVariant(variantSplit.length>1?variantSplit.slice(1).join("::"):"default");
+  var parts=baseKey.split(":");
   var category=normalizeCategory(parts[0]||"vegetables");
   var vendorKey=parts.length>1?normalizeVendorKey(category,parts.slice(1).join(":")):null;
-  return {category:category,vendorKey:vendorKey};
+  return {category:category,vendorKey:vendorKey,templateVariant:templateVariant};
+}
+function makeCategoryTemplateKey(category,vendorKey,templateVariant){
+  var cat=normalizeCategory(category);
+  var vendor=normalizeVendorKey(cat,vendorKey);
+  var variant=normalizeTemplateVariant(templateVariant);
+  return cat+(vendor?":"+vendor:"")+(variant!=="default"?"::"+variant:"");
 }
 function itemIdentitySignature(category, vendorKey, name, unit){
   return [
@@ -1197,8 +1239,8 @@ function repairLoadedTemplatesAndItems(items, categoryTemplates){
     var candidate=buildTemplateCandidateFromStoredTemplate(currentTemplate,parts.category,parts.vendorKey);
     var reconciled=reconcileTemplateCandidate(candidate,nextItems,parts.category,parts.vendorKey);
     var shouldUseCandidate=shouldPreferTemplateCandidate(currentTemplate,reconciled);
-    nextTemplates[templateKey]=shouldUseCandidate&&reconciled&&reconciled.template?reconciled.template:currentTemplate;
-    if(!shouldUseCandidate||!reconciled||!Array.isArray(reconciled.items)||!reconciled.items.length) return;
+    nextTemplates[templateKey]=reconciled&&reconciled.template?reconciled.template:currentTemplate;
+    if((!shouldUseCandidate&&!(reconciled&&reconciled.template))||!reconciled||!Array.isArray(reconciled.items)||!reconciled.items.length) return;
     var existingSignatures={};
     nextItems.forEach(function(it){
       existingSignatures[itemIdentitySignature(it&&it.category,it&&it.vendorKey,it&&it.name,it&&it.unit)]=true;
@@ -1321,8 +1363,12 @@ function syntheticOrderKeyFromName(name, category, vendorKey){return syntheticIt
 function displayNameForOrderKey(code, items){
   var found=(items||[]).find(function(it){return it.code===code;});
   if(found&&found.name)return found.name;
-  if(String(code||"").indexOf("XLS::")===0)return String(code).slice(5);
-  return String(code||"");
+  var c=String(code||"");
+  if(c.indexOf("XLS::")===0) c=c.slice(5);
+  // Strip :Unit suffix from item-master codes (e.g. "Bread:Case" → "Bread")
+  var ci=c.lastIndexOf(":");
+  if(ci>0) c=c.slice(0,ci).trim();
+  return c||String(code||"");
 }
 function normalizeCatalogAliasToken(value){
   return String(value||"").trim().toLowerCase().replace(/\s+/g," ");
@@ -1438,13 +1484,15 @@ function sanitizeOrderCodeMaps(itemMap, noteMap, items, category, vendorKey){
 }
 function formatItemDetailName(name, unit){
   var trimmedName=String(name||"").trim();
-  var trimmedUnit=String(unit||"").trim();
-  if(!trimmedUnit) return trimmedName;
-  if(!trimmedName) return trimmedUnit;
-  var lowerName=trimmedName.toLowerCase();
-  var lowerUnit=trimmedUnit.toLowerCase();
-  if(lowerName.endsWith("("+lowerUnit+")")||lowerName.endsWith("["+lowerUnit+"]")) return trimmedName;
-  return trimmedName+" ("+trimmedUnit+")";
+  if(!trimmedName) return String(unit||"").trim()||"";
+  // Return clean name without (unit) suffix - strip existing suffix if present
+  var trimmedUnit=String(unit||"").trim().toLowerCase();
+  if(trimmedUnit){
+    var lowerName=trimmedName.toLowerCase();
+    if(lowerName.endsWith("("+trimmedUnit+")")) return trimmedName.slice(0,-(trimmedUnit.length+2)).trim();
+    if(lowerName.endsWith("["+trimmedUnit+"]")) return trimmedName.slice(0,-(trimmedUnit.length+2)).trim();
+  }
+  return trimmedName;
 }
 function buildOrderItemDetails(codes, orderedRows, items, template){
   var details={};
@@ -1682,8 +1730,11 @@ function getTemplateForCategory(categoryTemplates, category, vendorKey){
   var cat=normalizeCategory(category);
   var vendor=normalizeVendorKey(cat,vendorKey);
   if(!categoryTemplates||typeof categoryTemplates!=="object") return null;
-  if(vendor&&categoryTemplates[cat+":"+vendor]) return categoryTemplates[cat+":"+vendor];
-  return categoryTemplates[cat]||null;
+  var candidateKeys=vendor?[cat+":"+vendor,cat+":"+vendor+"::supplier",cat+":"+vendor+"::monitor",cat,cat+"::supplier",cat+"::monitor"]:[cat,cat+"::supplier",cat+"::monitor"];
+  for(var i=0;i<candidateKeys.length;i++){
+    if(categoryTemplates[candidateKeys[i]]) return categoryTemplates[candidateKeys[i]];
+  }
+  return null;
 }
 function buildTemplateDisplayRows(template, itemList){
   var itemsOnly=Array.isArray(itemList)?itemList.filter(function(it){return !!it&&!!it.code;}):[];
@@ -1696,6 +1747,7 @@ function buildTemplateDisplayRows(template, itemList){
       var itemByCodeNoOutline={};
       var usedNoOutline={};
       var rowsNoOutline=[];
+      var currentSubNoOutline=null;
       itemsOnly.forEach(function(it){
         if(!itemByCodeNoOutline[it.code]) itemByCodeNoOutline[it.code]=it;
       });
@@ -1703,11 +1755,21 @@ function buildTemplateDisplayRows(template, itemList){
         var code=String(row&&row.code||"").trim();
         var item=itemByCodeNoOutline[code];
         if(!item||usedNoOutline[code]) return;
+        var nextSub=String(item.subheading||"").trim();
+        if(nextSub&&nextSub!==currentSubNoOutline){
+          rowsNoOutline.push({type:"heading",key:"subheading-io-"+idx+"-"+nextSub,text:nextSub});
+          currentSubNoOutline=nextSub;
+        }
         rowsNoOutline.push({type:"item",key:item.code||("item-"+idx),item:item});
         usedNoOutline[code]=true;
       });
       itemsOnly.forEach(function(it){
         if(usedNoOutline[it.code]) return;
+        var nextSub=String(it.subheading||"").trim();
+        if(nextSub&&nextSub!==currentSubNoOutline){
+          rowsNoOutline.push({type:"heading",key:"subheading-extra-"+it.code+"-"+nextSub,text:nextSub});
+          currentSubNoOutline=nextSub;
+        }
         rowsNoOutline.push({type:"item",key:it.code,item:it});
       });
       return rowsNoOutline;
@@ -1966,7 +2028,7 @@ var S={
   sL:{fontSize:10,color:"#64748B",fontWeight:600,textTransform:"uppercase",letterSpacing:.5},
   sV:{fontSize:24,fontWeight:700,marginTop:3,fontFamily:"monospace",color:"#0F172A"},sS:{fontSize:11,color:"#64748B",marginTop:2},
   tw:{overflow:"auto",borderRadius:8,border:"1px solid rgba(148,163,184,.25)",maxHeight:"62vh",background:"rgba(255,255,255,.58)"},
-  th:{padding:"7px 8px",textAlign:"left",fontWeight:600,color:"#334155",fontSize:11,textTransform:"uppercase",letterSpacing:.5,whiteSpace:"nowrap",borderBottom:"1px solid rgba(148,163,184,.24)",background:"rgba(241,245,249,.8)",position:"sticky",top:0,zIndex:5},
+  th:{padding:"7px 8px",textAlign:"left",fontWeight:600,color:"#334155",fontSize:11,letterSpacing:.5,whiteSpace:"nowrap",borderBottom:"1px solid rgba(148,163,184,.24)",background:"rgba(241,245,249,.8)",position:"sticky",top:0,zIndex:5},
   td:{padding:"7px 8px",borderBottom:"1px solid rgba(148,163,184,.22)",fontSize:13,color:"#0F172A"},
   tm:{padding:"7px 8px",borderBottom:"1px solid rgba(148,163,184,.22)",fontFamily:"monospace",fontSize:12,color:"#475569"},
   b:{display:"inline-flex",alignItems:"center",gap:4,padding:"6px 10px",borderRadius:6,fontSize:12.5,fontWeight:600,cursor:"pointer",border:"none",whiteSpace:"nowrap",fontFamily:"inherit"},
@@ -2239,7 +2301,7 @@ export default function App(){
         }else{
           setOrders(function(prev){return Object.keys(prev||{}).length?{}:prev;});
         }
-        var nextSuppliers=data.suppliers||[];
+        var nextSuppliers=normalizeSupplierList(data.suppliers||[]);
         setSuppliers(function(prev){return sameJson(prev,nextSuppliers)?prev:nextSuppliers;});
         if(isA){
           var nextUsers=data.users||[];
@@ -2661,9 +2723,11 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var _dl=useState({}),draftLockByKey=_dl[0],setDraftLockByKey=_dl[1];
   var unsavedByOrderKeyRef=useRef({});
   var isAdmin=isPrivilegedRole(user);
-  var vendorOptions=Array.isArray(suppliers)?suppliers:[];
   var activeVendorIds=normalizeVendorOrderList(activeVendorOrderIds);
   var activeVendorIdsKey=activeVendorIds.join("|");
+  var vendorOptions=useMemo(function(){
+    return mergeSupplierOptionsWithVendorIds(suppliers,activeVendorIds);
+  },[suppliers,activeVendorIdsKey]);
   var visibleVendorOptions=isAdmin?vendorOptions:vendorOptions.filter(function(v){return activeVendorIds.indexOf(v.id)>=0;});
   useEffect(function(){
     if(selCategory==="vendor_orders"){
@@ -3190,7 +3254,13 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       var resp=isVendorLog
         ? await apiClient.orders.consolidatedHistorySheetPreview(log.week,log.type,log.category||"vegetables",log.vendorKey||null,log.latestAt||null)
         : await apiClient.supplierOrders.previewExcel(id,log.latestAt||null);
-      var next={sheetName:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)};
+      var next={
+        sheetName:resp&&resp.sheetName?resp.sheetName:"Sheet1",
+        rows:normalizePreviewRows(resp&&resp.rows),
+        fileBase64:resp&&resp.fileBase64?resp.fileBase64:null,
+        contentType:resp&&resp.contentType?resp.contentType:null,
+        filename:resp&&resp.filename?resp.filename:null,
+      };
       setSheetPreviewById(function(prev){var n=Object.assign({},prev);n[id]=next;return n;});
       return next;
     }catch(e){toast(e.message||"Failed to load stored sheet",true);return null;}
@@ -3240,21 +3310,9 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     try{
       setHistoryDownloading(function(prev){var n=Object.assign({},prev);n[k]=true;return n;});
       var resp=await apiClient.orders.consolidatedHistoryExcel(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null,rec.latestAt||null);
-      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
-      var bin=atob(resp.excelBase64);
-      var bytes=new Uint8Array(bin.length);
-      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-      var url=URL.createObjectURL(blob);
-      var a=document.createElement("a");
-      a.href=url;
-      a.download=resp.filename||("consolidated-history-"+String(rec.type||"X")+"-"+String(rec.week||"").replace(/[^A-Za-z0-9_-]/g,"_")+".xlsx");
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function(){URL.revokeObjectURL(url);},1000);
-      toast("Consolidated sheet downloaded");
-    }catch(e){toast(e.message||"Failed to download sheet",true);}
+      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
+      toast("Consolidated document downloaded");
+    }catch(e){toast(e.message||"Failed to download document",true);}
     finally{
       setHistoryDownloading(function(prev){var n=Object.assign({},prev);delete n[k];return n;});
     }
@@ -3277,7 +3335,11 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       if(!log||!log._id){toast("Missing sent file details",true);return;}
       printWindow=openPendingPrintWindow("Preparing document...");
       var resp=await apiClient.supplierOrders.previewExcel(log._id,log.latestAt||null);
-      await printSheetSections((log.supplierName||log._id||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
+      if(resp&&resp.fileBase64){
+        await printBase64File(resp.fileBase64,resp.filename,resp.contentType,printWindow);
+      }else{
+        await printSheetSections((log.supplierName||log._id||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
+      }
       toast("Print dialog opened");
     }catch(e){
       if(printWindow&&!printWindow.closed) printWindow.close();
@@ -3290,7 +3352,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       if(!rec||!rec.week||!rec.type){toast("Missing history record details",true);return;}
       printWindow=openPendingPrintWindow("Preparing document...");
       var resp=await apiClient.orders.consolidatedHistoryExcel(rec.week,rec.type,rec.category||"vegetables",rec.vendorKey||null,rec.latestAt||null);
-      await printBase64File(resp&&resp.excelBase64,resp&&resp.filename,resp&&resp.contentType,printWindow);
+      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
       toast("Print dialog opened");
     }catch(e){
       if(printWindow&&!printWindow.closed) printWindow.close();
@@ -3441,12 +3503,14 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     {selDone&&(<div style={S.ov} onClick={function(){setSelDone(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>Sent Consolidated Order {selDone.type} - {fmtDT(selDone.sentAt)}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:8}}>Supplier: {selDone.supplierName} | {selDone.email} | Week: {selDone.week}</div>
-      {selDone._id&&sheetPreviewLoadingById[String(selDone._id)]&&<div style={Object.assign({},S.nI,{marginBottom:8})}>Loading stored Excel view...</div>}
+      {selDone._id&&sheetPreviewLoadingById[String(selDone._id)]&&<div style={Object.assign({},S.nI,{marginBottom:8})}>Loading stored document view...</div>}
       {selDone._id&&sheetPreviewById[String(selDone._id)]&&sheetPreviewById[String(selDone._id)].rows&&sheetPreviewById[String(selDone._id)].rows.length>0?
         <ExcelSheetPreviewTable rows={sheetPreviewById[String(selDone._id)].rows} maxHeight={420}/>
+      :(selDone._id&&sheetPreviewById[String(selDone._id)]&&sheetPreviewById[String(selDone._id)].fileBase64?
+        <div style={Object.assign({},S.nI,{marginBottom:8})}>This stored file is kept in its original format and does not have a table preview. Use Download or Print to open it.</div>
       :(selDone.snapshotLines&&selDone.snapshotLines.length>0?
         <div style={Object.assign({},S.tw,{maxHeight:420})}><pre style={{margin:0,padding:12,whiteSpace:"pre-wrap",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",fontSize:11.5,color:"#0F172A"}}>{selDone.snapshotLines.join("\n")}</pre></div>
-      :<div style={Object.assign({},S.nI,{marginBottom:0})}>No stored sent details for this record (older history entry).</div>)}
+      :<div style={Object.assign({},S.nI,{marginBottom:0})}>No stored sent details for this record (older history entry).</div>))}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSelDone(null);}}>Close</button></div>
     </div></div>)}
     {selHistory&&(<div style={S.ov} onClick={function(){setSelHistory(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
@@ -3539,10 +3603,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var consolidatedRawGrid=normalizeRawGridTemplate(activeTemplate&&activeTemplate.rawGrid?activeTemplate.rawGrid:null);
   var consolidatedRawSheets=consolidatedRawGrid&&Array.isArray(consolidatedRawGrid.sheets)?consolidatedRawGrid.sheets:[];
   var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
-  var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"PRODUCT";
-  var qtyHeader=selCategory==="vendor_orders"?"QTY":(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QTY");
-  var totalHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.total?templateHeaders.total:"TOTAL QTY";
-  var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"NOTE";
+  var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"Product";
+  var qtyHeader=selCategory==="vendor_orders"?"Qty":(templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"Qty");
+  var totalHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.total?templateHeaders.total:"Total Qty";
+  var noteHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.note?templateHeaders.note:"Note";
   var displayOrderType=resolvedOrderTypeForCategory(selCategory,vt);
   var currentType=selCategory==="vendor_orders"?"VENDOR":displayOrderType;
   var isLeavesFlow=selCategory==="leaves";
@@ -3558,12 +3622,12 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   };
   var slotQtyHeaderForIndex=function(slot,idx){
     if(selCategory==="vendor_orders"){
-      return "QTY";
+      return "Qty";
     }
     if(activeTemplate&&activeTemplate.kind==="matrix"&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header){
       return activeTemplate.storeColumns[idx].header;
     }
-    return (templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"QTY");
+    return (templateHeaders&&templateHeaders.quantity?templateHeaders.quantity:"Qty");
   };
   var scheduledGroupKey=dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
   var isSingleVendorFlow=selCategory==="vendor_orders";
@@ -4688,22 +4752,9 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         if(documentMode) splitPayload.documentMode=documentMode;
       }
       var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,splitPayload,activeWeekKey);
-      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
-      var b64=resp.excelBase64;
-      var bin=atob(b64);
-      var bytes=new Uint8Array(bin.length);
-      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-      var url=URL.createObjectURL(blob);
-      var a=document.createElement("a");
-      a.href=url;
-      a.download=resp.filename||("consolidated-order-"+currentType+".xlsx");
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function(){URL.revokeObjectURL(url);},1000);
-      toast("Excel downloaded");
-    }catch(e){toast(e.message||"Failed to download Excel",true);}
+      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
+      toast("Document downloaded");
+    }catch(e){toast(e.message||"Failed to download document",true);}
     finally{
       setDownloadingSplit(function(prev){var n=Object.assign({},prev);delete n[sid];return n;});
     }
@@ -4720,7 +4771,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         if(documentMode) splitPayload.documentMode=documentMode;
       }
       var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,splitPayload,activeWeekKey);
-      await printBase64File(resp&&resp.excelBase64,resp&&resp.filename,resp&&resp.contentType,printWindow);
+      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
       toast("Print dialog opened");
     }catch(e){
       if(printWindow&&!printWindow.closed) printWindow.close();
@@ -4735,19 +4786,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var livePayload=buildSplitPayload(baseRows);
       livePayload.documentMode="monitor";
       var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,livePayload,activeWeekKey);
-      if(!resp||!resp.excelBase64) throw new Error("No Excel data returned");
-      var bin=atob(resp.excelBase64);
-      var bytes=new Uint8Array(bin.length);
-      for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-      var blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-      var url=URL.createObjectURL(blob);
-      var a=document.createElement("a");
-      a.href=url;
-      a.download=resp.filename||("consolidated-order-"+currentType+".xlsx");
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function(){URL.revokeObjectURL(url);},1000);
+      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
       toast("Consolidated document downloaded");
     }catch(e){toast(e.message||"Failed to download consolidated document",true);}
     finally{setDownloadingVendorConsolidated(false);}
@@ -4761,7 +4800,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var livePayload=buildSplitPayload(baseRows);
       livePayload.documentMode="monitor";
       var resp=await apiClient.orders.consolidatedExcelPreview(currentType,selCategory,resolvedVendorKey,livePayload,activeWeekKey);
-      await printBase64File(resp&&resp.excelBase64,resp&&resp.filename,resp&&resp.contentType,printWindow);
+      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
       toast("Print dialog opened");
     }catch(e){
       if(printWindow&&!printWindow.closed) printWindow.close();
@@ -4772,7 +4811,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var tCellBase={border:"1px solid #B9BEC9",padding:"5px 6px",fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:"#111827",lineHeight:1.2,height:24};
   var tHeadTop=Object.assign({},tCellBase,{fontWeight:700,background:"#FFFFFF",textAlign:"left",position:"sticky",top:0,zIndex:8});
   var tHeadTopCenter=Object.assign({},tHeadTop,{textAlign:"center"});
-  var tHeadSub=Object.assign({},tCellBase,{fontWeight:700,background:"#D9D9D9",textAlign:"center",textTransform:"uppercase",position:"sticky",top:26,zIndex:9});
+  var tHeadSub=Object.assign({},tCellBase,{fontWeight:700,background:"#D9D9D9",textAlign:"center",position:"sticky",top:26,zIndex:9});
   var tProductCell=Object.assign({},tCellBase,{fontWeight:600,background:"#FFFFFF",textAlign:"left"});
   var tQtyCell=Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"center"});
   var itemNameWithUnit=function(row){
@@ -4839,7 +4878,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
         <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{selectedVendor&&selectedVendor.name?selectedVendor.name:("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th><th style={Object.assign({},tHeadTopCenter,{minWidth:120})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:96})}>{slotHeaderForIndex(sl,idx)}</th>;})}</tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>UNIT</th><th style={Object.assign({},tHeadSub,{minWidth:120})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>Unit</th><th style={Object.assign({},tHeadSub,{minWidth:120})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
       </thead><tbody>
         {vendorConsolidatedDisplayRows.map(function(entry,rowIdx){
           if(entry.type==="heading"){
@@ -4874,15 +4913,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         })}
       </div>
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
-        <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadTopCenter,{minWidth:68})}>UNIT</th>}{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
-        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadSub,{minWidth:68})}>UNIT</th>}{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+        <tr><th style={Object.assign({},tHeadTop,{minWidth:170})}>{("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:68})}></th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadTopCenter,{minWidth:68})}>Unit</th>}{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:84})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:180})}></th></tr>
+        <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadSub,{minWidth:68})}>Unit</th>}{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"Qty":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"Qty")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
       </thead><tbody>{(function(){var itemRowIdx=-1;return nonVendorConsolidatedDisplayRows.map(function(entry){
         if(entry.type==="heading"){return <tr key={entry.key}><td colSpan={slots.length+3} style={{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px",border:"1px solid #B9BEC9"}}>{entry.text}</td></tr>;}
         var it=entry.item;itemRowIdx+=1;var rowIdx=itemRowIdx;
         var liveVendorState=selCategory==="vendor_orders"&&editingAll?getEditableVendorRowState(it):null;
         var totalQty=liveVendorState?liveVendorState.totalQty:it.total;
-        var unitLabel=liveVendorState?liveVendorState.unitLabel:(getOrderItemUnitLabel({unitType:Object.values(it.unitTypeByStoreId||{})[0]||"cas"})||"CASE");
-        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{totalQty||""}</td>{selCategory==="vendor_orders"&&<td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534",fontSize:11,textAlign:"center"})}>{unitLabel}</td>}{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var fallbackMeta=sid&&it.orderUnitByStoreId&&it.orderUnitByStoreId[sid]?it.orderUnitByStoreId[sid]:{unitType:"cas",customUnit:""};var storeCol=sid!=null?editableStoreIndexById[sid]:null;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid&&selCategory==="vendor_orders"?renderVendorQtyEditor(sid,it.code,fallbackMeta,rowIdx,storeCol):editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={Number((editQtyByStore[sid]||{})[it.code])||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){if(storeCol==null) return;handleGridNavigation(e,consolidatedNavGroup,rowIdx,storeCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={storeCol} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:baseQ>0?"#0F172A":"#64748B"}}>{selCategory==="vendor_orders"?formatQtyValueWithUnit(baseQ,fallbackMeta):(baseQ||"")}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{editableStoreSlots.map(function(sl,noteIdx){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");var noteCol=editableStoreSlots.length+noteIdx;return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"5px 7px",fontSize:12.5,minHeight:28})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,noteCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={noteCol} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
+        var unitLabel=liveVendorState?liveVendorState.unitLabel:(getOrderItemUnitLabel({unitType:Object.values(it.unitTypeByStoreId||{})[0]||"cas"})||"Case");
+        return(<tr key={it.code}><td style={tProductCell}>{it.name}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{totalQty||""}</td>{selCategory==="vendor_orders"&&<td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534",fontSize:11,textAlign:"center"})}>{pluralizeUnit(unitLabel,totalQty)}</td>}{slots.map(function(sl){var sid=sl.store&&sl.store.id;var baseQ=sid?((it.qtyByStoreId&&it.qtyByStoreId[sid])||0):0;var fallbackMeta=sid&&it.orderUnitByStoreId&&it.orderUnitByStoreId[sid]?it.orderUnitByStoreId[sid]:{unitType:"cas",customUnit:""};var storeCol=sid!=null?editableStoreIndexById[sid]:null;return(<td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid&&selCategory==="vendor_orders"?renderVendorQtyEditor(sid,it.code,fallbackMeta,rowIdx,storeCol):editingAll&&sid?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={Number((editQtyByStore[sid]||{})[it.code])||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value)||0);setEditQtyByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){if(storeCol==null) return;handleGridNavigation(e,consolidatedNavGroup,rowIdx,storeCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={storeCol} disabled={isCompletedLocked||savingAll}/>:<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:12.5,color:baseQ>0?"#0F172A":"#64748B"}}>{selCategory==="vendor_orders"?formatQtyValueWithUnit(baseQ,fallbackMeta):(baseQ||"")}</span>}</td>);})}<td style={Object.assign({},tCellBase,{background:"#FFFFFF",textAlign:"left",color:"#475569"})}>{editingAll?<div style={{display:"grid",gap:6}}>{editableStoreSlots.map(function(sl,noteIdx){var sid=sl.store.id;var nVal=String((editNotesByStore[sid]||{})[it.code]||"");var noteCol=editableStoreSlots.length+noteIdx;return <div key={sid+"_"+it.code} style={{display:"block"}}><input style={Object.assign({},S.inp,{padding:"5px 7px",fontSize:12.5,minHeight:28})} value={nVal} onChange={function(e){var v=e.target.value;setEditNotesByStore(function(prev){var n=Object.assign({},prev);var m=Object.assign({},n[sid]||{});m[it.code]=v;n[sid]=m;return n;});}} onKeyDown={function(e){handleGridNavigation(e,consolidatedNavGroup,rowIdx,noteCol,consolidatedNavMaxRow,consolidatedNavMaxCol);}} data-nav-group={consolidatedNavGroup} data-nav-row={rowIdx} data-nav-col={noteCol} disabled={isCompletedLocked||savingAll} placeholder="note"/></div>;})}</div>:(it.note||"")}</td></tr>);
       });})()}</tbody></table></div>
     </div>))}
 
@@ -4930,7 +4969,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
                 <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openVendorStoreDialog(selectedVendorPreviewRow,false);}}>Open Full View</button>
               </div>
             </div>
-            <div style={Object.assign({},S.tw,{maxHeight:"46vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>UNIT</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
+            <div style={Object.assign({},S.tw,{maxHeight:"46vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
               {vendorIndividualPreviewDisplayRows.length?vendorIndividualPreviewDisplayRows.map(function(entry){
                 var row=entry.row;
                 return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.name||""}</td><td style={S.td}>{row.unit||""}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><span style={{fontFamily:"monospace"}}>{row.qtyDisplay||""}</span></td><td style={S.td}>{row.note||"-"}</td></tr>;
@@ -5019,16 +5058,16 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
               {useVendorMonitorPreview?
                 <Fragment>
                   <tr><th style={Object.assign({},tHeadTop,{minWidth:220})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th><th style={Object.assign({},tHeadTopCenter,{minWidth:110})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:96})}>{slotHeaderForIndex(sl,idx)}</th>;})}</tr>
-                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>UNIT</th><th style={Object.assign({},tHeadSub,{minWidth:110})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
+                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>Unit</th><th style={Object.assign({},tHeadSub,{minWidth:110})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
                 </Fragment>
                 :useVendorDocumentPreview?
                 <Fragment>
                   <tr><th style={Object.assign({},tHeadTop,{minWidth:220})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th><th style={Object.assign({},tHeadTopCenter,{minWidth:110})}></th></tr>
-                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>UNIT</th><th style={Object.assign({},tHeadSub,{minWidth:110})}>{totalHeader}</th></tr>
+                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>Unit</th><th style={Object.assign({},tHeadSub,{minWidth:110})}>{totalHeader}</th></tr>
                 </Fragment>
                 :<Fragment>
                   <tr><th style={Object.assign({},tHeadTop,{minWidth:200})}>{s.name}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:100})}>{slotHeaderForIndex(sl,idx)}</th>;})}<th style={Object.assign({},tHeadTop,{minWidth:280})}></th></tr>
-                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:100})}>{selCategory==="vendor_orders"?"QTY":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"QTY")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
+                  <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:100})}>{selCategory==="vendor_orders"?"Qty":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"Qty")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
                 </Fragment>}
             </thead><tbody>
               {displayRows.map(function(entry){
@@ -5071,7 +5110,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           </tbody></table></div>;
         })()}
       </Fragment>):(
-      <div style={Object.assign({},S.tw,{maxHeight:"55vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>UNIT</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
+      <div style={Object.assign({},S.tw,{maxHeight:"55vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
         {vendorStoreDialogDisplayRows.map(function(entry){
           if(entry.type==="heading"){
             return <tr key={entry.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{entry.text}</td></tr>;
@@ -5171,14 +5210,14 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   var allSent=supplierGroups.every(function(g){return sent[g.supplier.id+"_"+currentType+"_"+selCategory];});
   var downloadExcelForHistory=async function(r){
     if(!r||!r._id){toast("Missing supplier order record id",true);return;}
-    if(!r.hasExcel){toast("Excel file not available for this record",true);return;}
+    if(!r.hasExcel){toast("Document not available for this record",true);return;}
     var key=String(r._id);
     var fallbackName="consolidated-order-"+String(r.type||"X")+"-"+String(r.week||"").replace(/[^A-Za-z0-9_-]/g,"_")+".xlsx";
     try{
       setDownloading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
       await apiClient.supplierOrders.downloadExcel(r._id, r.excelFilename || fallbackName);
-      toast("Downloaded Excel for "+(r.supplierName||"supplier"));
-    }catch(e){toast(e.message||"Failed to download Excel",true);}
+      toast("Downloaded document for "+(r.supplierName||"supplier"));
+    }catch(e){toast(e.message||"Failed to download document",true);}
     finally{
       setDownloading(function(prev){var n=Object.assign({},prev);delete n[key];return n;});
     }
@@ -5187,10 +5226,14 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
     var printWindow;
     try{
       if(!r||!r._id){toast("Missing supplier order record id",true);return;}
-      if(!r.hasExcel){toast("Excel file not available for this record",true);return;}
+      if(!r.hasExcel){toast("Document not available for this record",true);return;}
       printWindow=openPendingPrintWindow("Preparing document...");
       var resp=await apiClient.supplierOrders.previewExcel(r._id);
-      await printSheetSections((r.excelFilename||r.supplierName||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
+      if(resp&&resp.fileBase64){
+        await printBase64File(resp.fileBase64,resp.filename,resp.contentType,printWindow);
+      }else{
+        await printSheetSections((r.excelFilename||r.supplierName||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
+      }
       toast("Print dialog opened");
     }catch(e){
       if(printWindow&&!printWindow.closed) printWindow.close();
@@ -5199,7 +5242,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   };
   var openSheetPreviewForHistory=async function(r){
     if(!r||!r._id){toast("Missing supplier order record id",true);return;}
-    if(!r.hasExcel){toast("Excel file not available for this record",true);return;}
+    if(!r.hasExcel){toast("Document not available for this record",true);return;}
     var key=String(r._id);
     try{
       setPreviewLoading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
@@ -5208,6 +5251,8 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
         record:r,
         sheetName:resp&&resp.sheetName?resp.sheetName:"Sheet1",
         rows:normalizePreviewRows(resp&&resp.rows),
+        fileBase64:resp&&resp.fileBase64?resp.fileBase64:null,
+        contentType:resp&&resp.contentType?resp.contentType:null,
       });
     }catch(e){toast(e.message||"Failed to load sheet preview",true);}
     finally{setPreviewLoading(function(prev){var n=Object.assign({},prev);delete n[key];return n;});}
@@ -5309,7 +5354,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
               var key=String((r&&r._id)||r.sentAt||"");
               var isDownloading=!!downloading[key];
               var isPreviewLoading=!!previewLoading[key];
-              return(<tr key={key}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td><td style={S.td}>{r.hasExcel?<span style={Object.assign({},S.bg,S.bgG)}>Available</span>:<span style={Object.assign({},S.bg,S.bgY)}>Not stored</span>}</td><td style={S.td}>{r.hasExcel?<div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){openSheetPreviewForHistory(r);}} disabled={isPreviewLoading}>{isPreviewLoading?"Loading...":"View Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadExcelForHistory(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Excel"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printExcelForHistory(r);}}>Print</button></div>:null}</td></tr>);
+              return(<tr key={key}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td><td style={S.td}>{r.hasExcel?<span style={Object.assign({},S.bg,S.bgG)}>Available</span>:<span style={Object.assign({},S.bg,S.bgY)}>Not stored</span>}</td><td style={S.td}>{r.hasExcel?<div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){openSheetPreviewForHistory(r);}} disabled={isPreviewLoading}>{isPreviewLoading?"Loading...":"View File"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadExcelForHistory(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download File"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printExcelForHistory(r);}}>Print</button></div>:null}</td></tr>);
             })}
           </tbody></table></div>}
         </div>);
@@ -5379,7 +5424,7 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
     {previewSheet&&(<div style={S.ov} onClick={function(){setPreviewSheet(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>Stored Sheet Preview - {previewSheet.record&&previewSheet.record.supplierName?previewSheet.record.supplierName:"Supplier"}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:10}}>{previewSheet.record&&previewSheet.record.week?"Week: "+previewSheet.record.week+" | ":""}{previewSheet.sheetName?"Sheet: "+previewSheet.sheetName:""}</div>
-      <ExcelSheetPreviewTable rows={previewSheet.rows} maxHeight={420}/>
+      {previewSheet.rows&&previewSheet.rows.length>0?<ExcelSheetPreviewTable rows={previewSheet.rows} maxHeight={420}/>:<div style={Object.assign({},S.nI,{marginBottom:0})}>This stored file is kept in its original format and does not have a sheet preview. Use Download or Print to open it.</div>}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setPreviewSheet(null);}}>Close</button></div>
     </div></div>)}
   </div>);
@@ -5388,10 +5433,12 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
 /* ═══ ITEM MASTER (no category rows) ═══ */
 function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategoryTemplates,user}){
   var _a=useState(false),shA=_a[0],sA=_a[1];var _u=useState(false),shU=_u[0],sU=_u[1];
+  var _ei=useState(null),editItemCode=_ei[0],setEditItemCode=_ei[1];
   var isWarehouseUser=isWarehouseRole(user);
   var itemMasterCategories=isWarehouseUser?[{id:"vendor_orders",label:"Vendor Orders"}]:ORDER_CATEGORIES;
   var defaultItemMasterCategory=isWarehouseUser?"vendor_orders":"vegetables";
   var _n=useState({code:"",name:"",category:defaultItemMasterCategory,unit:""}),nI=_n[0],sNI=_n[1];
+  var _ef=useState({name:"",unit:"",subheading:"",sortOrder:""}),editForm=_ef[0],setEditForm=_ef[1];
   var _s=useState(""),sr=_s[0],sSr=_s[1];var _c=useState(null),csv=_c[0],sC=_c[1];var _m=useState("merge"),md=_m[0],sMd=_m[1];
   var _sc=useState(defaultItemMasterCategory),selCategory=_sc[0],setSelCategory=_sc[1];
   var _uc=useState(defaultItemMasterCategory),uploadCategory=_uc[0],setUploadCategory=_uc[1];
@@ -5435,20 +5482,60 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
     return sortItems(fl);
   },[fl,activeTemplate,selCategory]);
   var displayRows=useMemo(function(){return buildTemplateDisplayRows(activeTemplate,sorted);},[activeTemplate,sorted]);
+  var editingItem=useMemo(function(){
+    if(!editItemCode) return null;
+    return (items||[]).find(function(it){return String(it&&it.code||"").trim()===String(editItemCode||"").trim();})||null;
+  },[items,editItemCode]);
   var uploadPreviewRows=useMemo(function(){
     if(!uploadTemplate||!csv) return [];
     return buildTemplateDisplayRows(uploadTemplate,csv);
   },[uploadTemplate,csv]);
+  var reloadItemsAndTemplates=async function(){
+      const results=await Promise.all([
+        apiClient.items.getAll(),
+        apiClient.settings.getAll(),
+      ]);
+      const all=results[0]||[];
+      const settingsResp=results[1]||{};
+      var nextTemplates=settingsResp.categoryTemplates&&typeof settingsResp.categoryTemplates==="object"?settingsResp.categoryTemplates:{};
+      var repairedState=repairLoadedTemplatesAndItems(sortItems(all),nextTemplates);
+      setItems(repairedState.items);
+      if(setCategoryTemplates){
+        setCategoryTemplates(repairedState.categoryTemplates);
+      }
+  };
   var add=async function(){
       var generatedCode=buildItemMasterCode(nI.name,nI.unit);
       if(!generatedCode||!nI.name){toast("Name required",true);return;}
       if(items.find(function(i){return String(i.code||"").trim().toLowerCase()===generatedCode.toLowerCase();})){toast("Code exists",true);return;}
       try{
         await apiClient.items.create(Object.assign({},nI,{code:generatedCode,category:normalizeCategory(nI.category||selCategory),vendorKey:normalizeVendorKey(nI.category||selCategory,selectedVendorKey)}));
-        // reload
-        const all = await apiClient.items.getAll();
-        setItems(sortItems(all));
+        await reloadItemsAndTemplates();
         sNI({code:"",name:"",category:selCategory,unit:""});sA(false);toast("Item added");
+      }catch(e){toast(e.message,true);}    };
+  var startEdit=function(item){
+      if(!item) return;
+      setEditItemCode(item.code);
+      setEditForm({
+        name:String(item.name||""),
+        unit:String(item.unit||""),
+        subheading:String(item.subheading||""),
+        sortOrder:item.sortOrder==null?"":String(item.sortOrder),
+      });
+  };
+  var saveEdit=async function(){
+      if(!editingItem) return;
+      if(!String(editForm.name||"").trim()){toast("Name required",true);return;}
+      try{
+        await apiClient.items.update(editingItem.code,{
+          name:String(editForm.name||""),
+          unit:String(editForm.unit||""),
+          subheading:String(editForm.subheading||""),
+          sortOrder:String(editForm.sortOrder||"").trim()===""?null:Number(editForm.sortOrder),
+        });
+        await reloadItemsAndTemplates();
+        setEditItemCode(null);
+        toast("Item updated");
       }catch(e){toast(e.message,true);}    };
   var rm=async function(c){
       try{
@@ -5473,7 +5560,17 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
         try{
           var data=new Uint8Array(ev.target.result);
           var wb=XLSX.read(data,{type:'array'});
-          var originalFile=(ext==="xlsx")?{filename:name,contentType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",base64:XLSX.write(wb,{bookType:"xlsx",type:"base64"})}:null;
+          // Store the RAW file bytes as base64 so uploaded formatting (fonts, colors,
+          // row heights, column widths, borders) is preserved exactly.  The previous
+          // approach used XLSX.write() which round-trips through SheetJS and strips
+          // all styling information.
+          var rawBase64=null;
+          if(ext==="xlsx"){
+            var bytes=new Uint8Array(ev.target.result);
+            var binary="";for(var i=0;i<bytes.length;i++){binary+=String.fromCharCode(bytes[i]);}
+            rawBase64=btoa(binary);
+          }
+          var originalFile=(ext==="xlsx")?{filename:name,contentType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",base64:rawBase64}:null;
           var rawGridTemplate=buildRawGridTemplateFromWorkbook(wb,name,originalFile);
           var sheetNames=Array.isArray(wb.SheetNames)?wb.SheetNames:[];
           if(!sheetNames.length){toast("No sheets found in Excel file",true);return;}
@@ -5635,7 +5732,7 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
             return <tr key={row.key}><td colSpan={5} style={Object.assign({},S.td,{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{row.text}</td></tr>;
           }
           var it=row.item;
-          return(<tr key={row.key}><td style={S.tm}>{buildItemMasterCode(it.name,it.unit)||it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit||"-"}</td><td style={S.td}><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(it.code);}}>Del</button></td></tr>);
+          return(<tr key={row.key}><td style={S.tm}>{buildItemMasterCode(it.name,it.unit)||it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category||"-"}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit||"-"}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"2px 6px",fontSize:10})} onClick={function(){startEdit(it);}}>Edit</button><button style={Object.assign({},S.b,S.bD,{padding:"2px 6px",fontSize:10})} onClick={function(){rm(it.code);}}>Del</button></div></td></tr>);
         })}{sorted.length===0&&<tr><td colSpan={5} style={Object.assign({},S.td,{textAlign:"center",padding:24,color:"#6B7186"})}>No items</td></tr>}</tbody></table></div>
     </div>
     </div>
@@ -5647,12 +5744,20 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
       <div style={S.fg}><div style={S.lb}>Code</div><input style={Object.assign({},S.inp,{background:"#F8FAFC",color:"#475569"})} value={buildItemMasterCode(nI.name,nI.unit)} readOnly placeholder="Item Name:Unit"/></div>
       {nI.category==="vendor_orders"&&<div style={S.fg}><div style={S.lb}>Vendor</div><select style={S.inp} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{vendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select></div>}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){sA(false);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={add}>Add</button></div></div></div>)}
+    {editItemCode&&editingItem&&(<div style={S.ov} onClick={function(){setEditItemCode(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Edit Item</div>
+      <div style={S.fg}><div style={S.lb}>Name *</div><input style={S.inp} value={editForm.name} onChange={function(e){setEditForm(Object.assign({},editForm,{name:e.target.value}));}}/></div>
+      <div style={S.fr}><div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Unit</div><input style={S.inp} value={editForm.unit} onChange={function(e){setEditForm(Object.assign({},editForm,{unit:e.target.value}));}}/></div>
+        <div style={Object.assign({},S.fg,{flex:1})}><div style={S.lb}>Sort Order</div><input style={S.inp} type="number" value={editForm.sortOrder} onChange={function(e){setEditForm(Object.assign({},editForm,{sortOrder:e.target.value}));}} placeholder="Auto"/></div></div>
+      <div style={S.fg}><div style={S.lb}>Subheading</div><input style={S.inp} value={editForm.subheading} onChange={function(e){setEditForm(Object.assign({},editForm,{subheading:e.target.value}));}} placeholder="Optional section heading"/></div>
+      <div style={S.fg}><div style={S.lb}>Code</div><input style={Object.assign({},S.inp,{background:"#F8FAFC",color:"#475569"})} value={buildItemMasterCode(editForm.name,editForm.unit)} readOnly/></div>
+      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setEditItemCode(null);}}>Cancel</button><button style={Object.assign({},S.b,S.bP)} onClick={saveEdit}>Save</button></div></div></div>)}
     {shU&&csv&&(<div style={S.ov} onClick={function(){sU(false);sC(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>Upload {CATEGORY_LABELS[uploadCategory]} - {csv.length} items found</div>
       <div style={S.fg}><div style={S.lb}>Category</div><select style={S.inp} value={uploadCategory} onChange={function(e){setUploadCategory(e.target.value);}}>{itemMasterCategories.map(function(cat){return <option key={cat.id} value={cat.id}>{cat.label}</option>;})}</select></div>
       {uploadCategory==="vendor_orders"&&<div style={S.fg}><div style={S.lb}>Vendor</div><select style={S.inp} value={uploadVendorKey||""} onChange={function(e){setUploadVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{vendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select></div>}
       <div style={S.fg}><div style={S.lb}>Mode</div><select style={S.inp} value={md} onChange={function(e){sMd(e.target.value);}}><option value="merge">Merge</option><option value="replace">Replace</option></select></div>
-      {uploadTemplate&&<div style={S.nI}>{uploadTemplate.kind==="docx_vendor_form"?"Word template layout detected. Store documents will preserve the uploaded vendor form format.":"Template layout detected from the uploaded form. This category will use the same row/column layout for document output."}</div>}
+      {uploadTemplate&&<div style={S.nI}>{uploadTemplate.kind==="docx_vendor_form"?"Word template layout detected. Matching vendor documents will preserve the uploaded form format where possible.":"Template layout detected from the uploaded form. Matching document outputs will reuse this row and column structure."}</div>}
       <div style={{fontSize:11,color:"#64748B",marginBottom:6}}>Preview (first 8):</div>
       <div style={Object.assign({},S.tw,{maxHeight:180})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Name</th><th style={S.th}>Category</th><th style={S.th}>Unit</th></tr></thead><tbody>
         {(uploadTemplate&&uploadTemplate.kind==="docx_vendor_form"?uploadPreviewRows.slice(0,12).map(function(row){
@@ -5808,7 +5913,7 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
       try{
         await apiClient.suppliers.create({id:nS.id,name:nS.name,emails:supplierEmailsArray({email:nS.emails}),phone:nS.phone,items:nS.items||[]});
         const all=await apiClient.suppliers.getAll();
-        setSuppliers(all);
+        setSuppliers(normalizeSupplierList(all));
         sNS({id:"",name:"",emails:"",phone:"",items:[]});
         sA(false);
         toast("Supplier added");
@@ -5817,7 +5922,7 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
       try{
         await apiClient.suppliers.delete(id);
         const all=await apiClient.suppliers.getAll();
-        setSuppliers(all);
+        setSuppliers(normalizeSupplierList(all));
         toast("Removed");
       }catch(e){toast(e.message,true);}    };
   var startEdit=function(s){sEdSup(s.id);sEdF({name:s.name,emails:supplierEmailsText(s),phone:s.phone||""});};
@@ -5826,7 +5931,7 @@ function SupplierMgmt({suppliers,setSuppliers,items,toast}){
       try{
         await apiClient.suppliers.update(edSup,{name:edF.name,emails:supplierEmailsArray({email:edF.emails}),phone:edF.phone});
         const all=await apiClient.suppliers.getAll();
-        setSuppliers(all);
+        setSuppliers(normalizeSupplierList(all));
         sEdSup(null);
         toast("Supplier updated");
       }catch(e){toast(e.message,true);}    };
