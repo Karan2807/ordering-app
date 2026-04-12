@@ -1466,6 +1466,72 @@ function resolveCanonicalOrderCode(code, items, category, vendorKey, aliasCodeMa
   }
   return normalizedCode;
 }
+function extractLooseLegacyTemplateAliasCandidates(code){
+  var normalizedCode=String(code||"").trim();
+  var out=[];
+  if(!normalizedCode) return out;
+  if(normalizedCode.indexOf("XLS::")===0) out.push(String(normalizedCode).slice(5));
+  if(normalizedCode.indexOf("::")<0) return out;
+  var parts=String(normalizedCode).split("::").map(function(part){return String(part||"").trim();}).filter(Boolean);
+  if(parts.length<2||String(parts[0]||"").indexOf("__")<0) return out;
+  var legacyName=String(parts[1]||"").replace(/\s+/g," ").trim();
+  var legacyUnit=normalizeLegacyAliasUnit(parts.slice(2).join(" "));
+  if(legacyName){
+    out.push(legacyName);
+    out.push("XLS::"+legacyName);
+    if(legacyUnit){
+      out.push(buildItemMasterCode(legacyName,legacyUnit));
+      out.push(formatItemDetailName(legacyName,legacyUnit));
+    }
+  }
+  return out.filter(function(value,idx,list){return !!value&&list.indexOf(value)===idx;});
+}
+function buildTemplateRowAliasCodeMap(rows){
+  var aliasBuckets={};
+  (Array.isArray(rows)?rows:[]).forEach(function(row){
+    var code=String(row&&row.code||"").trim();
+    var name=String(row&&row.name||"").trim();
+    var unit=String(row&&row.unit||"").trim();
+    if(!code) return;
+    [
+      code,
+      name,
+      buildItemMasterCode(name,unit),
+      formatItemDetailName(name,unit),
+      name?"XLS::"+name:"",
+    ].forEach(function(alias){
+      var token=normalizeCatalogAliasToken(alias);
+      if(!token) return;
+      if(!aliasBuckets[token]) aliasBuckets[token]={};
+      aliasBuckets[token][code]=true;
+    });
+  });
+  return Object.keys(aliasBuckets).reduce(function(out,token){
+    var codes=Object.keys(aliasBuckets[token]);
+    out[token]=codes.length===1?codes[0]:null;
+    return out;
+  },{});
+}
+function resolveTemplateDisplayCode(entryCode, entryName, entryUnit, rowByCode, aliasCodeMap){
+  var normalizedCode=String(entryCode||"").trim();
+  if(normalizedCode&&rowByCode[normalizedCode]) return normalizedCode;
+  var normalizedName=String(entryName||"").trim();
+  var normalizedUnit=String(entryUnit||"").trim();
+  var candidates=[
+    normalizedCode,
+    normalizedName,
+    normalizedName?"XLS::"+normalizedName:"",
+    buildItemMasterCode(normalizedName,normalizedUnit),
+    formatItemDetailName(normalizedName,normalizedUnit),
+  ].concat(extractLooseLegacyTemplateAliasCandidates(normalizedCode)).filter(function(value,idx,list){
+    return !!value&&list.indexOf(value)===idx;
+  });
+  for(var i=0;i<candidates.length;i+=1){
+    var token=normalizeCatalogAliasToken(candidates[i]);
+    if(token&&aliasCodeMap&&aliasCodeMap[token]&&rowByCode[aliasCodeMap[token]]) return aliasCodeMap[token];
+  }
+  return "";
+}
 function mergeCanonicalOrderItemValues(currentValue, nextValue){
   var current=normalizeOrderItemEntry(currentValue);
   var next=normalizeOrderItemEntry(nextValue);
@@ -1780,6 +1846,7 @@ function buildTemplateDisplayRows(template, itemList){
     ?template.docxMap.outline
     :(template&&Array.isArray(template.outline)?template.outline:[]);
   var itemRows=template&&template.kind==="docx_vendor_form"&&template.docxMap&&Array.isArray(template.docxMap.itemRows)?template.docxMap.itemRows:[];
+  var aliasCodeMap=buildTemplateRowAliasCodeMap(itemsOnly);
   if(!outline.length){
     if(itemRows.length){
       var itemByCodeNoOutline={};
@@ -1791,15 +1858,16 @@ function buildTemplateDisplayRows(template, itemList){
       });
       itemRows.forEach(function(row, idx){
         var code=String(row&&row.code||"").trim();
-        var item=itemByCodeNoOutline[code];
-        if(!item||usedNoOutline[code]) return;
+        var resolvedCode=resolveTemplateDisplayCode(code,row&&row.name,row&&row.unit,itemByCodeNoOutline,aliasCodeMap);
+        var item=itemByCodeNoOutline[resolvedCode];
+        if(!item||usedNoOutline[resolvedCode]) return;
         var nextSub=String(item.subheading||"").trim();
         if(nextSub&&nextSub!==currentSubNoOutline){
           rowsNoOutline.push({type:"heading",key:"subheading-io-"+idx+"-"+nextSub,text:nextSub});
           currentSubNoOutline=nextSub;
         }
         rowsNoOutline.push({type:"item",key:item.code||("item-"+idx),item:item});
-        usedNoOutline[code]=true;
+        usedNoOutline[resolvedCode]=true;
       });
       itemsOnly.forEach(function(it){
         if(usedNoOutline[it.code]) return;
@@ -1840,14 +1908,15 @@ function buildTemplateDisplayRows(template, itemList){
     }
     if(entry.type!=="item") return;
     var code=String(entry.code||"").trim();
-    var item=itemByCode[code];
-    if(!item||used[code]) return;
+    var resolvedCode=resolveTemplateDisplayCode(code,entry.name,entry.unit,itemByCode,aliasCodeMap);
+    var item=itemByCode[resolvedCode];
+    if(!item||used[resolvedCode]) return;
     if(pendingHeading){
       rows.push(pendingHeading);
       pendingHeading=null;
     }
     rows.push({type:"item",key:item.code,item:item});
-    used[code]=true;
+    used[resolvedCode]=true;
   });
   itemsOnly.forEach(function(it){
     if(used[it.code]) return;
@@ -1858,7 +1927,7 @@ function buildTemplateDisplayRows(template, itemList){
 function orderRowsByTemplate(template, rows){
   var list=Array.isArray(rows)?rows.slice():[];
   if(!list.length) return list;
-  var orderedCodes=buildTemplateDisplayRows(template,list.map(function(row){return {code:row.code,name:row.name};}))
+  var orderedCodes=buildTemplateDisplayRows(template,list)
     .filter(function(row){return row&&row.type==="item"&&row.item&&row.item.code;})
     .map(function(row){return row.item.code;});
   if(!orderedCodes.length) return list;
@@ -1879,7 +1948,7 @@ function buildTemplateDataRows(template, rows){
   rowList.forEach(function(row){
     if(row&&row.code&&rowByCode[row.code]==null) rowByCode[row.code]=row;
   });
-  return buildTemplateDisplayRows(template,rowList.map(function(row){return {code:row.code,name:row.name};}))
+  return buildTemplateDisplayRows(template,rowList)
     .map(function(entry){
       if(!entry) return null;
       if(entry.type==="heading") return entry;
@@ -4067,7 +4136,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         note:vendorStoreDialogEditing?String(vendorStoreDialogNotes[r.code]||""):String(((vendorStoreDialogRow.order&&vendorStoreDialogRow.order.notes)||{})[r.code]||""),
       };
     });
-    return buildTemplateDataRows(activeTemplate,sourceRows.map(function(r){return {code:r.code,name:r.name};})).map(function(entry){
+    return buildTemplateDataRows(activeTemplate,sourceRows).map(function(entry){
       if(entry.type==="heading") return entry;
       var row=sourceRows.find(function(src){return src.code===entry.row.code;});
       return row?{type:"item",key:entry.key,row:row}:null;
