@@ -550,6 +550,78 @@ function sanitizeOrderCodeMaps(itemMap, noteMap, itemDocs, category, vendorKey) 
   return { items: sanitizedItems, notes: sanitizedNotes };
 }
 
+function mergeStoreQtyMaps(currentMap = {}, nextMap = {}) {
+  const merged = { ...currentMap };
+  Object.entries(nextMap || {}).forEach(([storeId, qty]) => {
+    const safeQty = Number(qty) || 0;
+    if (!safeQty) return;
+    merged[storeId] = (Number(merged[storeId]) || 0) + safeQty;
+  });
+  return merged;
+}
+
+function mergeStoreUnitMaps(currentMap = {}, nextMap = {}) {
+  const merged = { ...currentMap };
+  Object.entries(nextMap || {}).forEach(([storeId, meta]) => {
+    if (!meta || typeof meta !== 'object') return;
+    if (!merged[storeId]) {
+      merged[storeId] = { unitType: meta.unitType || 'cas', customUnit: meta.customUnit || '' };
+      return;
+    }
+    const existing = merged[storeId] || {};
+    merged[storeId] = {
+      unitType: existing.unitType || meta.unitType || 'cas',
+      customUnit: existing.customUnit || meta.customUnit || '',
+    };
+  });
+  return merged;
+}
+
+function sanitizeAggregatedOrderMaps({ qtyByCodeStoreId = {}, orderUnitByCodeStoreId = {}, noteByCode = {}, itemDocs = [], category, vendorKey }) {
+  const aliasCodeMap = buildCatalogAliasCodeMap(itemDocs, category, vendorKey);
+  const nextQtyByCodeStoreId = {};
+  const nextOrderUnitByCodeStoreId = {};
+  const nextNoteByCode = {};
+  const allCodes = Array.from(new Set([
+    ...Object.keys(qtyByCodeStoreId || {}),
+    ...Object.keys(orderUnitByCodeStoreId || {}),
+    ...Object.keys(noteByCode || {}),
+  ].filter(Boolean)));
+
+  allCodes.forEach((code) => {
+    const resolvedCode = resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCodeMap);
+    if (!resolvedCode) return;
+    nextQtyByCodeStoreId[resolvedCode] = mergeStoreQtyMaps(nextQtyByCodeStoreId[resolvedCode], qtyByCodeStoreId[code] || {});
+    nextOrderUnitByCodeStoreId[resolvedCode] = mergeStoreUnitMaps(nextOrderUnitByCodeStoreId[resolvedCode], orderUnitByCodeStoreId[code] || {});
+    nextNoteByCode[resolvedCode] = mergeCanonicalOrderNotes(nextNoteByCode[resolvedCode], noteByCode[code]);
+  });
+
+  return {
+    qtyByCodeStoreId: nextQtyByCodeStoreId,
+    orderUnitByCodeStoreId: nextOrderUnitByCodeStoreId,
+    noteByCode: nextNoteByCode,
+    aliasCodeMap,
+  };
+}
+
+function resolveDocxTemplateSourceCode(row, itemDocs, category, vendorKey, aliasCodeMap, availableCodes = {}) {
+  const templateCode = String(row && row.code || '').trim();
+  const rowName = String(row && row.name || '').trim();
+  const candidates = [
+    templateCode,
+    rowName,
+    rowName ? `XLS::${rowName}` : '',
+    buildItemMasterCode(rowName, ''),
+    ...extractLegacyOrderAliasCandidates(templateCode, category, vendorKey),
+  ].filter((value, index, list) => value && list.indexOf(value) === index);
+
+  for (const candidate of candidates) {
+    const resolved = resolveCanonicalOrderCode(candidate, itemDocs, category, vendorKey, aliasCodeMap);
+    if (resolved && Object.prototype.hasOwnProperty.call(availableCodes || {}, resolved)) return resolved;
+  }
+  return '';
+}
+
 function buildItemDisplayMaps(itemDocs, providedItemNames = {}, providedItemDetails = {}) {
   const itemNameByCode = {};
   const itemUnitByCode = {};
@@ -2777,9 +2849,9 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     resolvedCategory === 'vendor_orders' && splitData && splitData.documentMode !== 'monitor' && splitData.previewLayout
       ? buildVendorRowsFromPreviewLayout(splitData.previewLayout)
       : null;
-  const qtyByCodeStoreId = {};
-  const orderUnitByCodeStoreId = {};
-  const noteByCode = {};
+  let qtyByCodeStoreId = {};
+  let orderUnitByCodeStoreId = {};
+  let noteByCode = {};
   if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
     splitData.rows.forEach((r) => {
       const code = r.itemCode || `XLS::${String(r.itemName || '').trim()}`;
@@ -2808,6 +2880,14 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       });
     });
   }
+  ({ qtyByCodeStoreId, orderUnitByCodeStoreId, noteByCode } = sanitizeAggregatedOrderMaps({
+    qtyByCodeStoreId,
+    orderUnitByCodeStoreId,
+    noteByCode,
+    itemDocs,
+    category: resolvedCategory,
+    vendorKey: resolvedVendorKey,
+  }));
   const supplierDisplayName = await resolveConsolidatedSupplierName({
     category: resolvedCategory,
     vendorKey: resolvedVendorKey,
@@ -2828,36 +2908,19 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     template.originalFile.base64
   ) {
     const templateItemRows = Array.isArray(template.docxMap.itemRows) ? template.docxMap.itemRows : [];
-    const masterCodeByName = {};
-    (itemDocs || []).forEach((item) => {
-      if (item && item.name) {
-        masterCodeByName[String(item.name || '').trim().toLowerCase()] = String(item.code || '').trim();
-      }
-    });
+    const aliasCodeMap = buildCatalogAliasCodeMap(itemDocs, resolvedCategory, resolvedVendorKey);
     const quantitiesByCode = {};
     templateItemRows.forEach((row) => {
       const templateCode = String(row && row.code || '').trim();
       if (!templateCode) return;
+      const resolvedSourceCode = resolveDocxTemplateSourceCode(row, itemDocs, resolvedCategory, resolvedVendorKey, aliasCodeMap, qtyByCodeStoreId);
       let totalDisplay = requestedDocumentMode === 'monitor'
         ? formatVendorDocxMonitorValue({
             slots,
-            qtyByStoreId: qtyByCodeStoreId[templateCode] || {},
-            orderUnitByStoreId: orderUnitByCodeStoreId[templateCode] || {},
+            qtyByStoreId: qtyByCodeStoreId[resolvedSourceCode || templateCode] || {},
+            orderUnitByStoreId: orderUnitByCodeStoreId[resolvedSourceCode || templateCode] || {},
           })
-        : formatQtySummaryByUnit(qtyByCodeStoreId[templateCode] || {}, orderUnitByCodeStoreId[templateCode] || {});
-      if (!totalDisplay) {
-        const rowName = String(row && row.name || '').trim().toLowerCase();
-        const masterCode = masterCodeByName[rowName];
-        if (masterCode) {
-          totalDisplay = requestedDocumentMode === 'monitor'
-            ? formatVendorDocxMonitorValue({
-                slots,
-                qtyByStoreId: qtyByCodeStoreId[masterCode] || {},
-                orderUnitByStoreId: orderUnitByCodeStoreId[masterCode] || {},
-              })
-            : formatQtySummaryByUnit(qtyByCodeStoreId[masterCode] || {}, orderUnitByCodeStoreId[masterCode] || {});
-        }
-      }
+        : formatQtySummaryByUnit(qtyByCodeStoreId[resolvedSourceCode || templateCode] || {}, orderUnitByCodeStoreId[resolvedSourceCode || templateCode] || {});
       if (totalDisplay) quantitiesByCode[templateCode] = totalDisplay;
     });
     Object.keys(qtyByCodeStoreId).forEach((code) => {
@@ -3078,8 +3141,15 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   const documentSlots = [singleStoreSlot];
   const now = resolveDocumentDate(dateOverride);
   const dateText = workbookDateLabel(now).replace(/^Date:\s*/, '');
-  const normalizedItems = itemsObj && typeof itemsObj === 'object' ? itemsObj : {};
-  const normalizedNotes = notesObj && typeof notesObj === 'object' ? notesObj : {};
+  let normalizedItems = itemsObj && typeof itemsObj === 'object' ? itemsObj : {};
+  let normalizedNotes = notesObj && typeof notesObj === 'object' ? notesObj : {};
+  ({ items: normalizedItems, notes: normalizedNotes } = sanitizeOrderCodeMaps(
+    normalizedItems,
+    normalizedNotes,
+    itemDocs,
+    resolvedCategory,
+    resolvedVendorKey
+  ));
   const codes = Array.from(
     new Set([...Object.keys(normalizedItems), ...Object.keys(normalizedNotes)].filter((code) => {
       const qtyInfo = getQtyWithUnit(normalizedItems[code]);
@@ -3123,15 +3193,7 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   let usePlainWorkbook = false;
   let excelBuffer = null;
   if (hasDocxStoreTemplate) {
-    // Build name → item-master-code lookup so we can bridge between the
-    // original docx template codes (e.g. "ABC123") and the codes actually
-    // stored in orders (e.g. "Tomatoes" from buildItemMasterCode).
-    const masterCodeByName = {};
-    (itemDocs || []).forEach((item) => {
-      if (item && item.name) {
-        masterCodeByName[String(item.name || '').trim().toLowerCase()] = String(item.code || '').trim();
-      }
-    });
+    const aliasCodeMap = buildCatalogAliasCodeMap(itemDocs, resolvedCategory, resolvedVendorKey);
 
     const templateItemRows =
       template.docxMap && Array.isArray(template.docxMap.itemRows)
@@ -3142,17 +3204,10 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
     templateItemRows.forEach((row) => {
       const templateCode = String(row && row.code || '').trim();
       if (!templateCode) return;
+      const resolvedSourceCode = resolveDocxTemplateSourceCode(row, itemDocs, resolvedCategory, resolvedVendorKey, aliasCodeMap, normalizedItems);
 
       // 1. Direct lookup: template code already matches item master code (reconciled).
-      let qtyInfo = getQtyWithUnit(normalizedItems[templateCode]);
-
-      // 2. Fallback: look up by item name – handles docx templates whose codes
-      //    (e.g. "ABC123") differ from the item master codes ("Tomatoes").
-      if (!qtyInfo.qty) {
-        const rowName = String(row && row.name || '').trim().toLowerCase();
-        const masterCode = masterCodeByName[rowName];
-        if (masterCode) qtyInfo = getQtyWithUnit(normalizedItems[masterCode]);
-      }
+      let qtyInfo = getQtyWithUnit(normalizedItems[resolvedSourceCode || templateCode]);
 
       if (qtyInfo.qty > 0) quantitiesByCode[templateCode] = qtyInfo.formatted;
     });
