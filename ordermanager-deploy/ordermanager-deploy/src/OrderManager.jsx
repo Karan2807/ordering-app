@@ -1441,6 +1441,60 @@ function buildCatalogAliasCodeMap(items, category, vendorKey){
     return out;
   },{});
 }
+function buildCatalogAliasTokensByCode(items, category, vendorKey){
+  var resolvedCategory=normalizeCategory(category||"vegetables");
+  var resolvedVendorKey=normalizeVendorKey(resolvedCategory,vendorKey);
+  var tokensByCode={};
+  (items||[]).forEach(function(it){
+    if(normalizeCategory(it&&it.category||"vegetables")!==resolvedCategory) return;
+    if(normalizeVendorKey(resolvedCategory,it&&it.vendorKey)!==resolvedVendorKey) return;
+    var code=String(it&&it.code||"").trim();
+    var name=String(it&&it.name||"").trim();
+    var unit=String(it&&it.unit||"").trim();
+    if(!code) return;
+    var tokenSet={};
+    [
+      code,
+      name,
+      buildItemMasterCode(name,unit),
+      formatItemDetailName(name,unit),
+      name?"XLS::"+name:"",
+      displayNameForOrderKey(code,items),
+    ].forEach(function(alias){
+      var token=normalizeCatalogAliasToken(alias);
+      if(token) tokenSet[token]=true;
+    });
+    tokensByCode[code]=Object.keys(tokenSet);
+  });
+  return tokensByCode;
+}
+function resolveLooseCatalogAliasCode(candidates, items, category, vendorKey){
+  var tokensByCode=buildCatalogAliasTokensByCode(items,category,vendorKey);
+  var scores={};
+  (Array.isArray(candidates)?candidates:[]).forEach(function(candidate){
+    var candidateToken=normalizeCatalogAliasToken(candidate);
+    var compactCandidate=candidateToken.replace(/\s+/g,"");
+    if(compactCandidate.length<6) return;
+    Object.keys(tokensByCode).forEach(function(code){
+      (tokensByCode[code]||[]).forEach(function(aliasToken){
+        var compactAlias=String(aliasToken||"").replace(/\s+/g,"");
+        var shortLen=Math.min(compactCandidate.length,compactAlias.length);
+        if(shortLen<6) return;
+        if(aliasToken===candidateToken) return;
+        if(aliasToken.indexOf(candidateToken)<0&&candidateToken.indexOf(aliasToken)<0) return;
+        scores[code]=Math.max(scores[code]||0,shortLen);
+      });
+    });
+  });
+  var ranked=Object.keys(scores).sort(function(a,b){
+    if((scores[b]||0)!==(scores[a]||0)) return (scores[b]||0)-(scores[a]||0);
+    return String(a||"").localeCompare(String(b||""),undefined,{sensitivity:"base"});
+  });
+  if(!ranked.length) return "";
+  if(ranked.length===1) return ranked[0];
+  if((scores[ranked[0]]||0)>(scores[ranked[1]]||0)) return ranked[0];
+  return "";
+}
 function resolveCanonicalOrderCode(code, items, category, vendorKey, aliasCodeMap){
   var normalizedCode=String(code||"").trim();
   var resolvedCategory=normalizeCategory(category||"vegetables");
@@ -1464,6 +1518,8 @@ function resolveCanonicalOrderCode(code, items, category, vendorKey, aliasCodeMa
     var token=normalizeCatalogAliasToken(candidates[i]);
     if(token&&aliasCodeMap&&aliasCodeMap[token]) return aliasCodeMap[token];
   }
+  var looseResolvedCode=resolveLooseCatalogAliasCode(candidates,items,resolvedCategory,resolvedVendorKey);
+  if(looseResolvedCode) return looseResolvedCode;
   return normalizedCode;
 }
 function extractLooseLegacyTemplateAliasCandidates(code){

@@ -457,6 +457,62 @@ function buildCatalogAliasCodeMap(itemDocs, category, vendorKey) {
   }, {});
 }
 
+function buildCatalogAliasTokensByCode(itemDocs, category, vendorKey) {
+  const resolvedCategory = normalizeCategory(category || 'vegetables');
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const tokensByCode = {};
+  (Array.isArray(itemDocs) ? itemDocs : []).forEach((item) => {
+    if (normalizeCategory(item && item.category || 'vegetables') !== resolvedCategory) return;
+    if (normalizeVendorKey(resolvedCategory, item && item.vendorKey) !== resolvedVendorKey) return;
+    const code = String(item && item.code || '').trim();
+    const name = String(item && item.name || '').trim();
+    const unit = String(item && item.unit || '').trim();
+    if (!code) return;
+    const tokenSet = {};
+    [
+      code,
+      name,
+      buildItemMasterCode(name, unit),
+      formatItemDisplayName(name, unit),
+      name ? `XLS::${name}` : '',
+      displayOrderItemCode(code),
+    ].forEach((alias) => {
+      const token = normalizeCatalogAliasToken(alias);
+      if (token) tokenSet[token] = true;
+    });
+    tokensByCode[code] = Object.keys(tokenSet);
+  });
+  return tokensByCode;
+}
+
+function resolveLooseCatalogAliasCode(candidates, itemDocs, category, vendorKey) {
+  const tokensByCode = buildCatalogAliasTokensByCode(itemDocs, category, vendorKey);
+  const scores = {};
+  (Array.isArray(candidates) ? candidates : []).forEach((candidate) => {
+    const candidateToken = normalizeCatalogAliasToken(candidate);
+    const compactCandidate = candidateToken.replace(/\s+/g, '');
+    if (compactCandidate.length < 6) return;
+    Object.keys(tokensByCode).forEach((code) => {
+      (tokensByCode[code] || []).forEach((aliasToken) => {
+        const compactAlias = String(aliasToken || '').replace(/\s+/g, '');
+        const shortLen = Math.min(compactCandidate.length, compactAlias.length);
+        if (shortLen < 6) return;
+        if (aliasToken === candidateToken) return;
+        if (!aliasToken.includes(candidateToken) && !candidateToken.includes(aliasToken)) return;
+        scores[code] = Math.max(scores[code] || 0, shortLen);
+      });
+    });
+  });
+  const ranked = Object.keys(scores).sort((a, b) => {
+    if ((scores[b] || 0) !== (scores[a] || 0)) return (scores[b] || 0) - (scores[a] || 0);
+    return String(a || '').localeCompare(String(b || ''), undefined, { sensitivity: 'base' });
+  });
+  if (!ranked.length) return '';
+  if (ranked.length === 1) return ranked[0];
+  if ((scores[ranked[0]] || 0) > (scores[ranked[1]] || 0)) return ranked[0];
+  return '';
+}
+
 function resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCodeMap) {
   const normalizedCode = String(code || '').trim();
   const resolvedCategory = normalizeCategory(category || 'vegetables');
@@ -480,6 +536,8 @@ function resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCod
     const token = normalizeCatalogAliasToken(candidate);
     if (token && aliasCodeMap && aliasCodeMap[token]) return aliasCodeMap[token];
   }
+  const looseResolvedCode = resolveLooseCatalogAliasCode(candidates, itemDocs, resolvedCategory, resolvedVendorKey);
+  if (looseResolvedCode) return looseResolvedCode;
   return normalizedCode;
 }
 
