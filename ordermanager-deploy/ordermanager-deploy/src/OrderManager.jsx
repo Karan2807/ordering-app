@@ -1637,12 +1637,10 @@ function sanitizeOrderCodeMaps(itemMap, noteMap, items, category, vendorKey){
     var code=String(it&&it.code||"").trim();
     if(code) knownCodes[code]=true;
   });
-  var restrictToCatalog=resolvedCategory==="vendor_orders"&&Object.keys(knownCodes).length>0;
   Object.keys(itemMap||{}).forEach(function(code){
     if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
     var resolvedCode=resolveCanonicalOrderCode(code,items,category,vendorKey,aliasCodeMap);
     if(!resolvedCode) return;
-    if(restrictToCatalog&&!knownCodes[resolvedCode]) return;
     sanitizedItems[resolvedCode]=sanitizedItems[resolvedCode]==null
       ?itemMap[code]
       :mergeCanonicalOrderItemValues(sanitizedItems[resolvedCode],itemMap[code]);
@@ -1651,7 +1649,6 @@ function sanitizeOrderCodeMaps(itemMap, noteMap, items, category, vendorKey){
     if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
     var resolvedCode=resolveCanonicalOrderCode(code,items,category,vendorKey,aliasCodeMap);
     if(!resolvedCode) return;
-    if(restrictToCatalog&&!knownCodes[resolvedCode]) return;
     sanitizedNotes[resolvedCode]=mergeCanonicalOrderNotes(sanitizedNotes[resolvedCode],noteMap[code]);
   });
   return {items:sanitizedItems,notes:sanitizedNotes};
