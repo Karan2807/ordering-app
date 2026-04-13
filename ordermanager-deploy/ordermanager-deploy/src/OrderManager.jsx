@@ -2261,7 +2261,7 @@ function Ic({type,size}){var z=size||16;var p={home:"M3 9l9-7 9 7v11a2 2 0 0 1-2
 /* ═══ TOAST ═══ */
 function Toast({msg,isErr}){if(!msg)return null;return <div style={Object.assign({},S.to,isErr?S.toE:{})}>{msg}</div>;}
 
-function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCategoryDisabled,getOrderTypeDisabled,orderTypeSuffix,onCategoryChanged,categories}){
+function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCategoryDisabled,getOrderTypeDisabled,orderTypeSuffix,onCategoryChanged,categories,vendorOptions,selectedVendorKey,onVendorChanged}){
   var mainCats=categories||[
     {id:"vegetables",label:"Vegetables"},
     {id:"leaves",label:"Leaves"},
@@ -2284,6 +2284,15 @@ function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCa
           var active=orderType===t;
           var suffix=(orderTypeSuffix&&orderTypeSuffix(t))||"";
           return <button key={t} disabled={disabled} style={Object.assign({},S.dBtn,active?S.dBtnA:{},disabled?S.dBtnD:{})} onClick={function(){if(disabled)return;if(setOrderType)setOrderType(t);}}>{"Order "+t+suffix}</button>;
+        })}
+      </div>
+    </div>}
+    {selCategory==="vendor_orders"&&vendorOptions&&vendorOptions.length>0&&<div style={S.dCard}>
+      <div style={S.dTitle}>Open Vendors</div>
+      <div style={Object.assign({},S.dSub,{maxHeight:180,overflowY:"auto",paddingRight:4})}>
+        {vendorOptions.map(function(v){
+          var active=selectedVendorKey===v.id;
+          return <button key={v.id} style={Object.assign({},S.dBtn,active?S.dBtnA:{})} onClick={function(){if(onVendorChanged)onVendorChanged(v.id);}}>{v.name}</button>;
         })}
       </div>
     </div>}
@@ -5013,8 +5022,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         getCategoryDisabled={function(catId){return catId==="vendor_orders"?visibleVendorOptions.length===0:!isCategoryOpenForType(catId,vt,categoryAccessTypes,manualOpenLeaves);}}
         getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:true;}}
         onCategoryChanged={function(){setStep(1);}}
+        vendorOptions={visibleVendorOptions}
+        selectedVendorKey={selectedVendorKey}
+        onVendorChanged={function(vId){setSelectedVendorKey(vId);setStep(1);}}
       />
-      {selCategory==="vendor_orders"&&<select style={Object.assign({},S.inp,{width:220})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setStep(1);}}><option value="">Select vendor</option>{visibleVendorOptions.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>}
       </div>
       <div style={{display:"flex",gap:6}}>
         {isSingleVendorFlow?(<Fragment>
@@ -5555,8 +5566,10 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
           setOrderType={sVt}
           getCategoryDisabled={function(catId){return catId==="vendor_orders"?preferredVendorIds.length===0:!isCategoryOpenForType(catId,vt,aot||vt,manualOpenLeaves);}}
           getOrderTypeDisabled={function(){return false;}}
+          vendorOptions={supList}
+          selectedVendorKey={selectedVendorKey}
+          onVendorChanged={function(vId){setSelectedVendorKey(vId);}}
         />
-        {selCategory==="vendor_orders"&&<select style={Object.assign({},S.inp,{width:220})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);}}><option value="">Select vendor</option>{supList.map(function(v){return <option key={v.id} value={v.id}>{v.name}</option>;})}</select>}
       </div>
       {allSent&&supplierGroups.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
     </div>
