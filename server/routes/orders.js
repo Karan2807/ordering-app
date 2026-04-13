@@ -2022,7 +2022,16 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
     const seqMatch = requestedWeek.match(/-VS(\d+)$/i);
     const requestedSeq = seqMatch ? parseInt(seqMatch[1], 10) : null;
     const since = new Date(Date.now() - VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS);
-    const sameSeqFilter = requestedSeq != null ? { week: { $regex: new RegExp(`-VS${requestedSeq}$`, 'i') } } : {};
+    const sameSeqFilter = requestedSeq != null && !Number.isNaN(requestedSeq) ? { week: { $regex: new RegExp(`-VS${requestedSeq}$`, 'i') } } : {};
+    const timeFilter = (requestedSeq != null && !Number.isNaN(requestedSeq)) 
+      ? {} 
+      : {
+          $or: [
+            { submittedAt: { $gte: since } },
+            { createdAt: { $gte: since } },
+          ]
+        };
+    
     const submittedFallback = await Order.findOne({
       storeId,
       type,
@@ -2030,10 +2039,7 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
       vendorKey: resolvedVendorKey,
       status: { $in: ['submitted', 'processed', 'draft_shared'] },
       ...sameSeqFilter,
-      $or: [
-        { submittedAt: { $gte: since } },
-        { createdAt: { $gte: since } },
-      ],
+      ...timeFilter,
     })
       .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
       .lean();
@@ -2045,10 +2051,7 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
       ...sameSeqFilter,
-      $or: [
-        { submittedAt: { $gte: since } },
-        { createdAt: { $gte: since } },
-      ],
+      ...timeFilter,
     })
       .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
       .lean();

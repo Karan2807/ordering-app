@@ -307,8 +307,9 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
   var exactOrder=orderMap&&orderMap[exactKey]?orderMap[exactKey]:null;
   // For vendor orders: even if there is an exact-key match, it might be a plain
   // draft created after the UTC day boundary while the real submitted order lives
-  // under an adjacent-day key. Recover only the SAME VS sequence inside a short
-  // boundary window so a fresh weekly schedule still opens as New by default.
+  // under an adjacent-day key. When a VS sequence is explicitly known, match only
+  // that sequence and do not apply a recency cutoff; old submissions in the same
+  // unsent cycle must remain visible in consolidated.
   if(orderMap&&category==="vendor_orders"&&vendorKey){
     var suffix="-"+type+"-"+categoryKey(category,vendorKey);
     var requestedSeq=parseInt(vendorSeq,10);
@@ -316,6 +317,7 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
     var bestAny=null;
     var nowTs=Date.now();
     var maxAgeMs=VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS;
+    var applyAgeCutoff=!(Number.isFinite(requestedSeq)&&requestedSeq>0);
     var keyPrefix=String(storeId||"")+"_";
     Object.keys(orderMap).forEach(function(k){
       if(k.indexOf(keyPrefix)!==0) return;
@@ -330,7 +332,7 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
       if(!o) return;
       var ts=new Date(o.submittedAt||o.date||o.createdAt||0).getTime();
       if(!ts||Number.isNaN(ts)) return;
-      if((nowTs-ts)>maxAgeMs) return;
+      if(applyAgeCutoff&&(nowTs-ts)>maxAgeMs) return;
       if(!bestAny||ts>bestAny.ts) bestAny={order:o,ts:ts};
       var st=String(o.status||"").toLowerCase();
       if(st==="submitted"||st==="processed"||st==="draft_shared"){
