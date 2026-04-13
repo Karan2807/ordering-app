@@ -4709,7 +4709,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     var previewRows=sourceDisplayRows.map(function(entry){
       if(!entry) return null;
       if(entry.type==="heading") return {type:"heading",text:String(entry.text||"")};
-      var r=entry.row||{};
+      var r=entry.row || entry.item || {};
       return {
         type:"item",
         itemName:r.name||"",
@@ -5057,16 +5057,20 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={Object.assign({},S.tbl,{borderCollapse:"collapse",tableLayout:"fixed"})}><thead>
         <tr><th style={Object.assign({},tHeadTop,{minWidth:240})}>{selectedVendor&&selectedVendor.name?selectedVendor.name:("Date: "+new Date().toLocaleDateString())}</th><th style={Object.assign({},tHeadTopCenter,{minWidth:78})}></th><th style={Object.assign({},tHeadTopCenter,{minWidth:120})}></th>{slots.map(function(sl,idx){return <th key={sl.apna} style={Object.assign({},tHeadTopCenter,{minWidth:96})}>{slotHeaderForIndex(sl,idx)}</th>;})}</tr>
         <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:78})}>Unit</th><th style={Object.assign({},tHeadSub,{minWidth:120})}>{totalHeader}</th>{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:96})}>{slotQtyHeaderForIndex(sl,idx)}</th>;})}</tr>
-      </thead><tbody>
-        {vendorConsolidatedDisplayRows.map(function(entry,rowIdx){
+      </thead><tbody>{(function(){
+        var navRow=-1;
+        return vendorConsolidatedDisplayRows.map(function(entry,rowIdx){
           if(entry.type==="heading"){
             return <tr key={entry.key}><td colSpan={slots.length+3} style={Object.assign({},tProductCell,{background:"#475569",color:"#FFFFFF",fontWeight:700,letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{entry.text}</td></tr>;
           }
-          var r=entry.row;
+          var r=entry.row || entry.item;
+          if(!r) return null;
+          navRow+=1;
           var liveVendorState=editingAll?getEditableVendorRowState(r):null;
           var totalDisplay=editingAll?(liveVendorState.totalDisplay||""):(r.totalDisplay||"");
-          return <tr key={entry.key}><td style={tProductCell}>{r.name||""}</td><td style={tQtyCell}>{r.unit||""}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{totalDisplay}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var q=sid?((r.qtyByStoreId&&r.qtyByStoreId[sid])||0):0;var unitMeta=sid?((r.orderUnitByStoreId&&r.orderUnitByStoreId[sid])||{unitType:"cas",customUnit:""}):{unitType:"cas",customUnit:""};return <td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?renderVendorQtyEditor(sid,r.code,unitMeta,rowIdx,editableStoreIndexById[sid]):<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{formatQtyValueWithUnit(q,unitMeta)}</span>}</td>;})}</tr>;
-        })}
+          return <tr key={entry.key}><td style={tProductCell}>{r.name||""}</td><td style={tQtyCell}>{r.unit||""}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{totalDisplay}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var q=sid?((r.qtyByStoreId&&r.qtyByStoreId[sid])||0):0;var unitMeta=sid?((r.orderUnitByStoreId&&r.orderUnitByStoreId[sid])||{unitType:"cas",customUnit:""}):{unitType:"cas",customUnit:""};return <td key={sl.apna} style={Object.assign({},tQtyCell,editingAll&&sid?S.cE:{})}>{editingAll&&sid?renderVendorQtyEditor(sid,r.code,unitMeta,navRow,editableStoreIndexById[sid]):<span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{formatQtyValueWithUnit(q,unitMeta)}</span>}</td>;})}</tr>;
+        });
+      })()}
       </tbody></table></div>
       {vendorStoreDocs.length===0?<div style={{textAlign:"center",padding:"8px 14px 22px",color:"#6B7186"}}>{selectedVendor?"No submitted store orders are ready for this vendor yet.":"Select a vendor to review store orders."}</div>:
       <div style={Object.assign({},S.tw,{border:"none",borderRadius:0})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Submitted</th><th style={S.th}>Lines</th><th style={S.th}>Document</th><th style={S.th}>Actions</th></tr></thead><tbody>
@@ -5095,7 +5099,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         <tr><th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{itemHeader}</th><th style={Object.assign({},tHeadSub,{minWidth:68})}>{totalHeader}</th>{selCategory==="vendor_orders"&&<th style={Object.assign({},tHeadSub,{minWidth:68})}>Unit</th>}{slots.map(function(sl,idx){return <th key={sl.apna+"_q"} style={Object.assign({},tHeadSub,{minWidth:84})}>{selCategory==="vendor_orders"?"Qty":(activeTemplate&&activeTemplate.storeColumns&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header||"Qty")}</th>;})}<th style={Object.assign({},tHeadSub,{textAlign:"left"})}>{noteHeader}</th></tr>
       </thead><tbody>{(function(){var itemRowIdx=-1;return nonVendorConsolidatedDisplayRows.map(function(entry){
         if(entry.type==="heading"){return <tr key={entry.key}><td colSpan={slots.length+3} style={{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px",border:"1px solid #B9BEC9"}}>{entry.text}</td></tr>;}
-        var it=entry.item;itemRowIdx+=1;var rowIdx=itemRowIdx;
+        var it=entry.item || entry.row; if(!it) return null;
+        itemRowIdx+=1;var rowIdx=itemRowIdx;
         var liveVendorState=selCategory==="vendor_orders"&&editingAll?getEditableVendorRowState(it):null;
         var totalQty=liveVendorState?liveVendorState.totalQty:it.total;
         var unitLabel=liveVendorState?liveVendorState.unitLabel:(getOrderItemUnitLabel({unitType:Object.values(it.unitTypeByStoreId||{})[0]||"cas"})||"Case");
@@ -5149,7 +5154,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
             </div>
             <div style={Object.assign({},S.tw,{maxHeight:"46vh"})}><table style={S.tbl}><thead><tr><th style={S.th}>{itemHeader}</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{qtyHeader||"Qty"}</th><th style={S.th}>{noteHeader||"Note"}</th></tr></thead><tbody>
               {vendorIndividualPreviewDisplayRows.length?vendorIndividualPreviewDisplayRows.map(function(entry){
-                var row=entry.row;
+                var row=entry.row || entry.item;
+                if(!row) return null;
                 return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.name||""}</td><td style={S.td}>{row.unit||""}</td><td style={Object.assign({},S.td,{textAlign:"center"})}><span style={{fontFamily:"monospace"}}>{row.qtyDisplay||""}</span></td><td style={S.td}>{row.note||"-"}</td></tr>;
               }):<tr><td colSpan={4} style={Object.assign({},S.td,{textAlign:"center",padding:20,color:"#64748B"})}>No filled lines in this store document.</td></tr>}
             </tbody></table></div>
@@ -5252,7 +5258,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
                 if(entry.type==="heading"){
                   return <tr key={entry.key}><td colSpan={(useVendorMonitorPreview||useVendorDocumentPreview)?(useVendorMonitorPreview?(slots.length+3):3):(slots.length+3)} style={Object.assign({},tProductCell,{background:"#475569",color:"#FFFFFF",fontWeight:700,letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{entry.text}</td></tr>;
                 }
-                var r=entry.row;
+                var r=entry.row || entry.item;
+                if(!r) return null;
                 return useVendorMonitorPreview
                   ? <tr key={entry.key}><td style={tProductCell}>{r.name||""}</td><td style={tQtyCell}>{r.unit||""}</td><td style={Object.assign({},tQtyCell,{fontWeight:700,color:"#166534"})}>{r.totalDisplay||formatQtySummaryByUnit(r.qtyByStoreId||{},r.orderUnitByStoreId||{})||""}</td>{slots.map(function(sl){var sid=sl.store&&sl.store.id;var q=sid?((r.qtyByStoreId&&r.qtyByStoreId[sid])||0):0;var unitMeta=sid?((r.orderUnitByStoreId&&r.orderUnitByStoreId[sid])||{unitType:"cas",customUnit:""}):{unitType:"cas",customUnit:""};return <td key={sl.apna} style={tQtyCell}><span style={{fontFamily:"Calibri,'Segoe UI',Arial,sans-serif",fontSize:11,color:q>0?"#0F172A":"#64748B"}}>{formatQtyValueWithUnit(q,unitMeta)}</span></td>;})}</tr>
                   : useVendorDocumentPreview
@@ -5293,7 +5300,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           if(entry.type==="heading"){
             return <tr key={entry.key}><td colSpan={4} style={Object.assign({},S.td,{fontWeight:700,color:"#FFFFFF",background:"#475569",letterSpacing:"0.04em",fontSize:12,textTransform:"uppercase",padding:"6px 8px"})}>{entry.text}</td></tr>;
           }
-          var row=entry.row;
+          var row=entry.row || entry.item;
+          if(!row) return null;
           return <tr key={entry.key}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.name||""}</td><td style={S.td}>{row.unit||""}</td><td style={Object.assign({},S.td,{textAlign:"center"})}>{vendorStoreDialogEditing?<input style={S.ie} type="text" inputMode="numeric" pattern="[0-9]*" value={vendorStoreDialogQty[row.code]||0} onChange={function(e){var v=Math.max(0,parseInt(e.target.value,10)||0);setVendorStoreDialogQty(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog}/>:<span style={{fontFamily:"monospace"}}>{row.qtyDisplay||""}</span>}</td><td style={S.td}>{vendorStoreDialogEditing?<input style={Object.assign({},S.inp,{padding:"5px 8px",fontSize:11.5})} value={vendorStoreDialogNotes[row.code]||""} onChange={function(e){var v=e.target.value;setVendorStoreDialogNotes(function(prev){var n=Object.assign({},prev);n[row.code]=v;return n;});}} disabled={savingVendorStoreDialog} placeholder="note"/>:(row.note||"-")}</td></tr>;
         })}
       </tbody></table></div>)}
