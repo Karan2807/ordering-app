@@ -1567,13 +1567,24 @@ function isIgnorableLegacyOrderCode(code, items, category, vendorKey){
   });
 }
 function sanitizeOrderCodeMaps(itemMap, noteMap, items, category, vendorKey){
+  var resolvedCategory=normalizeCategory(category||"vegetables");
+  var resolvedVendorKey=normalizeVendorKey(resolvedCategory,vendorKey);
   var sanitizedItems={};
   var sanitizedNotes={};
   var aliasCodeMap=buildCatalogAliasCodeMap(items,category,vendorKey);
+  var knownCodes={};
+  (items||[]).forEach(function(it){
+    if(normalizeCategory(it&&it.category||"vegetables")!==resolvedCategory) return;
+    if(normalizeVendorKey(resolvedCategory,it&&it.vendorKey)!==resolvedVendorKey) return;
+    var code=String(it&&it.code||"").trim();
+    if(code) knownCodes[code]=true;
+  });
+  var restrictToCatalog=resolvedCategory==="vendor_orders"&&Object.keys(knownCodes).length>0;
   Object.keys(itemMap||{}).forEach(function(code){
     if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
     var resolvedCode=resolveCanonicalOrderCode(code,items,category,vendorKey,aliasCodeMap);
     if(!resolvedCode) return;
+    if(restrictToCatalog&&!knownCodes[resolvedCode]) return;
     sanitizedItems[resolvedCode]=sanitizedItems[resolvedCode]==null
       ?itemMap[code]
       :mergeCanonicalOrderItemValues(sanitizedItems[resolvedCode],itemMap[code]);
@@ -1582,6 +1593,7 @@ function sanitizeOrderCodeMaps(itemMap, noteMap, items, category, vendorKey){
     if(isIgnorableLegacyOrderCode(code,items,category,vendorKey)) return;
     var resolvedCode=resolveCanonicalOrderCode(code,items,category,vendorKey,aliasCodeMap);
     if(!resolvedCode) return;
+    if(restrictToCatalog&&!knownCodes[resolvedCode]) return;
     sanitizedNotes[resolvedCode]=mergeCanonicalOrderNotes(sanitizedNotes[resolvedCode],noteMap[code]);
   });
   return {items:sanitizedItems,notes:sanitizedNotes};
@@ -1741,13 +1753,17 @@ function buildOrderStateMap(list, catalogItems){
     var category=normalizeCategory(o.category);
     var vendorKey=normalizeVendorKey(category,o.vendorKey);
     var sanitized=sanitizeOrderCodeMaps(o.items||{},o.notes||{},catalogItems,category,vendorKey);
+    var hasCatalogItems=category==="vendor_orders"&&(catalogItems||[]).some(function(it){
+      return normalizeCategory(it&&it.category||"vegetables")===category
+        && normalizeVendorKey(category,it&&it.vendorKey)===vendorKey;
+    });
     var rawItems=Object.assign({},o.items||{});
     var rawNotes=Object.assign({},o.notes||{});
     var sanitizedItemsEmpty=Object.keys(sanitized.items||{}).length===0;
     var sanitizedNotesEmpty=Object.keys(sanitized.notes||{}).length===0;
     var rawItemsPresent=Object.keys(rawItems).length>0;
     var rawNotesPresent=Object.keys(rawNotes).length>0;
-    if(sanitizedItemsEmpty&&sanitizedNotesEmpty&&(rawItemsPresent||rawNotesPresent)){
+    if(!hasCatalogItems&&sanitizedItemsEmpty&&sanitizedNotesEmpty&&(rawItemsPresent||rawNotesPresent)){
       sanitized={items:rawItems,notes:rawNotes};
     }
     var key=o.storeId+"_"+o.week+"-"+o.type+"-"+categoryKey(category,vendorKey);

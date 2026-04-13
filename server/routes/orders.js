@@ -532,12 +532,22 @@ function orderItemsToMaps(rawItems) {
 }
 
 function sanitizeOrderCodeMaps(itemMap, noteMap, itemDocs, category, vendorKey) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const sanitizedItems = {};
   const sanitizedNotes = {};
   const aliasCodeMap = buildCatalogAliasCodeMap(itemDocs, category, vendorKey);
+  const knownCodes = new Set(
+    (Array.isArray(itemDocs) ? itemDocs : [])
+      .filter((item) => normalizeCategory(item && item.category) === resolvedCategory && normalizeVendorKey(resolvedCategory, item && item.vendorKey) === resolvedVendorKey)
+      .map((item) => String(item && item.code || '').trim())
+      .filter(Boolean)
+  );
+  const restrictToCatalog = resolvedCategory === 'vendor_orders' && knownCodes.size > 0;
   Object.keys(itemMap || {}).forEach((code) => {
     const resolvedCode = resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCodeMap);
     if (!resolvedCode) return;
+    if (restrictToCatalog && !knownCodes.has(resolvedCode)) return;
     sanitizedItems[resolvedCode] = sanitizedItems[resolvedCode] == null
       ? itemMap[code]
       : mergeCanonicalOrderItemValues(sanitizedItems[resolvedCode], itemMap[code]);
@@ -545,6 +555,7 @@ function sanitizeOrderCodeMaps(itemMap, noteMap, itemDocs, category, vendorKey) 
   Object.keys(noteMap || {}).forEach((code) => {
     const resolvedCode = resolveCanonicalOrderCode(code, itemDocs, category, vendorKey, aliasCodeMap);
     if (!resolvedCode) return;
+    if (restrictToCatalog && !knownCodes.has(resolvedCode)) return;
     sanitizedNotes[resolvedCode] = mergeCanonicalOrderNotes(sanitizedNotes[resolvedCode], noteMap[code]);
   });
   return { items: sanitizedItems, notes: sanitizedNotes };
