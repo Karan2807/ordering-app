@@ -20,6 +20,7 @@ const supplierOrderSchema = new mongoose.Schema({
   monitorExcelContentType: { type: String, default: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
   sentAt: { type: Date, default: Date.now },
   finished: { type: Boolean, default: true },
+  sentToSupplier: { type: Boolean, default: true },
 });
 
 export default mongoose.model('SupplierOrder', supplierOrderSchema);

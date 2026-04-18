@@ -16,6 +16,7 @@ import notificationRoutes from './routes/notifications.js';
 import settingsRoutes from './routes/settings.js';
 import testEmailRoutes from './routes/testEmail.js';
 import { startReminderScheduler } from './services/reminderScheduler.js';
+import { startVendorCycleManager } from './services/vendorCycleManager.js';
 
 // make sure required environment variables are present
 const requiredEnv = ['JWT_SECRET'];
@@ -114,6 +115,7 @@ async function start(port = PORT) {
       console.log(`Server running on port ${listenPort}`);
     });
     startReminderScheduler();
+    startVendorCycleManager();
 
     serverInstance.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {

@@ -15,6 +15,7 @@ import { sendManualReminders } from '../services/reminderScheduler.js';
 import { sendGraphMail } from '../services/msSendMail.js';
 import { renderVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 import { notifyWarehouseVendorSubmission } from '../services/warehouseNotifications.js';
+import { fixStuckVendorOrders } from '../services/vendorCycleManager.js';
 
 const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
 const VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS = 48 * 60 * 60 * 1000;
@@ -2234,6 +2235,7 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
       email: normalizeRecipientEmails(log.email, log.emails).join(', '),
       emails: normalizeRecipientEmails(log.email, log.emails),
       sentAt: log.sentAt || null,
+      sentToSupplier: log.sentToSupplier !== false,
       category: normalizeCategory(log.category),
       vendorKey: normalizeVendorKey(log.category, log.vendorKey),
       hasExcel: !!(log.excelBase64 || log.monitorExcelBase64),
@@ -4220,6 +4222,7 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
           category: normalizeCategory(row.category),
           vendorKey: row.vendorKey || null,
           hasExcel: !!excelBase64,
+          sentToSupplier: row.sentToSupplier !== false,
           fileContentType: String(row.excelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE,
           monitorFileContentType: String(row.monitorExcelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE,
         };
@@ -4437,6 +4440,20 @@ router.post('/email', authMiddleware, async (req, res) => {
     if (err.response) {
       console.error('SMTP response:', err.response);
     }
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Fix stuck vendor orders (admin only) — one-time cleanup
+router.post('/vendor-orders/fix-stuck', authMiddleware, async (req, res) => {
+  try {
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
+    }
+    const result = await fixStuckVendorOrders();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('Fix stuck vendor orders error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
