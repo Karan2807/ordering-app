@@ -3367,7 +3367,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       excelBuffer: rendered.buffer,
       excelFilename: docFilename,
     };
-  } else if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
+  } else if (requestedDocumentMode !== 'monitor' && template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
     excelRows = buildRowsFromCategoryTemplate({
       template,
       dateText,
@@ -3531,8 +3531,8 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
   const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
   const hasDocxStoreTemplate = !!(template && template.kind === 'docx_vendor_form' && template.docxMap && template.originalFile && template.originalFile.base64);
   const hasExcelCategoryTemplate = !!(template && Array.isArray(template.itemRows) && template.itemRows.length > 0 && template.originalFile && template.originalFile.base64);
-  const useUploadedExcelStoreTemplate = hasExcelCategoryTemplate && !hasDocxStoreTemplate;
-  const useStandardStoreTemplate = resolvedCategory === 'vendor_orders' && !hasDocxStoreTemplate && !useUploadedExcelStoreTemplate;
+  const useUploadedExcelStoreTemplate = hasExcelCategoryTemplate && !hasDocxStoreTemplate && resolvedCategory !== 'vendor_orders';
+  const useStandardStoreTemplate = resolvedCategory === 'vendor_orders' && !hasDocxStoreTemplate;
   const storeDoc = stores.find((st) => String(st.id || '') === String(storeId || '')) || { id: storeId, name: storeId };
   const mappedSlots = mapStoresToTemplateSlots(stores);
   // For individual store documents, keep only the selected store, but preserve
