@@ -1,7 +1,9 @@
 import { useState, useCallback, useMemo, useRef, Fragment, useContext, useEffect } from "react";
-import * as XLSX from 'xlsx';
-import * as mammoth from 'mammoth';
 import { AuthContext } from "./AuthContext";
+var _XLSX=null;
+var _mammoth=null;
+async function ensureXLSX(){if(!_XLSX)_XLSX=await import('xlsx');return _XLSX;}
+async function ensureMammoth(){if(!_mammoth)_mammoth=await import('mammoth');return _mammoth;}
 import { apiClient } from "./api";
 
 /* ═══ DATA HELPERS ═══ */
@@ -1698,13 +1700,13 @@ function supplierEmailsText(supplier){
   return supplierEmailsArray(supplier).join(", ");
 }
 function worksheetToRows(ws){
-  if(!ws||!ws["!ref"]) return [];
-  var range=XLSX.utils.decode_range(ws["!ref"]);
+  if(!ws||!ws["!ref"]||!_XLSX) return [];
+  var range=_XLSX.utils.decode_range(ws["!ref"]);
   var rows=[];
   for(var r=range.s.r;r<=range.e.r;r++){
     var row=[];
     for(var c=range.s.c;c<=range.e.c;c++){
-      var cell=ws[XLSX.utils.encode_cell({r:r,c:c})];
+      var cell=ws[_XLSX.utils.encode_cell({r:r,c:c})];
       row.push(cell&&cell.v!=null?String(cell.v):"");
     }
     rows.push(row);
@@ -2170,6 +2172,7 @@ async function printBase64File(fileBase64, filename, contentType, printWindow){
   var bytes=decodeBase64Bytes(fileBase64);
   var arrayBuffer=bytesToArrayBuffer(bytes);
   if(lowerType.indexOf("spreadsheetml")>=0||/\.xlsx?$/.test(lowerName)){
+    var XLSX=await ensureXLSX();
     var workbook=XLSX.read(arrayBuffer,{type:'array'});
     var sections=(Array.isArray(workbook&&workbook.SheetNames)?workbook.SheetNames:[]).map(function(sheetName){
       return {name:sheetName,rows:worksheetToRows(workbook.Sheets[sheetName])};
@@ -2177,6 +2180,7 @@ async function printBase64File(fileBase64, filename, contentType, printWindow){
     return printSheetSections(safeFilename,sections,printWindow);
   }
   if(lowerType.indexOf("wordprocessingml")>=0||/\.docx$/.test(lowerName)){
+    var mammoth=await ensureMammoth();
     var result=await mammoth.convertToHtml({arrayBuffer:arrayBuffer});
     var warnings=(result&&Array.isArray(result.messages)?result.messages:[]).map(function(msg){return '<div>'+escapePrintHtml(msg.message||msg.value||"")+'</div>';}).join("");
     var sectionsHtml='<section class="print-section"><div class="print-docx">'+String(result&&result.value||"")+'</div>'+(warnings?('<div class="print-empty" style="margin-top:12px;">'+warnings+'</div>'):"")+'</section>';
@@ -3456,7 +3460,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var refreshConsolidatedHistory=async function(){
     try{
       setHistoryLoading(true);
-      var list=await apiClient.orders.getConsolidatedHistory(7);
+      var list=await apiClient.orders.getConsolidatedHistory(0);
       setConsolidatedHistory(Array.isArray(list)?list:[]);
     }catch(e){
       setConsolidatedHistory([]);
@@ -3660,11 +3664,11 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       <Fragment>
         <div style={S.card}>
           <div style={S.cH}>
-            <div><div style={S.t}>Consolidated History (Last 7 Days)</div><div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div></div>
+            <div><div style={S.t}>Consolidated History (All Time)</div><div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div></div>
             <button style={Object.assign({},S.b,S.bS)} onClick={refreshConsolidatedHistory} disabled={historyLoading}>{historyLoading?"Refreshing...":"Refresh"}</button>
           </div>
           {historyLoading?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>Loading consolidated history...</div>:
-          visibleConsolidatedHistory.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No consolidated records in the last 7 days</div>:
+          visibleConsolidatedHistory.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No consolidated records found</div>:
           <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Latest</th><th style={S.th}>Week</th><th style={S.th}>Type</th><th style={S.th}>Category</th><th style={S.th}>Vendor</th><th style={S.th}>Stores</th><th style={S.th}>Sent</th><th style={S.th}>Actions</th></tr></thead><tbody>
             {visibleConsolidatedHistory.map(function(r){
               var rowKey=historyGroupKey(r);
@@ -3690,14 +3694,17 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     {selDone&&(<div style={S.ov} onClick={function(){setSelDone(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>Sent Consolidated Order {selDone.type} - {fmtDT(selDone.sentAt)}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:8}}>Supplier: {selDone.supplierName} | {selDone.email} | Week: {selDone.week}</div>
-      {selDone._id&&sheetPreviewLoadingById[String(selDone._id)]&&<div style={Object.assign({},S.nI,{marginBottom:8})}>Loading stored document view...</div>}
-      {selDone._id&&sheetPreviewById[String(selDone._id)]&&sheetPreviewById[String(selDone._id)].rows&&sheetPreviewById[String(selDone._id)].rows.length>0?
-        <ExcelSheetPreviewTable rows={sheetPreviewById[String(selDone._id)].rows} maxHeight={420}/>
-      :(selDone._id&&sheetPreviewById[String(selDone._id)]&&sheetPreviewById[String(selDone._id)].fileBase64?
-        <div style={Object.assign({},S.nI,{marginBottom:8})}>This stored file is kept in its original format and does not have a table preview. Use Download or Print to open it.</div>
-      :(selDone.snapshotLines&&selDone.snapshotLines.length>0?
-        <div style={Object.assign({},S.tw,{maxHeight:420})}><pre style={{margin:0,padding:12,whiteSpace:"pre-wrap",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",fontSize:11.5,color:"#0F172A"}}>{selDone.snapshotLines.join("\n")}</pre></div>
-      :<div style={Object.assign({},S.nI,{marginBottom:0})}>No stored sent details for this record (older history entry).</div>))}
+      {(function(){
+        var selDoneIsVendorLog=normalizeCategory((selDone.category)||"vegetables")==="vendor_orders";
+        var selDonePreviewId=selDoneIsVendorLog?historyGroupKey(selDone):String(selDone._id||"");
+        var isLoading=!!sheetPreviewLoadingById[selDonePreviewId];
+        var preview=sheetPreviewById[selDonePreviewId];
+        if(isLoading) return <div style={Object.assign({},S.nI,{marginBottom:8})}>Loading stored document view...</div>;
+        if(preview&&preview.rows&&preview.rows.length>0) return <ExcelSheetPreviewTable rows={preview.rows} maxHeight={420}/>;
+        if(preview&&preview.fileBase64) return <div style={Object.assign({},S.nI,{marginBottom:8})}>This stored file is kept in its original format and does not have a table preview. Use Download or Print to open it.</div>;
+        if(selDone.snapshotLines&&selDone.snapshotLines.length>0) return <div style={Object.assign({},S.tw,{maxHeight:420})}><pre style={{margin:0,padding:12,whiteSpace:"pre-wrap",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",fontSize:11.5,color:"#0F172A"}}>{selDone.snapshotLines.join("\n")}</pre></div>;
+        return <div style={Object.assign({},S.nI,{marginBottom:0})}>No stored sent details for this record (older history entry).</div>;
+      })()}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSelDone(null);}}>Close</button></div>
     </div></div>)}
     {selHistory&&(<div style={S.ov} onClick={function(){setSelHistory(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
@@ -5755,8 +5762,9 @@ function ItemMaster({items,setItems,toast,suppliers,categoryTemplates,setCategor
       r.readAsText(f);
     }else if(ext==="xls"||ext==="xlsx"){
       var r=new FileReader();
-      r.onload=function(ev){
+      r.onload=async function(ev){
         try{
+          var XLSX=await ensureXLSX();
           var data=new Uint8Array(ev.target.result);
           var wb=XLSX.read(data,{type:'array'});
           // Store the RAW file bytes as base64 so uploaded formatting (fonts, colors,

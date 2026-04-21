@@ -226,6 +226,7 @@ async function archiveUnsentVendorOrders(vendorKey, seq, orders) {
       sentToSupplier: false,
       finished: true,
       sentAt: new Date(),
+      storeBreakdown,
     });
     console.log(`[VendorCycleManager] Archived unsent orders for vendor ${vendorKey} seq ${seq}: ${orders.length} store orders, week=${week}`);
   } catch (err) {

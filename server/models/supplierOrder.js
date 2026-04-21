@@ -21,6 +21,7 @@ const supplierOrderSchema = new mongoose.Schema({
   sentAt: { type: Date, default: Date.now },
   finished: { type: Boolean, default: true },
   sentToSupplier: { type: Boolean, default: true },
+  storeBreakdown: { type: mongoose.Schema.Types.Mixed, default: null },
 });
 
 export default mongoose.model('SupplierOrder', supplierOrderSchema);

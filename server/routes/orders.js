@@ -2200,30 +2200,38 @@ function supplierGroupKey(week, type, category, vendorKey) {
   return [String(week || ''), String(type || '').toUpperCase(), normalizedCategory, normalizedVendorKey || ''].join('::');
 }
 
-async function buildConsolidatedHistory({ days = 7 } = {}) {
+async function buildConsolidatedHistory({ days = 0 } = {}) {
   const parsedDays = Number(days);
-  const safeDays = Number.isFinite(parsedDays) && parsedDays > 0 ? Math.min(Math.floor(parsedDays), 60) : 7;
-  const since = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000);
+  // 0 means all-time (no date filter); otherwise use provided days with no artificial cap
+  const noLimit = parsedDays === 0 || !Number.isFinite(parsedDays) || parsedDays < 0;
+  const since = noLimit ? null : new Date(Date.now() - Math.floor(parsedDays) * 24 * 60 * 60 * 1000);
 
   const [orders, stores, itemDocs, sentLogs] = await Promise.all([
-    Order.find({
+    Order.find(since ? {
       $or: [{ submittedAt: { $gte: since } }, { createdAt: { $gte: since } }],
-    }).lean(),
+    } : {}).lean(),
     Store.find().lean(),
     Item.find().lean(),
-    SupplierOrder.find({ sentAt: { $gte: since } }).lean(),
+    SupplierOrder.find(since ? { sentAt: { $gte: since } } : {}).lean(),
   ]);
 
   const storeNameById = Object.fromEntries(stores.map((s) => [String(s.id || ''), s.name || s.id || '']));
   const { itemNameByCode } = buildItemDisplayMaps(itemDocs);
 
+  // Track full log objects by group key so we can use storeBreakdown for archived entries
+  const fullLogsByGroup = {};
   const sentByGroup = {};
   sentLogs.forEach((log) => {
     const key = consolidatedHistoryKey(log.week, log.type, log.category, log.vendorKey);
+    if (!fullLogsByGroup[key]) fullLogsByGroup[key] = [];
+    fullLogsByGroup[key].push(log);
     if (!sentByGroup[key]) {
       sentByGroup[key] = { sentCount: 0, lastSentAt: null, sentLogs: [] };
     }
-    sentByGroup[key].sentCount += 1;
+    // Only count actual sent-to-supplier records in sentCount for display purposes
+    if (log.sentToSupplier !== false) {
+      sentByGroup[key].sentCount += 1;
+    }
     if (!sentByGroup[key].lastSentAt || new Date(log.sentAt || 0) > new Date(sentByGroup[key].lastSentAt)) {
       sentByGroup[key].lastSentAt = log.sentAt || null;
     }
@@ -2289,6 +2297,58 @@ async function buildConsolidatedHistory({ days = 7 } = {}) {
       itemCount: normalizedItems.length,
       items: normalizedItems,
     });
+  });
+
+  // Include SupplierOrder entries that have no matching current Order documents.
+  // This covers archived unsent orders (sentToSupplier=false) whose Order docs were deleted,
+  // as well as old sent orders whose orders are no longer in the live collection.
+  Object.entries(fullLogsByGroup).forEach(([key, logs]) => {
+    if (grouped[key]) return; // already covered by current order documents
+    // Pick the most recent log to derive group metadata and storeBreakdown
+    const sortedLogs = logs.slice().sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0));
+    const representativeLog = sortedLogs[0];
+    if (!representativeLog) return;
+
+    const normalizedCategory = normalizeCategory(representativeLog.category);
+    const normalizedVendorKey = normalizeVendorKey(normalizedCategory, representativeLog.vendorKey);
+
+    // Build storeOrders from storeBreakdown when available (set by archiveUnsentVendorOrders)
+    const storeOrdersFromBreakdown = [];
+    // Use the unsent log's storeBreakdown if present; otherwise fall back to most recent sent log
+    const logWithBreakdown = sortedLogs.find((l) => l.storeBreakdown && typeof l.storeBreakdown === 'object' && Object.keys(l.storeBreakdown).length > 0)
+      || representativeLog;
+    if (logWithBreakdown.storeBreakdown && typeof logWithBreakdown.storeBreakdown === 'object') {
+      Object.entries(logWithBreakdown.storeBreakdown).forEach(([storeId, storeData]) => {
+        if (!storeData || typeof storeData !== 'object') return;
+        const rawItems = storeData.items && typeof storeData.items === 'object' ? storeData.items : {};
+        const items = Object.entries(rawItems)
+          .map(([itemCode, qty]) => ({
+            itemCode,
+            itemName: itemNameByCode[String(itemCode || '')] || displayOrderItemCode(itemCode),
+            quantity: Number(qty) || 0,
+            note: '',
+          }))
+          .filter((entry) => entry.quantity > 0);
+        storeOrdersFromBreakdown.push({
+          storeId,
+          storeName: storeData.storeName || storeNameById[String(storeId || '')] || storeId || '-',
+          status: storeData.status || 'submitted',
+          submittedAt: storeData.submittedAt || logWithBreakdown.sentAt || null,
+          itemCount: items.length,
+          items,
+        });
+      });
+    }
+
+    grouped[key] = {
+      week: representativeLog.week,
+      type: String(representativeLog.type || '').toUpperCase(),
+      category: normalizedCategory,
+      vendorKey: normalizedVendorKey,
+      latestAt: representativeLog.sentAt || new Date(0),
+      storeOrders: storeOrdersFromBreakdown,
+      _fromArchivedLog: true,
+    };
   });
 
   return Object.values(grouped)
@@ -2399,11 +2459,45 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
 
   // For not-yet-sent groups (or older records without a stored workbook),
   // generate the same consolidated template workbook the email flow would use.
+  // For unsent archived vendor orders that have storeBreakdown stored, build from that data
+  // so we don't query deleted Order documents (which would return an empty workbook).
+  let archivedSplitData = null;
+  if (
+    latestSentLog &&
+    latestSentLog.sentToSupplier === false &&
+    latestSentLog.storeBreakdown &&
+    typeof latestSentLog.storeBreakdown === 'object' &&
+    Object.keys(latestSentLog.storeBreakdown).length > 0 &&
+    (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves')
+  ) {
+    // Convert storeBreakdown to splitData.rows so buildConsolidatedExcelPayload uses
+    // this data instead of querying the (deleted) Order documents
+    const qtyByCode = {};
+    Object.entries(latestSentLog.storeBreakdown).forEach(([storeId, storeData]) => {
+      const storeItems = (storeData && typeof storeData.items === 'object') ? storeData.items : {};
+      Object.entries(storeItems).forEach(([itemCode, qty]) => {
+        if (!qtyByCode[itemCode]) qtyByCode[itemCode] = {};
+        qtyByCode[itemCode][storeId] = Number(qty) || 0;
+      });
+    });
+    const rows = Object.entries(qtyByCode)
+      .filter(([, qtyByStore]) => Object.values(qtyByStore).some((q) => q > 0))
+      .map(([itemCode, qtyByStoreId]) => ({
+        itemCode,
+        qtyByStoreId,
+        orderUnitByStoreId: {},
+        note: '',
+      }));
+    if (rows.length > 0) {
+      archivedSplitData = { documentMode: 'monitor', rows };
+    }
+  }
+
   const { fileBuffer, fileFilename, contentType, excelBuffer, excelFilename } = await buildConsolidatedExcelPayload(
     normalizedType,
     normalizedCategory,
     normalizedVendorKey,
-    (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') ? { documentMode: 'monitor' } : null,
+    archivedSplitData || ((normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') ? { documentMode: 'monitor' } : null),
     normalizedWeek,
     new Date()
   );
@@ -4125,7 +4219,8 @@ router.get('/consolidated-history', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const days = parseInt(req.query.days, 10);
-    const history = await buildConsolidatedHistory({ days: Number.isNaN(days) ? 7 : days });
+    // Default to 0 (all-time) when no days param provided
+    const history = await buildConsolidatedHistory({ days: Number.isNaN(days) ? 0 : days });
     res.json(history);
   } catch (err) {
     console.error('Get consolidated history error:', err);
@@ -4413,7 +4508,71 @@ router.patch('/supplier-orders/:id/reopen', authMiddleware, async (req, res) => 
     if (!doc) return res.status(404).json({ error: 'Supplier order not found' });
     doc.finished = false;
     await doc.save();
-    res.json({ success: true, supplierOrder: doc });
+
+    // For unsent archived vendor orders (sentToSupplier=false), restore the individual
+    // store Order documents from storeBreakdown so the consolidated page can display
+    // and resend the original order data.
+    let restoredOrderCount = 0;
+    if (
+      doc.sentToSupplier === false &&
+      doc.storeBreakdown &&
+      typeof doc.storeBreakdown === 'object' &&
+      Object.keys(doc.storeBreakdown).length > 0 &&
+      normalizeCategory(doc.category) === 'vendor_orders' &&
+      doc.vendorKey &&
+      doc.week
+    ) {
+      const normalizedCategory = normalizeCategory(doc.category);
+      const normalizedVendorKey = normalizeVendorKey(normalizedCategory, doc.vendorKey);
+      const weekKey = String(doc.week || '').trim();
+      const orderType = String(doc.type || 'A');
+      const now = new Date();
+
+      for (const [storeId, storeData] of Object.entries(doc.storeBreakdown)) {
+        if (!storeId || !storeData || typeof storeData !== 'object') continue;
+        const rawItems = storeData.items && typeof storeData.items === 'object' ? storeData.items : {};
+        const itemEntries = Object.entries(rawItems)
+          .filter(([, qty]) => (Number(qty) || 0) > 0)
+          .map(([itemCode, qty]) => ({ itemCode, quantity: Number(qty) || 0, unitType: 'cas', customUnit: '', note: '' }));
+        if (itemEntries.length === 0) continue;
+
+        // Check if an order already exists for this store+week combination
+        const existing = await Order.findOne({
+          storeId,
+          type: orderType,
+          category: normalizedCategory,
+          vendorKey: normalizedVendorKey,
+          week: weekKey,
+        }).select({ id: 1, status: 1 }).lean();
+
+        if (!existing) {
+          // Restore the order document
+          const orderId = uuidv4();
+          try {
+            await Order.create({
+              id: orderId,
+              storeId,
+              type: orderType,
+              category: normalizedCategory,
+              vendorKey: normalizedVendorKey,
+              week: weekKey,
+              status: 'submitted',
+              items: itemEntries,
+              createdAt: now,
+              submittedAt: storeData.submittedAt ? new Date(storeData.submittedAt) : now,
+            });
+            restoredOrderCount += 1;
+          } catch (createErr) {
+            console.error(`[Reopen] Failed to restore order for store ${storeId}:`, createErr);
+          }
+        }
+      }
+      if (restoredOrderCount > 0) {
+        console.log(`[Reopen] Restored ${restoredOrderCount} store orders for vendor ${normalizedVendorKey} week ${weekKey}`);
+      }
+    }
+
+    res.json({ success: true, supplierOrder: doc, restoredOrderCount });
   } catch (err) {
     console.error('Reopen supplier order error:', err);
     res.status(500).json({ error: 'Server error' });

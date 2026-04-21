@@ -12,5 +12,13 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
     target: 'es2018',
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+        },
+      },
+    },
   }
 })
