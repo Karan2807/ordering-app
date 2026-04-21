@@ -310,12 +310,11 @@ function makeTemplateSettingKey(category, vendorKey = null, templateVariant = 'd
   return `orderTemplate:${resolvedCategory}${resolvedVendorKey ? `:${resolvedVendorKey}` : ''}${resolvedTemplateVariant !== 'default' ? `::${resolvedTemplateVariant}` : ''}`;
 }
 
-async function getCategoryTemplate(category, vendorKey = null) {
-  const candidateKeys = [
-    makeTemplateSettingKey(category, vendorKey, 'default'),
-    makeTemplateSettingKey(category, vendorKey, 'supplier'),
-    makeTemplateSettingKey(category, vendorKey, 'monitor'),
-  ];
+async function getCategoryTemplate(category, vendorKey = null, preferredVariant = 'default') {
+  const requestedVariant = String(preferredVariant || 'default').trim().toLowerCase() || 'default';
+  const variantOrder = [requestedVariant, 'default', 'supplier', 'monitor']
+    .filter((value, index, list) => list.indexOf(value) === index);
+  const candidateKeys = variantOrder.map((variant) => makeTemplateSettingKey(category, vendorKey, variant));
   for (const key of candidateKeys) {
     const doc = await Setting.findOne({ key }).lean();
     if (doc && doc.value) return doc.value;
@@ -969,7 +968,84 @@ function inferWorksheetTemplateOffset(template, ws, itemRows = []) {
   return { rowOffset: bestRowOffset, colOffset: bestColOffset };
 }
 
-function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeStoreId, noteByCode, itemNameByCode, orderUnitByCodeStoreId = {} }) {
+function buildTabularAppendPlan({ template, rows = [], slots = [], noteByCode = {}, category }) {
+  if (!template || template.kind !== 'tabular' || (template.quantityColumn && template.quantityColumn.colIndex != null)) return null;
+  const resolvedCategory = normalizeCategory(category);
+  if (resolvedCategory !== 'vendor_orders' && resolvedCategory !== 'leaves') return null;
+  const singleStoreSlot = Array.isArray(slots) && slots.length === 1 ? slots[0] : null;
+  const columns = [];
+  const headerRowIndex = Number.isInteger(template.headerRowIndex) ? template.headerRowIndex : 0;
+  const baseColumnIndex = Math.max(0, rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0));
+  const qtyHeaderText = String(template && template.uiHeaders && template.uiHeaders.quantity || 'Qty').trim() || 'Qty';
+  const totalHeaderText = String(template && template.uiHeaders && template.uiHeaders.total || 'Total Qty').trim() || 'Total Qty';
+  const noteHeaderText = String(template && template.uiHeaders && template.uiHeaders.note || 'Note').trim() || 'Note';
+  let nextColIndex = baseColumnIndex;
+
+  if (singleStoreSlot) {
+    const storeName = String(
+      (singleStoreSlot.store && (singleStoreSlot.store.name || singleStoreSlot.store.id))
+      || singleStoreSlot.apna
+      || 'Qty'
+    ).trim() || 'Qty';
+    columns.push({
+      kind: 'store',
+      colIndex: nextColIndex++,
+      header: `${storeName} ${qtyHeaderText}`.trim(),
+      storeId: singleStoreSlot.store ? String(singleStoreSlot.store.id || '').trim() : '',
+    });
+  } else {
+    columns.push({ kind: 'total', colIndex: nextColIndex++, header: totalHeaderText });
+    (Array.isArray(slots) ? slots : []).forEach((slot) => {
+      if (!slot || !slot.store || !slot.store.id) return;
+      const storeName = String(slot.store.name || slot.store.id || slot.apna || '').trim() || String(slot.apna || 'Qty');
+      columns.push({
+        kind: 'store',
+        colIndex: nextColIndex++,
+        header: `${storeName} ${qtyHeaderText}`.trim(),
+        storeId: String(slot.store.id || '').trim(),
+      });
+    });
+  }
+
+  const noteValues = Object.values(noteByCode || {}).some((value) => String(value || '').trim());
+  const noteColIndex = template.noteColumn && template.noteColumn.colIndex != null
+    ? template.noteColumn.colIndex
+    : (noteValues ? nextColIndex++ : null);
+
+  return {
+    headerRowIndex,
+    columns,
+    noteColIndex,
+    noteHeaderText,
+    styleSourceColIndex: Math.max(0, baseColumnIndex - 1),
+  };
+}
+
+function getTabularDisplayTotal(qtyByStore = {}, orderUnitByStore = {}) {
+  const numericQtyByStore = Object.fromEntries(
+    Object.entries(qtyByStore || {}).map(([storeId, value]) => [storeId, getQtyNumber(value)])
+  );
+  return formatQtySummaryByUnit(numericQtyByStore, orderUnitByStore || {}) || '';
+}
+
+function getTabularDisplayStoreQty(qtyValue, unitMeta) {
+  const qty = getQtyNumber(qtyValue);
+  if (qty <= 0) return '';
+  return formatQtyValueWithUnit(qty, unitMeta || { unitType: 'cas', customUnit: '' });
+}
+
+function copyWorksheetCellStyle(sourceCell, targetCell) {
+  if (!sourceCell || !targetCell) return;
+  targetCell.style = cloneStyleObject(sourceCell.style) || {};
+  if (sourceCell.numFmt) targetCell.numFmt = sourceCell.numFmt;
+  if (sourceCell.alignment) targetCell.alignment = cloneStyleObject(sourceCell.alignment);
+  if (sourceCell.font) targetCell.font = cloneStyleObject(sourceCell.font);
+  if (sourceCell.fill) targetCell.fill = cloneStyleObject(sourceCell.fill);
+  if (sourceCell.border) targetCell.border = cloneStyleObject(sourceCell.border);
+  if (sourceCell.protection) targetCell.protection = cloneStyleObject(sourceCell.protection);
+}
+
+function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeStoreId, noteByCode, itemNameByCode, orderUnitByCodeStoreId = {}, category }) {
   const rows = Array.isArray(template && template.rows) ? template.rows.map((row) => (Array.isArray(row) ? row.slice() : [])) : [];
   if (template && template.dateCell && template.dateCell.rowIndex != null && template.dateCell.colIndex != null) {
     ensureRowCell(rows, template.dateCell.rowIndex, template.dateCell.colIndex);
@@ -978,6 +1054,18 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
   const slotByKey = Object.fromEntries((slots || []).map((slot) => [slot.apna, slot]));
   const singleStoreSlot = Array.isArray(slots) && slots.length === 1 ? slots[0] : null;
   const matrixLayout = inferMatrixTemplateLayout(template, template && Array.isArray(template.itemRows) ? template.itemRows : []);
+  const tabularAppendPlan = buildTabularAppendPlan({ template, rows, slots, noteByCode, category });
+
+  if (tabularAppendPlan) {
+    tabularAppendPlan.columns.forEach((column) => {
+      ensureRowCell(rows, tabularAppendPlan.headerRowIndex, column.colIndex);
+      rows[tabularAppendPlan.headerRowIndex][column.colIndex] = column.header;
+    });
+    if (tabularAppendPlan.noteColIndex != null) {
+      ensureRowCell(rows, tabularAppendPlan.headerRowIndex, tabularAppendPlan.noteColIndex);
+      rows[tabularAppendPlan.headerRowIndex][tabularAppendPlan.noteColIndex] = tabularAppendPlan.noteHeaderText;
+    }
+  }
 
   if (matrixLayout) {
     const qtyHeaderText = String(template && template.uiHeaders && template.uiHeaders.quantity || 'Qty').trim() || 'Qty';
@@ -1060,9 +1148,24 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
         ensureRowCell(rows, itemRow.rowIndex, template.quantityColumn.colIndex);
         rows[itemRow.rowIndex][template.quantityColumn.colIndex] = qtyTotal > 0 ? String(qtyTotal) : '';
       }
+      if (tabularAppendPlan) {
+        tabularAppendPlan.columns.forEach((column) => {
+          ensureRowCell(rows, itemRow.rowIndex, column.colIndex);
+          if (column.kind === 'total') {
+            rows[itemRow.rowIndex][column.colIndex] = getTabularDisplayTotal(qtyByCodeStoreId[code] || {}, orderUnitByCodeStoreId[code] || {});
+            return;
+          }
+          const qtyValue = column.storeId && qtyByCodeStoreId[code] ? qtyByCodeStoreId[code][column.storeId] : null;
+          const unitMeta = column.storeId && orderUnitByCodeStoreId[code] ? orderUnitByCodeStoreId[code][column.storeId] : null;
+          rows[itemRow.rowIndex][column.colIndex] = getTabularDisplayStoreQty(qtyValue, unitMeta);
+        });
+      }
       if (template.noteColumn && template.noteColumn.colIndex != null) {
         ensureRowCell(rows, itemRow.rowIndex, template.noteColumn.colIndex);
         rows[itemRow.rowIndex][template.noteColumn.colIndex] = noteByCode[code] || '';
+      } else if (tabularAppendPlan && tabularAppendPlan.noteColIndex != null) {
+        ensureRowCell(rows, itemRow.rowIndex, tabularAppendPlan.noteColIndex);
+        rows[itemRow.rowIndex][tabularAppendPlan.noteColIndex] = noteByCode[code] || '';
       }
       return;
     }
@@ -1333,7 +1436,7 @@ async function excelBufferToStyledHtml(buffer) {
   }
 }
 
-async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qtyByCodeStoreId, noteByCode, itemNameByCode, orderUnitByCodeStoreId = {} }) {
+async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qtyByCodeStoreId, noteByCode, itemNameByCode, orderUnitByCodeStoreId = {}, category }) {
   if (!template || !template.originalFile || !template.originalFile.base64) return null;
   const filename = String(template.originalFile.filename || '').toLowerCase();
   if (!filename.endsWith('.xlsx')) return null;
@@ -1343,6 +1446,7 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
 
   const slotByKey = Object.fromEntries((slots || []).map((slot) => [slot.apna, slot]));
   const singleStoreSlot = Array.isArray(slots) && slots.length === 1 ? slots[0] : null;
+  const tabularAppendPlan = buildTabularAppendPlan({ template, rows: template.rows, slots, noteByCode, category });
 
   // Use multiSheetItemRows if present (multi-sheet support), else fall back to itemRows
   const allItemRows = Array.isArray(template.multiSheetItemRows) && template.multiSheetItemRows.length > 0
@@ -1431,18 +1535,55 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
     }
 
     // ── Step B: Write item data (names + quantities) ─────────────────
+    if (tabularAppendPlan) {
+      const headerRowNumber = tabularAppendPlan.headerRowIndex + 1 + worksheetRowOffset;
+      const sourceHeaderCell = ws.getCell(headerRowNumber, Math.max(1, tabularAppendPlan.styleSourceColIndex + 1 + worksheetColumnOffset));
+      tabularAppendPlan.columns.forEach((column) => {
+        const headerCell = ws.getCell(headerRowNumber, column.colIndex + 1 + worksheetColumnOffset);
+        copyWorksheetCellStyle(sourceHeaderCell, headerCell);
+        headerCell.value = column.header;
+        ws.getColumn(column.colIndex + 1 + worksheetColumnOffset).width = Math.max(Number(ws.getColumn(column.colIndex + 1 + worksheetColumnOffset).width) || 0, Math.min(Math.max(String(column.header || '').length + 2, 12), 24));
+      });
+      if (tabularAppendPlan.noteColIndex != null) {
+        const noteHeaderCell = ws.getCell(headerRowNumber, tabularAppendPlan.noteColIndex + 1 + worksheetColumnOffset);
+        copyWorksheetCellStyle(sourceHeaderCell, noteHeaderCell);
+        noteHeaderCell.value = tabularAppendPlan.noteHeaderText;
+        ws.getColumn(tabularAppendPlan.noteColIndex + 1 + worksheetColumnOffset).width = Math.max(Number(ws.getColumn(tabularAppendPlan.noteColIndex + 1 + worksheetColumnOffset).width) || 0, 14);
+      }
+    }
+
     sheetGroup.rows.forEach((itemRow) => {
       const code = String(itemRow.code || '').trim();
       const name = itemNameByCode[code] || itemRow.name || displayOrderItemCode(code);
       if (template.kind === 'tabular') {
-        const nameCell = ws.getCell(itemRow.rowIndex + 1 + worksheetRowOffset, (itemRow.colIndex || 0) + 1 + worksheetColumnOffset);
+        const rowNumber = itemRow.rowIndex + 1 + worksheetRowOffset;
+        const nameCell = ws.getCell(rowNumber, (itemRow.colIndex || 0) + 1 + worksheetColumnOffset);
         nameCell.value = name;
         const qtyTotal = Object.values(qtyByCodeStoreId[code] || {}).reduce((sum, value) => sum + getQtyNumber(value), 0);
         if (template.quantityColumn && template.quantityColumn.colIndex != null) {
-          ws.getCell(itemRow.rowIndex + 1 + worksheetRowOffset, template.quantityColumn.colIndex + 1 + worksheetColumnOffset).value = qtyTotal > 0 ? qtyTotal : null;
+          ws.getCell(rowNumber, template.quantityColumn.colIndex + 1 + worksheetColumnOffset).value = qtyTotal > 0 ? qtyTotal : null;
+        }
+        if (tabularAppendPlan) {
+          const sourceDataCell = ws.getCell(rowNumber, Math.max(1, tabularAppendPlan.styleSourceColIndex + 1 + worksheetColumnOffset));
+          tabularAppendPlan.columns.forEach((column) => {
+            const targetCell = ws.getCell(rowNumber, column.colIndex + 1 + worksheetColumnOffset);
+            copyWorksheetCellStyle(sourceDataCell, targetCell);
+            if (column.kind === 'total') {
+              targetCell.value = getTabularDisplayTotal(qtyByCodeStoreId[code] || {}, orderUnitByCodeStoreId[code] || {}) || null;
+              return;
+            }
+            const qtyValue = column.storeId && qtyByCodeStoreId[code] ? qtyByCodeStoreId[code][column.storeId] : null;
+            const unitMeta = column.storeId && orderUnitByCodeStoreId[code] ? orderUnitByCodeStoreId[code][column.storeId] : null;
+            targetCell.value = getTabularDisplayStoreQty(qtyValue, unitMeta) || null;
+          });
         }
         if (template.noteColumn && template.noteColumn.colIndex != null) {
-          ws.getCell(itemRow.rowIndex + 1 + worksheetRowOffset, template.noteColumn.colIndex + 1 + worksheetColumnOffset).value = noteByCode[code] || null;
+          ws.getCell(rowNumber, template.noteColumn.colIndex + 1 + worksheetColumnOffset).value = noteByCode[code] || null;
+        } else if (tabularAppendPlan && tabularAppendPlan.noteColIndex != null) {
+          const targetCell = ws.getCell(rowNumber, tabularAppendPlan.noteColIndex + 1 + worksheetColumnOffset);
+          const sourceDataCell = ws.getCell(rowNumber, Math.max(1, tabularAppendPlan.styleSourceColIndex + 1 + worksheetColumnOffset));
+          copyWorksheetCellStyle(sourceDataCell, targetCell);
+          targetCell.value = noteByCode[code] || null;
         }
         return;
       }
@@ -3294,7 +3435,8 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
     vendorKey: resolvedVendorKey,
     supplierName: splitData && typeof splitData === 'object' ? splitData.supplierName : '',
   });
-  const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
+  const templateVariant = requestedDocumentMode === 'monitor' ? 'monitor' : 'supplier';
+  const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey, templateVariant);
 
   // Vendor supplier attachment must include only product + total qty.
   // When preview layout exists, use it to preserve product order/headings while dropping
@@ -3367,7 +3509,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       excelBuffer: rendered.buffer,
       excelFilename: docFilename,
     };
-  } else if (requestedDocumentMode !== 'monitor' && template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
+  } else if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
     excelRows = buildRowsFromCategoryTemplate({
       template,
       dateText,
@@ -3376,6 +3518,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       noteByCode,
       itemNameByCode,
       orderUnitByCodeStoreId,
+      category: resolvedCategory,
     });
     excelBuffer = await buildWorkbookFromCategoryTemplate({
       template,
@@ -3385,6 +3528,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       noteByCode,
       itemNameByCode,
       orderUnitByCodeStoreId,
+      category: resolvedCategory,
     });
     usePlainWorkbook = !excelBuffer;
   } else if (resolvedCategory === 'vendor_orders' && vendorMonitorRows && vendorMonitorRows.length > 0) {
@@ -3528,7 +3672,8 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
     }
     return itemNameByCode[trimmedCode] || displayOrderItemCode(trimmedCode);
   };
-  const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey);
+  const templateVariant = resolvedCategory === 'vendor_orders' ? 'monitor' : 'default';
+  const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey, templateVariant);
   const hasDocxStoreTemplate = !!(template && template.kind === 'docx_vendor_form' && template.docxMap && template.originalFile && template.originalFile.base64);
   const hasExcelCategoryTemplate = !!(template && Array.isArray(template.itemRows) && template.itemRows.length > 0 && template.originalFile && template.originalFile.base64);
   const useUploadedExcelStoreTemplate = hasExcelCategoryTemplate && !hasDocxStoreTemplate && resolvedCategory !== 'vendor_orders';
@@ -3649,6 +3794,7 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
       noteByCode,
       itemNameByCode,
       orderUnitByCodeStoreId,
+      category: resolvedCategory,
     });
     excelBuffer = await buildWorkbookFromCategoryTemplate({
       template,
@@ -3658,6 +3804,7 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
       noteByCode,
       itemNameByCode,
       orderUnitByCodeStoreId,
+      category: resolvedCategory,
     });
     usePlainWorkbook = !excelBuffer;
   } else {
