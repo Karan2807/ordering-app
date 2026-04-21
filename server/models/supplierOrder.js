@@ -24,4 +24,9 @@ const supplierOrderSchema = new mongoose.Schema({
   storeBreakdown: { type: mongoose.Schema.Types.Mixed, default: null },
 });
 
+// Indexes for fast consolidated history and preview queries
+supplierOrderSchema.index({ sentAt: -1 });
+supplierOrderSchema.index({ week: 1, type: 1, category: 1, vendorKey: 1 });
+supplierOrderSchema.index({ finished: 1, sentAt: -1 });
+
 export default mongoose.model('SupplierOrder', supplierOrderSchema);

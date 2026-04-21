@@ -2417,32 +2417,35 @@ export default function App(){
   useEffect(function(){
     if(!user){setIsLoading(false);return;}
     var cancelled=false;
+    var pollCount=0;
     var fetchData=async function(opts){
       var initial=!!(opts&&opts.initial);
+      // On background polls, only re-fetch rarely-changing data (items/stores/suppliers/users)
+      // every 10th tick (~5 min). Dynamic data (orders/notifications/settings) every tick.
+      var fullSync=initial||((opts&&opts.pollCount||0)%10===0);
       if(syncInFlightRef.current) return;
       syncInFlightRef.current=true;
       try{
         if(initial){setIsLoading(true);}
         var isA=isPrivilegedRole(user);
         var fetches={
-          items:apiClient.items.getAll(),
-          stores:apiClient.stores.getAll(),
           notifs:apiClient.notifications.getAll(),
           orders:apiClient.orders.getAll(isA?null:user.storeId),
           settings:apiClient.settings.getAll(),
         };
-        fetches.suppliers=apiClient.suppliers.getAll();
-        if(isA){fetches.users=apiClient.users.getAll();}
+        if(fullSync){
+          fetches.items=apiClient.items.getAll();
+          fetches.stores=apiClient.stores.getAll();
+          fetches.suppliers=apiClient.suppliers.getAll();
+          if(isA){fetches.users=apiClient.users.getAll();}
+        }
         var results=await Promise.all(Object.values(fetches));
         if(cancelled) return;
         var keys=Object.keys(fetches);
         var data={};keys.forEach(function(k,i){data[k]=results[i];});
         setLoadError(null);
         
-        var nextItems=sortItems(data.items||[]);
-        var nextStores=data.stores||[];
         var nextNotifs=data.notifs||[];
-        setStores(function(prev){return sameJson(prev,nextStores)?prev:nextStores;});
         setNotifs(function(prev){return sameJson(prev,nextNotifs)?prev:nextNotifs;});
         // server now returns nested objects to avoid collisions between
         // schedule and message keys.  each is keyed by order type (A/B/C).
@@ -2459,14 +2462,8 @@ export default function App(){
         var serverVendorOrdersWindowStartDay = parseOptionalDay(settings.vendorOrdersWindowStartDay);
         var serverVendorOrdersWindowEndDay = parseOptionalDay(settings.vendorOrdersWindowEndDay);
         var serverCategoryTemplates=settings.categoryTemplates&&typeof settings.categoryTemplates==="object"?settings.categoryTemplates:{};
-        var repairedTemplateState=repairLoadedTemplatesAndItems(nextItems,serverCategoryTemplates);
-        nextItems=repairedTemplateState.items;
-        serverCategoryTemplates=repairedTemplateState.categoryTemplates;
-        setItems(function(prev){return sameJson(prev,nextItems)?prev:nextItems;});
-        setScheduleToday(function(prev){return prev===serverScheduleToday?prev:serverScheduleToday;});
-        var nextMsgs={A:serverMsg.A||"",B:serverMsg.B||"",C:serverMsg.C||""};
         var nextManualSeq=Number.isNaN(serverManualOpenSeq)?null:serverManualOpenSeq;
-        setOrderMsgs(function(prev){return sameJson(prev,nextMsgs)?prev:nextMsgs;});
+        setOrderMsgs(function(prev){var n={A:serverMsg.A||"",B:serverMsg.B||"",C:serverMsg.C||""};return sameJson(prev,n)?prev:n;});
         setManualOpenOrder(function(prev){return prev===serverManualOpen?prev:serverManualOpen;});
         setManualOpenSeq(function(prev){return prev===nextManualSeq?prev:nextManualSeq;});
         setManualOpenLeaves(function(prev){return prev===serverManualOpenLeaves?prev:serverManualOpenLeaves;});
@@ -2475,31 +2472,42 @@ export default function App(){
         setServerActiveVendorOrderIds(function(prev){return sameJson(prev,serverActiveVendorIds)?prev:serverActiveVendorIds;});
         setVendorOrdersWindowStartDay(function(prev){return prev===serverVendorOrdersWindowStartDay?prev:serverVendorOrdersWindowStartDay;});
         setVendorOrdersWindowEndDay(function(prev){return prev===serverVendorOrdersWindowEndDay?prev:serverVendorOrdersWindowEndDay;});
-        setCategoryTemplates(function(prev){return sameJson(prev,serverCategoryTemplates)?prev:serverCategoryTemplates;});
-        // pull logo value too (may be null)
-        var nextLogo=settings.logo || null;
-        setLogo(function(prev){return prev===nextLogo?prev:nextLogo;});
-        // ensure schedule values are explicit null when not set
+        setScheduleToday(function(prev){return prev===serverScheduleToday?prev:serverScheduleToday;});
         var schedMap={
           A: serverSched.A != null ? serverSched.A : null,
           B: serverSched.B != null ? serverSched.B : null,
           C: serverSched.C != null ? serverSched.C : null,
         };
         setSchedule(function(prev){return sameJson(prev,schedMap)?prev:schedMap;});
-        if(data.orders&&Array.isArray(data.orders)){
-          var orderMap=buildOrderStateMap(data.orders,nextItems);
-          setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
+        if(fullSync){
+          var nextItems=sortItems(data.items||[]);
+          var nextStores=data.stores||[];
+          var serverCategoryTemplatesRepaired=repairLoadedTemplatesAndItems(nextItems,serverCategoryTemplates);
+          nextItems=serverCategoryTemplatesRepaired.items;
+          serverCategoryTemplates=serverCategoryTemplatesRepaired.categoryTemplates;
+          setItems(function(prev){return sameJson(prev,nextItems)?prev:nextItems;});
+          setStores(function(prev){return sameJson(prev,nextStores)?prev:nextStores;});
+          setCategoryTemplates(function(prev){return sameJson(prev,serverCategoryTemplates)?prev:serverCategoryTemplates;});
+          var nextLogo=settings.logo||null;
+          setLogo(function(prev){return prev===nextLogo?prev:nextLogo;});
+          var nextSuppliers=normalizeSupplierList(data.suppliers||[]);
+          setSuppliers(function(prev){return sameJson(prev,nextSuppliers)?prev:nextSuppliers;});
+          if(isA){var nextUsers=data.users||[];setUsers(function(prev){return sameJson(prev,nextUsers)?prev:nextUsers;});}
+          else{setUsers(function(prev){return prev.length?[]:prev;});}
+          // apply orders with latest items for initial/full syncs
+          if(data.orders&&Array.isArray(data.orders)){
+            var orderMap=buildOrderStateMap(data.orders,nextItems);
+            setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
+          }
         }else{
-          setOrders(function(prev){return Object.keys(prev||{}).length?{}:prev;});
-        }
-        var nextSuppliers=normalizeSupplierList(data.suppliers||[]);
-        setSuppliers(function(prev){return sameJson(prev,nextSuppliers)?prev:nextSuppliers;});
-        if(isA){
-          var nextUsers=data.users||[];
-          setUsers(function(prev){return sameJson(prev,nextUsers)?prev:nextUsers;});
-        }
-        else {
-          setUsers(function(prev){return prev.length?[]:prev;});
+          // light poll: apply orders using already-loaded items state
+          if(data.orders&&Array.isArray(data.orders)){
+            setItems(function(currentItems){
+              var orderMap=buildOrderStateMap(data.orders,currentItems);
+              setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
+              return currentItems;
+            });
+          }
         }
         if(initial){setIsLoading(false);}
       }catch(e){
@@ -2511,13 +2519,13 @@ export default function App(){
       }
     };
     if(auth.loading)return;
-    fetchData({initial:true});
-    var pullMs=10000;
+    fetchData({initial:true,pollCount:0});
+    var pullMs=30000;
     var timer=setInterval(function(){
-      if(document.visibilityState==="visible"){fetchData({initial:false});}
+      if(document.visibilityState==="visible"){pollCount+=1;fetchData({initial:false,pollCount:pollCount});}
     },pullMs);
-    var onFocus=function(){fetchData({initial:false});};
-    var onVisible=function(){if(document.visibilityState==="visible"){fetchData({initial:false});}};
+    var onFocus=function(){fetchData({initial:false,pollCount:pollCount});};
+    var onVisible=function(){if(document.visibilityState==="visible"){fetchData({initial:false,pollCount:pollCount});}};
     window.addEventListener("focus",onFocus);
     document.addEventListener("visibilitychange",onVisible);
     return function(){
@@ -3712,6 +3720,21 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
         if(isLoading) return <div style={Object.assign({},S.nI,{marginBottom:8})}>Loading stored document view...</div>;
         if(preview&&preview.rows&&preview.rows.length>0) return <ExcelSheetPreviewTable rows={preview.rows} maxHeight={420}/>;
         if(preview&&preview.fileBase64) return <div style={Object.assign({},S.nI,{marginBottom:8})}>This stored file is kept in its original format and does not have a table preview. Use Download or Print to open it.</div>;
+        // Fallback: show storeBreakdown data for unsent vendor orders when Excel is not available
+        if(selDoneIsVendorLog&&selDone.storeBreakdown&&typeof selDone.storeBreakdown==="object"&&Object.keys(selDone.storeBreakdown).length>0){
+          var bkRows=[];
+          Object.entries(selDone.storeBreakdown).forEach(function(e){
+            var storeId=e[0],storeData=e[1];
+            if(!storeData||typeof storeData!=="object") return;
+            var storeName=storeData.storeName||storeId||"-";
+            var rawItems=storeData.items&&typeof storeData.items==="object"?storeData.items:{};
+            Object.entries(rawItems).forEach(function(ie){
+              var code=ie[0],qty=ie[1];
+              if((Number(qty)||0)>0) bkRows.push([storeName,code,String(Number(qty)||0)]);
+            });
+          });
+          if(bkRows.length>0) return <div style={Object.assign({},S.tw,{maxHeight:420})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Item Code</th><th style={S.th}>Qty</th></tr></thead><tbody>{bkRows.map(function(r,i){return <tr key={i}><td style={S.td}>{r[0]}</td><td style={S.td}>{r[1]}</td><td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{r[2]}</td></tr>;})}</tbody></table></div>;
+        }
         if(selDone.snapshotLines&&selDone.snapshotLines.length>0) return <div style={Object.assign({},S.tw,{maxHeight:420})}><pre style={{margin:0,padding:12,whiteSpace:"pre-wrap",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",fontSize:11.5,color:"#0F172A"}}>{selDone.snapshotLines.join("\n")}</pre></div>;
         return <div style={Object.assign({},S.nI,{marginBottom:0})}>No stored sent details for this record (older history entry).</div>;
       })()}
