@@ -2200,6 +2200,80 @@ function supplierGroupKey(week, type, category, vendorKey) {
   return [String(week || ''), String(type || '').toUpperCase(), normalizedCategory, normalizedVendorKey || ''].join('::');
 }
 
+function hasPositiveOrderLineItems(items) {
+  return Array.isArray(items) && items.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    return (Number(item.quantity) || 0) > 0 || String(item.note || '').trim();
+  });
+}
+
+function buildStoreBreakdownFromConsolidatedData({ stores = [], slots = [], slotOrders = {}, splitData = null }) {
+  const storeNameById = Object.fromEntries(
+    (Array.isArray(stores) ? stores : []).map((store) => [String(store && store.id || ''), store && (store.name || store.id) || ''])
+  );
+  const slotMetaByStoreId = {};
+  (Array.isArray(slots) ? slots : []).forEach((slot) => {
+    const storeId = String(slot && slot.store && slot.store.id || '').trim();
+    if (!storeId) return;
+    const order = slotOrders && slot.apna ? slotOrders[slot.apna] : null;
+    slotMetaByStoreId[storeId] = {
+      storeName: storeNameById[storeId] || (slot && slot.store && (slot.store.name || slot.store.id)) || storeId,
+      status: String(order && order.status || 'submitted'),
+      submittedAt: order && (order.submittedAt || order.createdAt || order.date) || null,
+    };
+  });
+
+  const breakdown = {};
+  const ensureStoreEntry = (storeId) => {
+    const normalizedStoreId = String(storeId || '').trim();
+    if (!normalizedStoreId) return null;
+    if (!breakdown[normalizedStoreId]) {
+      const meta = slotMetaByStoreId[normalizedStoreId] || {};
+      breakdown[normalizedStoreId] = {
+        storeName: meta.storeName || storeNameById[normalizedStoreId] || normalizedStoreId,
+        status: meta.status || 'submitted',
+        submittedAt: meta.submittedAt || null,
+        items: {},
+      };
+    }
+    return breakdown[normalizedStoreId];
+  };
+
+  if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
+    splitData.rows.forEach((row) => {
+      const itemCode = String(row && row.itemCode || '').trim();
+      if (!itemCode) return;
+      Object.entries(row && row.qtyByStoreId && typeof row.qtyByStoreId === 'object' ? row.qtyByStoreId : {}).forEach(([storeId, qty]) => {
+        const numericQty = Number(qty) || 0;
+        if (numericQty <= 0) return;
+        const entry = ensureStoreEntry(storeId);
+        if (!entry) return;
+        entry.items[itemCode] = (Number(entry.items[itemCode]) || 0) + numericQty;
+      });
+    });
+  } else {
+    (Array.isArray(slots) ? slots : []).forEach((slot) => {
+      const storeId = String(slot && slot.store && slot.store.id || '').trim();
+      if (!storeId) return;
+      const order = slotOrders && slot.apna ? slotOrders[slot.apna] : null;
+      if (!order || !isStoreOrderVisibleInConsolidated(order.status)) return;
+      orderItemsToList(order.items).forEach((item) => {
+        const itemCode = String(item && item.itemCode || '').trim();
+        const numericQty = Number(item && item.quantity) || 0;
+        if (!itemCode || numericQty <= 0) return;
+        const entry = ensureStoreEntry(storeId);
+        if (!entry) return;
+        entry.items[itemCode] = (Number(entry.items[itemCode]) || 0) + numericQty;
+      });
+    });
+  }
+
+  Object.keys(breakdown).forEach((storeId) => {
+    if (Object.keys(breakdown[storeId].items || {}).length === 0) delete breakdown[storeId];
+  });
+  return Object.keys(breakdown).length > 0 ? breakdown : null;
+}
+
 // In-memory cache for consolidated history (expensive all-docs query)
 let _consolidatedHistoryCache = null;
 let _consolidatedHistoryCacheTime = 0;
@@ -2602,6 +2676,43 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
         Object.entries(storeData.items || {}).forEach(([itemCode, qty]) => {
           if (!qtyByCode[itemCode]) qtyByCode[itemCode] = {};
           qtyByCode[itemCode][storeId] = Number(qty) || 0;
+        });
+      });
+      const rows = Object.entries(qtyByCode)
+        .filter(([, qtyByStore]) => Object.values(qtyByStore).some((q) => q > 0))
+        .map(([itemCode, qtyByStoreId]) => ({
+          itemCode,
+          qtyByStoreId,
+          orderUnitByStoreId: {},
+          note: '',
+        }));
+      if (rows.length > 0) {
+        archivedSplitData = { documentMode: 'monitor', rows };
+      }
+    }
+  }
+
+  if (
+    !archivedSplitData &&
+    (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves')
+  ) {
+    const liveOrders = await Order.find({
+      week: normalizedWeek,
+      type: normalizedType,
+      category: normalizedCategory,
+      vendorKey: normalizedVendorKey,
+    }).lean();
+    if (liveOrders.length > 0) {
+      const qtyByCode = {};
+      liveOrders.forEach((order) => {
+        const storeId = String(order && order.storeId || '').trim();
+        if (!storeId) return;
+        orderItemsToList(order.items).forEach((item) => {
+          const itemCode = String(item && item.itemCode || '').trim();
+          const qty = Number(item && item.quantity) || 0;
+          if (!itemCode || qty <= 0) return;
+          if (!qtyByCode[itemCode]) qtyByCode[itemCode] = {};
+          qtyByCode[itemCode][storeId] = (Number(qtyByCode[itemCode][storeId]) || 0) + qty;
         });
       });
       const rows = Object.entries(qtyByCode)
@@ -4019,6 +4130,12 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
       resolvedCategory === 'vendor_orders' && finishedFlag
         ? await clearVendorOrdersOpenIfMatching(resolvedVendorKey)
         : undefined;
+    const storeBreakdown = buildStoreBreakdownFromConsolidatedData({
+      stores,
+      slots,
+      slotOrders,
+      splitData,
+    });
     let supplierOrder = null;
     try {
       const totalObj = {};
@@ -4052,6 +4169,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
         items: totalObj,
         reopenedFromId: reopenedFromId ? String(reopenedFromId) : null,
         snapshotLines,
+        storeBreakdown,
         excelBase64: (fileBuffer || excelBuffer).toString('base64'),
         excelFilename: fileFilename || excelFilename,
         excelContentType: contentType || EXCEL_CONTENT_TYPE,
@@ -4239,6 +4357,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
     const attachments = [];
     const snapshotLines = [];
     const totalObj = {};
+    const storeBreakdown = {};
 
     for (const store of stores) {
       const order = await findCurrentWeekOrder(store.id, type, weekKey, category, vendorKey, weekBase);
@@ -4249,6 +4368,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
 
       const itemsObj = {};
       const notesObj = {};
+      const storeItems = {};
       orderList.forEach((line) => {
         if (line.unitType && line.unitType !== 'cas') {
           itemsObj[line.itemCode] = { qty: Number(line.quantity) || 0, unitType: line.unitType, customUnit: line.customUnit || '' };
@@ -4256,8 +4376,18 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
           itemsObj[line.itemCode] = Number(line.quantity) || 0;
         }
         if (line.note) notesObj[line.itemCode] = line.note;
-        totalObj[line.itemCode] = (totalObj[line.itemCode] || 0) + (Number(line.quantity) || 0);
+        if ((Number(line.quantity) || 0) > 0) {
+          storeItems[line.itemCode] = (storeItems[line.itemCode] || 0) + (Number(line.quantity) || 0);
+          totalObj[line.itemCode] = (totalObj[line.itemCode] || 0) + (Number(line.quantity) || 0);
+        }
       });
+      if (Object.keys(storeItems).length === 0) continue;
+      storeBreakdown[String(store.id)] = {
+        storeName: store.name || store.id,
+        status: order.status,
+        submittedAt: order.submittedAt || order.createdAt || null,
+        items: storeItems,
+      };
 
       const doc = await buildStoreOrderDocumentPayload({
         type,
@@ -4304,6 +4434,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
         week: weekKey,
         items: totalObj,
         snapshotLines,
+        storeBreakdown: Object.keys(storeBreakdown).length > 0 ? storeBreakdown : null,
         finished: true,
       });
       invalidateConsolidatedHistoryCache();
@@ -4672,6 +4803,10 @@ router.patch('/supplier-orders/:id/reopen', authMiddleware, async (req, res) => 
       }
 
       if (sourceBreakdown) {
+      if ((!doc.storeBreakdown || Object.keys(doc.storeBreakdown || {}).length === 0) && Object.keys(sourceBreakdown).length > 0) {
+        doc.storeBreakdown = sourceBreakdown;
+        await doc.save();
+      }
       for (const [storeId, storeData] of Object.entries(sourceBreakdown)) {
         if (!storeId || !storeData || typeof storeData !== 'object') continue;
         const rawItems = storeData.items && typeof storeData.items === 'object' ? storeData.items : {};
@@ -4687,7 +4822,7 @@ router.patch('/supplier-orders/:id/reopen', authMiddleware, async (req, res) => 
           category: normalizedCategory,
           vendorKey: normalizedVendorKey,
           week: weekKey,
-        }).select({ id: 1, status: 1 }).lean();
+        }).select({ id: 1, status: 1, items: 1, createdAt: 1 }).lean();
 
         if (!existing) {
           // Restore the order document
@@ -4708,6 +4843,28 @@ router.patch('/supplier-orders/:id/reopen', authMiddleware, async (req, res) => 
             restoredOrderCount += 1;
           } catch (createErr) {
             console.error(`[Reopen] Failed to restore order for store ${storeId}:`, createErr);
+          }
+        } else if (!hasPositiveOrderLineItems(existing.items)) {
+          try {
+            await Order.updateOne(
+              {
+                storeId,
+                type: orderType,
+                category: normalizedCategory,
+                vendorKey: normalizedVendorKey,
+                week: weekKey,
+              },
+              {
+                $set: {
+                  status: 'submitted',
+                  items: itemEntries,
+                  submittedAt: storeData.submittedAt ? new Date(storeData.submittedAt) : now,
+                },
+              }
+            );
+            restoredOrderCount += 1;
+          } catch (updateErr) {
+            console.error(`[Reopen] Failed to refresh empty order for store ${storeId}:`, updateErr);
           }
         }
       }
