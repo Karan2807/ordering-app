@@ -3632,7 +3632,8 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var completedVegetableLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vegetables";});
   var completedLeavesLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="leaves";});
   var completedVendorLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vendor_orders";});
-  var visibleConsolidatedHistory=consolidatedHistory;
+  var _hcf=useState("all"),historyCategory=_hcf[0],setHistoryCategory=_hcf[1];
+  var visibleConsolidatedHistory=historyCategory==="all"?consolidatedHistory:consolidatedHistory.filter(function(r){return normalizeCategory(r.category||"vegetables")===historyCategory;});
   var renderCompletedSection=function(title,rows){
     return(<div style={S.card}><div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>No completed orders</div>:
@@ -3664,7 +3665,16 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       <Fragment>
         <div style={S.card}>
           <div style={S.cH}>
-            <div><div style={S.t}>Consolidated History (All Time)</div><div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div></div>
+            <div style={{flex:1}}>
+              <div style={S.t}>Consolidated History (All Time)</div>
+              <div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div>
+              <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                {[{id:"all",label:"All"},{id:"vegetables",label:"Vegetables"},{id:"leaves",label:"Leaves"},{id:"vendor_orders",label:"Vendor Orders"}].map(function(cat){
+                  var isActive=historyCategory===cat.id;
+                  return <button key={cat.id} style={Object.assign({},S.b,isActive?S.bG:S.bS,{padding:"3px 12px",fontSize:11,fontWeight:isActive?700:400})} onClick={function(){setHistoryCategory(cat.id);}}>{cat.label}</button>;
+                })}
+              </div>
+            </div>
             <button style={Object.assign({},S.b,S.bS)} onClick={refreshConsolidatedHistory} disabled={historyLoading}>{historyLoading?"Refreshing...":"Refresh"}</button>
           </div>
           {historyLoading?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>Loading consolidated history...</div>:
