@@ -3572,6 +3572,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     try{
       await apiClient.supplierOrders.reopen(log._id);
       await refreshCompletedLogs();
+      if(refreshOrders) await refreshOrders();
       var reopenedCategory=normalizeCategory(log&&log.category||"vegetables");
       var isVendorLog=reopenedCategory==="vendor_orders";
       var reopenMeta={
