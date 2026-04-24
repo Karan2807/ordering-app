@@ -263,7 +263,8 @@ const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONSOLIDATED_TEMPLATE_PATH = path.resolve(__dirname, '..', 'templates', 'consolidated-template.xlsx');
-const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders'];
+const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders', 'warehouse_inventory'];
+const DEFAULT_INVENTORY_SETTINGS_KEY = '__default_inventory__';
 const VALID_ORDER_STATUSES = new Set(['draft', 'draft_shared', 'submitted', 'processed']);
 const EXCEL_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const displayOrderItemCode = (code) => {
@@ -287,7 +288,7 @@ function normalizeCategory(value) {
   return VALID_CATEGORIES.includes(raw) ? raw : 'vegetables';
 }
 function normalizeVendorKey(category, vendorKey) {
-  return normalizeCategory(category) === 'vendor_orders'
+  return ['vendor_orders', 'warehouse_inventory'].includes(normalizeCategory(category))
     ? String(vendorKey || '').trim() || null
     : null;
 }
@@ -780,6 +781,124 @@ function cleanTemplateHeaderToken(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
 }
 
+function resolveTemplateSourceSheets(template) {
+  if (template && template.rawGrid && Array.isArray(template.rawGrid.sheets) && template.rawGrid.sheets.length) {
+    return template.rawGrid.sheets
+      .map((sheet, index) => ({
+        name: String(sheet && sheet.name || `Sheet ${index + 1}`).trim() || `Sheet ${index + 1}`,
+        rows: Array.isArray(sheet && sheet.rows) ? sheet.rows : [],
+      }))
+      .filter((sheet) => Array.isArray(sheet.rows) && sheet.rows.length);
+  }
+  if (template && Array.isArray(template.rows)) {
+    return [{ name: String(template.sheetName || '').trim() || 'Sheet 1', rows: template.rows }];
+  }
+  return [];
+}
+
+function resolveAllTemplateItemRows(template) {
+  if (!template) return [];
+  if (Array.isArray(template.multiSheetItemRows) && template.multiSheetItemRows.length) {
+    return template.multiSheetItemRows.map((row) => Object.assign({}, row));
+  }
+  if (Array.isArray(template.itemRows)) {
+    return template.itemRows.map((row) => Object.assign({}, row, {
+      sheetIndex: 0,
+      sheetName: String(template.sheetName || '').trim() || 'Sheet 1',
+    }));
+  }
+  if (Array.isArray(template.outline) && template.outline.length) {
+    return template.outline
+      .filter((entry) => entry && String(entry.type || '').trim() === 'item' && Number.isInteger(entry.rowIndex))
+      .map((entry) => ({
+        code: String(entry.code || '').trim(),
+        name: String(entry.name || '').trim(),
+        rowIndex: entry.rowIndex,
+        colIndex: Number.isInteger(entry.colIndex) ? entry.colIndex : 0,
+        sheetIndex: 0,
+        sheetName: String(template.sheetName || '').trim() || 'Sheet 1',
+      }))
+      .filter((row) => row.code && row.name);
+  }
+  return [];
+}
+
+function resolveTemplateSheetRows(template, itemRow) {
+  const sheets = resolveTemplateSourceSheets(template);
+  if (!sheets.length) return [];
+  const sheetName = String(itemRow && itemRow.sheetName || '').trim();
+  if (sheetName) {
+    const namedSheet = sheets.find((sheet) => String(sheet && sheet.name || '').trim() === sheetName);
+    if (namedSheet && Array.isArray(namedSheet.rows)) return namedSheet.rows;
+  }
+  const rawSheetIndex = Number(itemRow && itemRow.sheetIndex);
+  const sheetIndex = Number.isInteger(rawSheetIndex) ? rawSheetIndex : 0;
+  const selectedSheet = sheets[Math.min(Math.max(0, sheetIndex), sheets.length - 1)];
+  return selectedSheet && Array.isArray(selectedSheet.rows) ? selectedSheet.rows : [];
+}
+
+function resolveTemplateColumnHeader(rows, headerRowIndex, rowIndex, colIndex) {
+  const candidates = [];
+  if (Number.isInteger(headerRowIndex)) candidates.push(headerRowIndex, headerRowIndex - 1, headerRowIndex - 2);
+  else if (Number.isInteger(rowIndex)) candidates.push(rowIndex - 1, rowIndex - 2, rowIndex - 3);
+  for (const candidateIndex of candidates) {
+    if (!Number.isInteger(candidateIndex) || candidateIndex < 0) continue;
+    const sourceRow = Array.isArray(rows[candidateIndex]) ? rows[candidateIndex] : [];
+    const value = String(sourceRow[colIndex] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function isReservedTemplateStaticToken(token) {
+  if (!token) return true;
+  if (['item', 'items', 'itemname', 'product', 'products', 'description', 'name'].includes(token)) return true;
+  if (['code', 'itemcode', 'sku'].includes(token)) return true;
+  if (['unit', 'uom', 'pack', 'size'].includes(token)) return true;
+  if (['qty', 'quantity', 'orderqty', 'qtyordered'].includes(token) || token.includes('qty')) return true;
+  if (['note', 'notes'].includes(token) || token.includes('remark') || token.includes('comment') || token.includes('memo')) return true;
+  if (token.includes('total')) return true;
+  if (token.includes('date')) return true;
+  return false;
+}
+
+function inferTemplateStaticColumnIndices(template, itemRows = []) {
+  if (!template || template.kind === 'docx_vendor_form') return new Set();
+  const rowsToInspect = Array.isArray(itemRows) && itemRows.length ? itemRows : resolveAllTemplateItemRows(template);
+  if (!rowsToInspect.length) return new Set();
+  const staticCols = new Set();
+  const storeColSet = new Set((template.storeColumns || [])
+    .filter((col) => col && Number.isInteger(col.colIndex))
+    .map((col) => col.colIndex));
+  const quantityCol = template && template.quantityColumn && Number.isInteger(template.quantityColumn.colIndex)
+    ? template.quantityColumn.colIndex
+    : null;
+  const noteCol = template && template.noteColumn && Number.isInteger(template.noteColumn.colIndex)
+    ? template.noteColumn.colIndex
+    : null;
+
+  rowsToInspect.forEach((itemRow) => {
+    if (!itemRow || !Number.isInteger(itemRow.rowIndex)) return;
+    const templateRows = resolveTemplateSheetRows(template, itemRow);
+    if (!templateRows.length) return;
+    const row = Array.isArray(templateRows[itemRow.rowIndex]) ? templateRows[itemRow.rowIndex] : [];
+    row.forEach((cell, colIndex) => {
+      const value = String(cell == null ? '' : cell).trim();
+      if (!value) return;
+      if (colIndex === (Number.isInteger(itemRow.colIndex) ? itemRow.colIndex : 0)) return;
+      if (storeColSet.has(colIndex)) return;
+      if (quantityCol != null && colIndex === quantityCol) return;
+      if (noteCol != null && colIndex === noteCol) return;
+      const label = resolveTemplateColumnHeader(templateRows, template.headerRowIndex, itemRow.rowIndex, colIndex);
+      const token = cleanTemplateHeaderToken(label);
+      if (isReservedTemplateStaticToken(token)) return;
+      staticCols.add(colIndex);
+    });
+  });
+
+  return staticCols;
+}
+
 function inferMatrixTemplateLayout(template, itemRows = []) {
   if (!template || template.kind === 'tabular' || !Array.isArray(template.storeColumns) || !template.storeColumns.length) return null;
   const rows = Array.isArray(template.rows) ? template.rows : [];
@@ -1047,13 +1166,15 @@ function copyWorksheetCellStyle(sourceCell, targetCell) {
 
 function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeStoreId, noteByCode, itemNameByCode, orderUnitByCodeStoreId = {}, category }) {
   const rows = Array.isArray(template && template.rows) ? template.rows.map((row) => (Array.isArray(row) ? row.slice() : [])) : [];
+  const allTemplateItemRows = resolveAllTemplateItemRows(template);
+  const preservedStaticCols = inferTemplateStaticColumnIndices(template, allTemplateItemRows);
   if (template && template.dateCell && template.dateCell.rowIndex != null && template.dateCell.colIndex != null) {
     ensureRowCell(rows, template.dateCell.rowIndex, template.dateCell.colIndex);
     rows[template.dateCell.rowIndex][template.dateCell.colIndex] = `${template.dateCell.prefix || ''}${dateText}`;
   }
   const slotByKey = Object.fromEntries((slots || []).map((slot) => [slot.apna, slot]));
   const singleStoreSlot = Array.isArray(slots) && slots.length === 1 ? slots[0] : null;
-  const matrixLayout = inferMatrixTemplateLayout(template, template && Array.isArray(template.itemRows) ? template.itemRows : []);
+  const matrixLayout = inferMatrixTemplateLayout(template, allTemplateItemRows);
   const tabularAppendPlan = buildTabularAppendPlan({ template, rows, slots, noteByCode, category });
 
   if (tabularAppendPlan) {
@@ -1112,7 +1233,7 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
 
     // Item-name column indices (keep set)
     const itemNameIdxSet = new Set(
-      (template.itemRows || []).map((ir) => ir.colIndex || 0)
+      allTemplateItemRows.map((ir) => ir.colIndex || 0)
     );
     // Note column (keep)
     const noteIdx = template.noteColumn && template.noteColumn.colIndex != null
@@ -1126,6 +1247,7 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
         if (ci === selectedColIdx) continue;
         if (itemNameIdxSet.has(ci)) continue;
         if (ci === noteIdx) continue;
+        if (preservedStaticCols.has(ci)) continue;
         ensureRowCell(rows, rowIndex, ci);
         rows[rowIndex][ci] = '';
       }
@@ -1137,7 +1259,7 @@ function buildRowsFromCategoryTemplate({ template, dateText, slots, qtyByCodeSto
       rows[template.headerRowIndex][selectedCol.colIndex] = storeDisplayName;
     }
   }
-  (template && Array.isArray(template.itemRows) ? template.itemRows : []).forEach((itemRow) => {
+  allTemplateItemRows.forEach((itemRow) => {
     const code = String(itemRow.code || '').trim();
     const name = itemNameByCode[code] || itemRow.name || displayOrderItemCode(code);
     if (template.kind === 'tabular') {
@@ -1449,12 +1571,8 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
   const tabularAppendPlan = buildTabularAppendPlan({ template, rows: template.rows, slots, noteByCode, category });
 
   // Use multiSheetItemRows if present (multi-sheet support), else fall back to itemRows
-  const allItemRows = Array.isArray(template.multiSheetItemRows) && template.multiSheetItemRows.length > 0
-    ? template.multiSheetItemRows
-    : (Array.isArray(template.itemRows) ? template.itemRows.map((ir) => Object.assign({}, ir, {
-        sheetIndex: 0,
-        sheetName: String(template.sheetName || ''),
-      })) : []);
+  const allItemRows = resolveAllTemplateItemRows(template);
+  const preservedStaticCols = inferTemplateStaticColumnIndices(template, allItemRows);
 
   // Group items by sheet
   const itemsBySheet = {};
@@ -1485,8 +1603,10 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
     let singleStoreSelectedColNum = null;
     let singleStoreFirstStoreCol = null;
     let singleStoreMaxCol = 0;
+    let singleStoreMergeRanges = [];
     if (singleStoreSlot) {
       const mergeRanges = ws.model && Array.isArray(ws.model.merges) ? [...ws.model.merges] : [];
+      singleStoreMergeRanges = mergeRanges.slice();
       mergeRanges.forEach((rangeStr) => {
         try { ws.unMergeCells(rangeStr); } catch (_) { /* ignore */ }
       });
@@ -1516,6 +1636,7 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
           : (matrixLayout && matrixLayout.storeHeaderRow != null ? matrixLayout.storeHeaderRow + 1 + worksheetRowOffset : 1);
         if (row.number < clearStartRow) return;
         for (let c = singleStoreFirstStoreCol; c <= singleStoreMaxCol; c++) {
+          if (preservedStaticCols.has(c - 1 - worksheetColumnOffset)) continue;
           try { row.getCell(c).value = null; } catch (_) {}
         }
         if (matrixLayout && matrixLayout.totalCol != null && matrixLayout.totalCol < matrixLayout.firstStoreCol) {
@@ -1624,6 +1745,7 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
         columnsToRemove.push(matrixLayout.codeCol + 1 + worksheetColumnOffset);
       }
       for (let c = firstStoreCol; c <= maxCol; c++) {
+        if (preservedStaticCols.has(c - 1 - worksheetColumnOffset)) continue;
         if (c !== selectedColNum) columnsToRemove.push(c);
       }
       if (matrixLayout && matrixLayout.totalCol != null && matrixLayout.totalCol < matrixLayout.firstStoreCol) {
@@ -1635,6 +1757,10 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
         .forEach((colNumber) => {
           try { ws.spliceColumns(colNumber, 1); } catch (_) {}
         });
+
+      remapMergeRangesAfterColumnRemoval(singleStoreMergeRanges, columnsToRemove).forEach((rangeRef) => {
+        try { ws.mergeCells(rangeRef); } catch (_) {}
+      });
 
       const storeName = String(
         (singleStoreSlot.store && (singleStoreSlot.store.name || singleStoreSlot.store.id))
@@ -1728,7 +1854,7 @@ function getIsoWeekKeyForDate(value) {
 function normalizeRequestedWeekKey(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
-  return /^\d{4}-\d{2}-\d{2}(?:-M\d+|-VS\d+)?$/.test(raw) ? raw : null;
+  return /^\d{4}-\d{2}-\d{2}(?:-M\d+|-VS\d+|-IS\d+)?$/.test(raw) ? raw : null;
 }
 
 async function getManualOpenState() {
@@ -1759,6 +1885,31 @@ async function getVendorSeqForKey(vendorKey) {
   );
   const seq = config ? parseInt(config.seq, 10) : 0;
   return seq > 0 ? seq : 1;
+}
+
+async function getInventorySeqForKey(inventoryKey) {
+  const lookupKey = String(inventoryKey || '').trim() || DEFAULT_INVENTORY_SETTINGS_KEY;
+  const doc = await Setting.findOne({ key: 'inventoryOrderConfigs' }).lean();
+  if (!doc || !Array.isArray(doc.value)) return 1;
+  const config = (doc.value || []).find(
+    (c) => c && String(c.vendorKey || '').trim() === lookupKey
+  );
+  const seq = config ? parseInt(config.seq, 10) : 0;
+  return seq > 0 ? seq : 1;
+}
+
+async function composeScopedWeekKey(baseWeekKey, type, category, vendorKey, manualOpenOrder, manualOpenSeq) {
+  const resolvedCategory = normalizeCategory(category);
+  const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
+    const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
+    return `${baseWeekKey}-VS${vendorSeq}`;
+  }
+  if (resolvedCategory === 'warehouse_inventory') {
+    const inventorySeq = await getInventorySeqForKey(resolvedVendorKey);
+    return `${baseWeekKey}-IS${inventorySeq}`;
+  }
+  return composeWeekKeyForType(baseWeekKey, type, manualOpenOrder, manualOpenSeq);
 }
 
 function escapeRegex(value) {
@@ -1860,6 +2011,55 @@ function parseA1RangeRef(ref) {
   const end = parseA1CellRef(match[2]);
   if (!start || !end) return null;
   return { start, end };
+}
+
+function columnNumberToLetters(value) {
+  let colNumber = Number(value) || 0;
+  if (colNumber < 1) return '';
+  let out = '';
+  while (colNumber > 0) {
+    const remainder = (colNumber - 1) % 26;
+    out = String.fromCharCode(65 + remainder) + out;
+    colNumber = Math.floor((colNumber - 1) / 26);
+  }
+  return out;
+}
+
+function toA1RangeRef(startRow, startCol, endRow, endCol) {
+  if (startRow < 1 || startCol < 1 || endRow < startRow || endCol < startCol) return null;
+  return `${columnNumberToLetters(startCol)}${startRow}:${columnNumberToLetters(endCol)}${endRow}`;
+}
+
+function shiftColumnNumberForRemovedColumns(colNumber, removedColumnsDescending) {
+  if (colNumber < 1) return null;
+  const removed = Array.isArray(removedColumnsDescending) ? removedColumnsDescending : [];
+  if (removed.includes(colNumber)) return null;
+  const removedBefore = removed.filter((value) => value < colNumber).length;
+  return colNumber - removedBefore;
+}
+
+function remapMergeRangesAfterColumnRemoval(mergeRanges, removedColumnsDescending) {
+  const nextRanges = [];
+  (Array.isArray(mergeRanges) ? mergeRanges : []).forEach((rangeRef) => {
+    const parsed = parseA1RangeRef(rangeRef);
+    if (!parsed) return;
+    let nextStartCol = null;
+    let nextEndCol = null;
+    for (let colNumber = parsed.start.col; colNumber <= parsed.end.col; colNumber += 1) {
+      const shiftedCol = shiftColumnNumberForRemovedColumns(colNumber, removedColumnsDescending);
+      if (!shiftedCol) continue;
+      if (nextStartCol == null) nextStartCol = shiftedCol;
+      nextEndCol = shiftedCol;
+    }
+    if (!nextStartCol || !nextEndCol) return;
+    const normalizedStartCol = Math.min(nextStartCol, nextEndCol);
+    const normalizedEndCol = Math.max(nextStartCol, nextEndCol);
+    if (normalizedEndCol <= normalizedStartCol && parsed.start.row === parsed.end.row) return;
+    const nextRangeRef = toA1RangeRef(parsed.start.row, normalizedStartCol, parsed.end.row, normalizedEndCol);
+    if (!nextRangeRef) return;
+    if (!nextRanges.includes(nextRangeRef)) nextRanges.push(nextRangeRef);
+  });
+  return nextRanges;
 }
 
 function getWorksheetUsedRange(worksheet) {
@@ -2085,10 +2285,11 @@ function buildConsolidatedFilenameForContent({ supplierName, dateValue, contentT
 async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey, weekBase = null) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
-  const isVendorOrders = resolvedCategory === 'vendor_orders' && !!resolvedVendorKey;
-  const resolvedWeekBase = weekBase || String(weekKey || '').split('-VS')[0] || String(weekKey || '').split('-M')[0];
-  const vendorWeekRegex = isVendorOrders && resolvedWeekBase
-    ? new RegExp(`^${escapeRegex(resolvedWeekBase)}-VS\\d+$`)
+  const scopedSeqPrefix = resolvedCategory === 'vendor_orders' ? 'VS' : (resolvedCategory === 'warehouse_inventory' ? 'IS' : '');
+  const isScopedSeqOrder = !!(scopedSeqPrefix && (resolvedVendorKey || resolvedCategory === 'warehouse_inventory'));
+  const resolvedWeekBase = weekBase || String(weekKey || '').split('-VS')[0].split('-IS')[0].split('-M')[0];
+  const scopedWeekRegex = isScopedSeqOrder && resolvedWeekBase
+    ? new RegExp(`^${escapeRegex(resolvedWeekBase)}-${scopedSeqPrefix}\\d+$`)
     : null;
   const [stores, extraOrders] = await Promise.all([
     Store.find().sort({ id: 1 }).lean(),
@@ -2096,7 +2297,7 @@ async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey
       type,
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
-      ...(vendorWeekRegex ? { week: { $regex: vendorWeekRegex } } : weekWindowFilter(weekKey, weekBase)),
+      ...(scopedWeekRegex ? { week: { $regex: scopedWeekRegex } } : weekWindowFilter(weekKey, weekBase)),
     })
       .select({ storeId: 1, _id: 0 })
       .lean(),
@@ -2153,15 +2354,16 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
     return exact;
   }
 
-  // Vendor orders can land on an adjacent UTC date while still belonging to the
-  // same scheduled opening. Recover only the SAME VS sequence inside a short
+  // Scoped orders can land on an adjacent UTC date while still belonging to the
+  // same scheduled opening. Recover only the SAME sequence inside a short
   // boundary window; do not pull last week's unsent order into a fresh schedule.
-  if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
+  if ((resolvedCategory === 'vendor_orders' && resolvedVendorKey) || resolvedCategory === 'warehouse_inventory') {
+    const seqPrefix = resolvedCategory === 'warehouse_inventory' ? 'IS' : 'VS';
     const requestedWeek = String(weekKey || '').trim();
-    const seqMatch = requestedWeek.match(/-VS(\d+)$/i);
+    const seqMatch = requestedWeek.match(new RegExp(`-${seqPrefix}(\\d+)$`, 'i'));
     const requestedSeq = seqMatch ? parseInt(seqMatch[1], 10) : null;
     const since = new Date(Date.now() - VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS);
-    const sameSeqFilter = requestedSeq != null && !Number.isNaN(requestedSeq) ? { week: { $regex: new RegExp(`-VS${requestedSeq}$`, 'i') } } : {};
+    const sameSeqFilter = requestedSeq != null && !Number.isNaN(requestedSeq) ? { week: { $regex: new RegExp(`-${seqPrefix}${requestedSeq}$`, 'i') } } : {};
     const timeFilter = (requestedSeq != null && !Number.isNaN(requestedSeq)) 
       ? {} 
       : {
@@ -2707,7 +2909,8 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
 
   // Vendor completed history should show the full monitor workbook with store
   // details, not the supplier-facing total-only attachment.
-  if ((normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') && latestSentLog && latestSentLog.monitorExcelBase64) {
+  const usesMonitorHistory = normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves' || normalizedCategory === 'warehouse_inventory';
+  if (usesMonitorHistory && latestSentLog && latestSentLog.monitorExcelBase64) {
     const contentType = String(latestSentLog.monitorExcelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE;
     const renderDate = new Date();
     const fileBuffer = isExcelContentType(contentType)
@@ -2733,7 +2936,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
 
   // When a consolidated email was already sent, return the exact workbook that
   // was attached to the email so history matches what the supplier received.
-  if (normalizedCategory !== 'vendor_orders' && normalizedCategory !== 'leaves' && latestSentLog && latestSentLog.excelBase64) {
+  if (!usesMonitorHistory && latestSentLog && latestSentLog.excelBase64) {
     const supplierDisplayName = await resolveConsolidatedSupplierName({
       category: normalizedCategory,
       vendorKey: normalizedVendorKey,
@@ -2773,7 +2976,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     latestSentLog.storeBreakdown &&
     typeof latestSentLog.storeBreakdown === 'object' &&
     Object.keys(latestSentLog.storeBreakdown).length > 0 &&
-    (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves')
+    usesMonitorHistory
   ) {
     // Convert storeBreakdown to splitData.rows so buildConsolidatedExcelPayload uses
     // this data instead of querying the (deleted) Order documents
@@ -2803,7 +3006,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     !archivedSplitData &&
     latestSentLog &&
     latestSentLog.sentToSupplier === false &&
-    (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') &&
+    usesMonitorHistory &&
     latestSentLog.snapshotLines &&
     latestSentLog.snapshotLines.length > 0
   ) {
@@ -2835,7 +3038,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
 
   if (
     !archivedSplitData &&
-    (normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves')
+    usesMonitorHistory
   ) {
     const liveOrders = await Order.find({
       week: normalizedWeek,
@@ -2874,7 +3077,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     normalizedType,
     normalizedCategory,
     normalizedVendorKey,
-    archivedSplitData || ((normalizedCategory === 'vendor_orders' || normalizedCategory === 'leaves') ? { documentMode: 'monitor' } : null),
+    archivedSplitData || (usesMonitorHistory ? { documentMode: 'monitor' } : null),
     normalizedWeek,
     new Date()
   );
@@ -3346,11 +3549,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   const weekBase = getWeekKey();
   const mo = await getManualOpenState();
   const resolvedRequestedWeekKey = normalizeRequestedWeekKey(requestedWeekKey);
-  let weekKey = resolvedRequestedWeekKey || composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
-  if (!resolvedRequestedWeekKey && resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
-    const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
-    weekKey = weekBase + '-VS' + vendorSeq;
-  }
+  let weekKey = resolvedRequestedWeekKey || await composeScopedWeekKey(weekBase, type, resolvedCategory, resolvedVendorKey, mo.manualOpenOrder, mo.manualOpenSeq);
   let stores;
   if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
     // When frontend sends split/consolidated payload rows, preserve the same full store layout
@@ -3509,7 +3708,7 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
       excelBuffer: rendered.buffer,
       excelFilename: docFilename,
     };
-  } else if (template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
+  } else if (template && resolveAllTemplateItemRows(template).length > 0) {
     excelRows = buildRowsFromCategoryTemplate({
       template,
       dateText,
@@ -3672,11 +3871,11 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
     }
     return itemNameByCode[trimmedCode] || displayOrderItemCode(trimmedCode);
   };
-  const templateVariant = resolvedCategory === 'vendor_orders' ? 'monitor' : 'default';
+  const templateVariant = 'default';
   const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey, templateVariant);
   const hasDocxStoreTemplate = !!(template && template.kind === 'docx_vendor_form' && template.docxMap && template.originalFile && template.originalFile.base64);
-  const hasExcelCategoryTemplate = !!(template && Array.isArray(template.itemRows) && template.itemRows.length > 0 && template.originalFile && template.originalFile.base64);
-  const useUploadedExcelStoreTemplate = hasExcelCategoryTemplate && !hasDocxStoreTemplate && resolvedCategory !== 'vendor_orders';
+  const hasExcelCategoryTemplate = !!(template && resolveAllTemplateItemRows(template).length > 0 && template.originalFile && template.originalFile.base64);
+  const useUploadedExcelStoreTemplate = hasExcelCategoryTemplate && !hasDocxStoreTemplate;
   const useStandardStoreTemplate = resolvedCategory === 'vendor_orders' && !hasDocxStoreTemplate;
   const storeDoc = stores.find((st) => String(st.id || '') === String(storeId || '')) || { id: storeId, name: storeId };
   const mappedSlots = mapStoresToTemplateSlots(stores);
@@ -3785,7 +3984,7 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
       }),
     };
   }
-  if (useUploadedExcelStoreTemplate && template && Array.isArray(template.itemRows) && template.itemRows.length > 0) {
+  if (useUploadedExcelStoreTemplate && template && resolveAllTemplateItemRows(template).length > 0) {
     rows = buildRowsFromCategoryTemplate({
       template,
       dateText,
@@ -3860,6 +4059,42 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
     snapshotLines: (rows || []).map((row) => getExcelRowCells(row).join(' | ')),
   };
 }
+
+// Get aggregated inventory stock usage for a specific form (all stores except requester)
+// Used by store-level users to enforce per-item stock limits without seeing other stores' full order data
+router.get('/inventory-stock-usage', authMiddleware, async (req, res) => {
+  try {
+    const { vendorKey, week } = req.query;
+    if (!vendorKey || !week) {
+      return res.status(400).json({ error: 'vendorKey and week are required' });
+    }
+    const resolvedVendorKey = normalizeVendorKey('warehouse_inventory', vendorKey);
+    const requestingStoreId = req.user.storeId;
+
+    const matchingOrders = await Order.find({
+      category: 'warehouse_inventory',
+      vendorKey: resolvedVendorKey,
+      week: String(week),
+      storeId: { $ne: requestingStoreId },
+    }).select({ items: 1, _id: 0 }).lean();
+
+    const usage = {};
+    for (const order of matchingOrders) {
+      if (!Array.isArray(order.items)) continue;
+      for (const item of order.items) {
+        const code = item.itemCode;
+        const qty = Number(item.quantity) || 0;
+        if (code && qty > 0) {
+          usage[code] = (usage[code] || 0) + qty;
+        }
+      }
+    }
+    return res.json(usage);
+  } catch (err) {
+    console.error('inventory-stock-usage error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
 
 // Get orders for user
 router.get('/', authMiddleware, async (req, res) => {
@@ -3974,11 +4209,8 @@ router.post('/', authMiddleware, async (req, res) => {
     let weekKey;
     if (canManageAcrossStores && requestedWeekKey) {
       weekKey = requestedWeekKey;
-    } else if (resolvedCategory === 'vendor_orders' && resolvedVendorKey) {
-      const vendorSeq = await getVendorSeqForKey(resolvedVendorKey);
-      weekKey = weekBase + '-VS' + vendorSeq;
     } else {
-      weekKey = composeWeekKeyForType(weekBase, type, mo.manualOpenOrder, mo.manualOpenSeq);
+      weekKey = await composeScopedWeekKey(weekBase, type, resolvedCategory, resolvedVendorKey, mo.manualOpenOrder, mo.manualOpenSeq);
     }
 
     const existingOrder = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey })
@@ -4113,11 +4345,11 @@ router.post('/', authMiddleware, async (req, res) => {
 
     // Return week key so frontend can recompute the correct order lookup key
     // This is critical for vendor orders where the seq might have changed between API calls
-    const vendorSeqMatch = weekKey.match(/-VS(\d+)/);
-    const returnedVendorSeq = resolvedCategory === 'vendor_orders' && vendorSeqMatch ? parseInt(vendorSeqMatch[1], 10) : null;
+    const scopedSeqMatch = weekKey.match(/-(VS|IS)(\d+)/);
+    const returnedVendorSeq = (resolvedCategory === 'vendor_orders' || resolvedCategory === 'warehouse_inventory') && scopedSeqMatch ? parseInt(scopedSeqMatch[2], 10) : null;
     
-    if (resolvedCategory === 'vendor_orders') {
-      console.log(`Vendor order created/updated: vendorKey=${resolvedVendorKey}, week=${weekKey}, seq=${returnedVendorSeq}, status=${status}`);
+    if (resolvedCategory === 'vendor_orders' || resolvedCategory === 'warehouse_inventory') {
+      console.log(`Scoped order created/updated: category=${resolvedCategory}, vendorKey=${resolvedVendorKey}, week=${weekKey}, seq=${returnedVendorSeq}, status=${status}`);
     }
 
     if (
@@ -4180,11 +4412,7 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     }
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
-    let weekKey = requestedWeekKey || composeWeekKeyForType(weekBase, req.params.type, mo.manualOpenOrder, mo.manualOpenSeq);
-    if (!requestedWeekKey && category === 'vendor_orders' && vendorKey) {
-      const vendorSeq = await getVendorSeqForKey(vendorKey);
-      weekKey = weekBase + '-VS' + vendorSeq;
-    }
+    let weekKey = requestedWeekKey || await composeScopedWeekKey(weekBase, req.params.type, category, vendorKey, mo.manualOpenOrder, mo.manualOpenSeq);
     const stores = await getStoresForConsolidatedWindow(req.params.type, category, vendorKey, weekKey, weekBase);
     const response = [];
 
@@ -4244,7 +4472,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
 
     const { weekKey, stores, slots, slotOrders, snapshotLines, fileBuffer, fileFilename, contentType, excelBuffer, excelFilename } =
       await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, effectiveSplitData, requestedWeekKey);
-    const monitorHistory = (resolvedCategory === 'vendor_orders' || resolvedCategory === 'leaves')
+    const monitorHistory = (resolvedCategory === 'vendor_orders' || resolvedCategory === 'leaves' || resolvedCategory === 'warehouse_inventory')
       ? await buildConsolidatedExcelPayload(
           req.params.type,
           resolvedCategory,

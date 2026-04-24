@@ -1,12 +1,15 @@
 import express from 'express';
 import { authMiddleware } from '../auth.js';
 import Setting from '../models/setting.js';
+import Item from '../models/item.js';
 import Supplier from '../models/supplier.js';
 import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 import { notifyStoresVendorAccess } from '../services/warehouseNotifications.js';
 
 const router = express.Router();
 const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
+const WAREHOUSE_INVENTORY_CATEGORY = 'warehouse_inventory';
+const DEFAULT_INVENTORY_SETTINGS_KEY = '__default_inventory__';
 const canManageVendorSettings = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 
 function nowInTimezone(tz) {
@@ -118,6 +121,19 @@ function normalizeVendorOrderConfigs(input) {
   return Array.from(byVendorKey.values());
 }
 
+function inventoryTemplateSettingKeyToScope(settingKey) {
+  const prefix = `orderTemplate:${WAREHOUSE_INVENTORY_CATEGORY}`;
+  const rawKey = String(settingKey || '');
+  if (!rawKey.startsWith(prefix)) return null;
+  let suffix = rawKey.slice(prefix.length);
+  if (!suffix) return DEFAULT_INVENTORY_SETTINGS_KEY;
+  if (suffix.startsWith(':')) suffix = suffix.slice(1);
+  if (!suffix) return DEFAULT_INVENTORY_SETTINGS_KEY;
+  const variantIndex = suffix.indexOf('::');
+  const scopeKey = (variantIndex >= 0 ? suffix.slice(0, variantIndex) : suffix).trim();
+  return scopeKey || DEFAULT_INVENTORY_SETTINGS_KEY;
+}
+
 async function clearLegacyVendorOrderSettings() {
   await Setting.deleteMany({
     key: { $in: ['vendorOrdersOpenVendor', 'vendorOrdersOpenVendors', 'vendorOrdersWindowStartDay', 'vendorOrdersWindowEndDay'] },
@@ -160,6 +176,34 @@ async function persistVendorOrderConfigs(configs) {
   return normalizedConfigs;
 }
 
+async function persistInventoryOrderConfigs(configs) {
+  const normalizedConfigs = normalizeVendorOrderConfigs(configs);
+  const inventoryKeys = normalizeVendorKeys(
+    normalizedConfigs
+      .filter((config) => config.enabled !== false)
+      .map((config) => config.vendorKey)
+  );
+  if (normalizedConfigs.length) {
+    await Setting.updateOne(
+      { key: 'inventoryOrderConfigs' },
+      { value: normalizedConfigs },
+      { upsert: true }
+    );
+  } else {
+    await Setting.deleteOne({ key: 'inventoryOrderConfigs' });
+  }
+  if (inventoryKeys.length) {
+    await Setting.updateOne(
+      { key: 'inventoryOrdersOpenForms' },
+      { value: inventoryKeys },
+      { upsert: true }
+    );
+  } else {
+    await Setting.deleteOne({ key: 'inventoryOrdersOpenForms' });
+  }
+  return normalizedConfigs;
+}
+
 function buildVendorOrdersState({ docs, today, now }) {
   let vendorOrderConfigs = [];
 
@@ -188,6 +232,31 @@ function buildVendorOrdersState({ docs, today, now }) {
   };
 }
 
+function buildInventoryOrdersState({ docs, today, now }) {
+  let inventoryOrderConfigs = [];
+
+  (docs || []).forEach((row) => {
+    if (!row) return;
+    if (row.key === 'inventoryOrderConfigs') {
+      inventoryOrderConfigs = normalizeVendorOrderConfigs(row.value);
+    }
+  });
+
+  const configuredInventoryConfigs = inventoryOrderConfigs.filter((config) => config.enabled !== false);
+  const configuredInventoryKeys = normalizeVendorKeys(configuredInventoryConfigs.map((config) => config.vendorKey));
+  const activeInventoryOrders = configuredInventoryConfigs
+    .filter((config) => isVendorConfigActive(config, now, today))
+    .map((config) => config.vendorKey);
+  return {
+    inventoryOrderConfigs,
+    inventoryOrdersOpenForm: activeInventoryOrders[0] || null,
+    inventoryOrdersOpenForms: activeInventoryOrders,
+    inventoryOrdersConfiguredForms: configuredInventoryKeys,
+    inventoryOrdersWindowOpen: activeInventoryOrders.length > 0,
+    activeInventoryOrders,
+  };
+}
+
 async function getSupplierIdSet() {
   const suppliers = await Supplier.find().select({ id: 1, _id: 0 }).lean();
   return new Set(
@@ -200,6 +269,32 @@ async function getSupplierIdSet() {
 function filterVendorConfigsBySuppliers(configs, supplierIdSet) {
   const allowed = supplierIdSet instanceof Set ? supplierIdSet : new Set();
   return normalizeVendorOrderConfigs(configs).filter((config) => allowed.has(String(config.vendorKey || '').trim()));
+}
+
+function filterOrderConfigsByAllowedKeys(configs, allowedKeys) {
+  const allowed = allowedKeys instanceof Set ? allowedKeys : new Set();
+  return normalizeVendorOrderConfigs(configs).filter((config) => allowed.has(String(config.vendorKey || '').trim()));
+}
+
+async function getInventoryOrderKeySet() {
+  const [templateDocs, itemDocs] = await Promise.all([
+    Setting.find({ key: new RegExp(`^orderTemplate:${WAREHOUSE_INVENTORY_CATEGORY}(?::.*)?$`) })
+      .select({ key: 1, _id: 0 })
+      .lean(),
+    Item.find({ category: WAREHOUSE_INVENTORY_CATEGORY })
+      .select({ vendorKey: 1, _id: 0 })
+      .lean(),
+  ]);
+  const allowedKeys = new Set();
+  (templateDocs || []).forEach((row) => {
+    const scopeKey = inventoryTemplateSettingKeyToScope(row && row.key);
+    if (scopeKey != null) allowedKeys.add(scopeKey);
+  });
+  (itemDocs || []).forEach((row) => {
+    const scopeKey = String(row && row.vendorKey || '').trim() || DEFAULT_INVENTORY_SETTINGS_KEY;
+    allowedKeys.add(scopeKey);
+  });
+  return allowedKeys;
 }
 
 // Get all settings
@@ -303,6 +398,18 @@ router.get('/', async (req, res) => {
         now,
       });
     }
+    const inventoryKeySet = await getInventoryOrderKeySet();
+    const inventoryOrdersStateRaw = buildInventoryOrdersState({ docs, today, now });
+    let inventoryOrdersState = inventoryOrdersStateRaw;
+    const sanitizedInventoryConfigs = filterOrderConfigsByAllowedKeys(inventoryOrdersStateRaw.inventoryOrderConfigs, inventoryKeySet);
+    if (sanitizedInventoryConfigs.length !== inventoryOrdersStateRaw.inventoryOrderConfigs.length) {
+      const persistedInventoryConfigs = await persistInventoryOrderConfigs(sanitizedInventoryConfigs);
+      inventoryOrdersState = buildInventoryOrdersState({
+        docs: [{ key: 'inventoryOrderConfigs', value: persistedInventoryConfigs }],
+        today,
+        now,
+      });
+    }
     const result = {
       schedule: schedules,
       message: messages,
@@ -317,6 +424,11 @@ router.get('/', async (req, res) => {
       vendorOrdersWindowEndDay: vendorOrdersState.vendorOrdersWindowEndDay,
       vendorOrdersWindowOpen: vendorOrdersState.vendorOrdersWindowOpen,
       activeVendorOrders: vendorOrdersState.activeVendorOrders,
+      inventoryOrderConfigs: inventoryOrdersState.inventoryOrderConfigs,
+      inventoryOrdersOpenForm: inventoryOrdersState.inventoryOrdersOpenForm,
+      inventoryOrdersOpenForms: inventoryOrdersState.inventoryOrdersOpenForms,
+      inventoryOrdersWindowOpen: inventoryOrdersState.inventoryOrdersWindowOpen,
+      activeInventoryOrders: inventoryOrdersState.activeInventoryOrders,
       categoryTemplates,
       scheduleToday: today,
       orderTimezone: ORDER_TIMEZONE,
@@ -334,6 +446,11 @@ router.get('/', async (req, res) => {
       vendorOrdersWindowStartDay: result.vendorOrdersWindowStartDay,
       vendorOrdersWindowEndDay: result.vendorOrdersWindowEndDay,
       vendorOrdersWindowOpen: result.vendorOrdersWindowOpen,
+      inventoryOrderConfigs: result.inventoryOrderConfigs,
+      inventoryOrdersOpenForm: result.inventoryOrdersOpenForm,
+      inventoryOrdersOpenForms: result.inventoryOrdersOpenForms,
+      inventoryOrdersWindowOpen: result.inventoryOrdersWindowOpen,
+      activeInventoryOrders: result.activeInventoryOrders,
       categoryTemplateKeys: Object.keys(result.categoryTemplates),
       scheduleToday: result.scheduleToday,
       orderTimezone: result.orderTimezone,
@@ -631,4 +748,170 @@ router.patch('/vendor-orders-open', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+router.patch('/inventory-orders-open', authMiddleware, async (req, res) => {
+  try {
+    if (!canManageVendorSettings(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
+    }
+    const now = nowInTimezone(ORDER_TIMEZONE);
+    const today = now.getDay();
+    const docs = await Setting.find({
+      key: { $in: ['inventoryOrderConfigs', 'inventoryOrdersOpenForms'] },
+    }).lean();
+    const inventoryKeySet = await getInventoryOrderKeySet();
+    const currentState = buildInventoryOrdersState({ docs, today, now });
+    let nextConfigs = filterOrderConfigsByAllowedKeys(currentState.inventoryOrderConfigs.slice(), inventoryKeySet);
+
+    if (req.body && (req.body.inventoryKey != null || req.body.vendorKey != null || req.body.enabled != null)) {
+      const inventoryKey = extractVendorIdentifier(
+        req.body.inventoryKey != null ? req.body.inventoryKey : req.body.vendorKey
+      );
+      const enabled = req.body.enabled !== false;
+      const startDayRaw = req.body.startDay;
+      const endDayRaw = req.body.endDay;
+      const openToday24h = !!req.body.openToday24h;
+      const startDay = parseOptionalDay(startDayRaw);
+      const endDay = parseOptionalDay(endDayRaw);
+      if (!inventoryKey) {
+        return res.status(400).json({ error: 'inventoryKey is required' });
+      }
+      if (enabled && !inventoryKeySet.has(inventoryKey)) {
+        return res.status(400).json({ error: 'Unknown inventory form for inventory order settings' });
+      }
+      if (enabled && ((startDayRaw != null && startDay == null) || (endDayRaw != null && endDay == null))) {
+        return res.status(400).json({ error: 'Invalid inventory order day range' });
+      }
+      if (enabled && ((startDay == null) !== (endDay == null))) {
+        return res.status(400).json({ error: 'Select both start and end day for inventory order range' });
+      }
+      if (enabled && !openToday24h && startDay == null && endDay == null) {
+        return res.status(400).json({ error: 'Select both start and end day for inventory order range, or use 24-hour open' });
+      }
+      const existingConfig = nextConfigs.find((config) => config.vendorKey === inventoryKey) || null;
+      const existingSeq = existingConfig ? (parseInt(existingConfig.seq, 10) || 0) : 0;
+      nextConfigs = nextConfigs.filter((config) => config.vendorKey !== inventoryKey);
+      if (enabled) {
+        const temporaryOpenUntil = openToday24h ? new Date(now.getTime() + (24 * 60 * 60 * 1000)).toISOString() : null;
+        const temporaryOpenCreatedAt = openToday24h ? now.toISOString() : null;
+        nextConfigs.push({
+          vendorKey: inventoryKey,
+          startDay: openToday24h ? null : startDay,
+          endDay: openToday24h ? null : endDay,
+          enabled: true,
+          temporaryOpenUntil,
+          temporaryOpenCreatedAt,
+          temporaryOpenOnly: openToday24h,
+          seq: existingSeq + 1,
+        });
+      } else if (existingConfig) {
+        nextConfigs.push({
+          ...existingConfig,
+          enabled: false,
+          temporaryOpenUntil: null,
+          temporaryOpenCreatedAt: null,
+        });
+      }
+    } else {
+      const inventoryKeys = normalizeVendorKeys(req.body && (req.body.inventoryKeys != null ? req.body.inventoryKeys : req.body.vendorKeys));
+      const invalidInventoryKeys = inventoryKeys.filter((inventoryKey) => !inventoryKeySet.has(inventoryKey));
+      if (invalidInventoryKeys.length) {
+        return res.status(400).json({ error: 'Unknown inventory forms in inventory order settings' });
+      }
+      const startDayRaw = req.body ? req.body.startDay : null;
+      const endDayRaw = req.body ? req.body.endDay : null;
+      const startDay = parseOptionalDay(startDayRaw);
+      const endDay = parseOptionalDay(endDayRaw);
+      if ((startDayRaw != null && startDay == null) || (endDayRaw != null && endDay == null)) {
+        return res.status(400).json({ error: 'Invalid inventory order day range' });
+      }
+      if ((startDay == null) !== (endDay == null)) {
+        return res.status(400).json({ error: 'Select both start and end day for inventory order range' });
+      }
+      if (inventoryKeys.length > 0 && startDay == null && endDay == null) {
+        return res.status(400).json({ error: 'Select both start and end day for inventory order range, or use 24-hour open' });
+      }
+      nextConfigs = inventoryKeys.map((inventoryKey) => {
+        const prevConfig = currentState.inventoryOrderConfigs.find((config) => config.vendorKey === inventoryKey);
+        const prevSeq = prevConfig ? (parseInt(prevConfig.seq, 10) || 0) : 0;
+        return {
+          vendorKey: inventoryKey,
+          startDay,
+          endDay,
+          enabled: true,
+          temporaryOpenUntil: null,
+          temporaryOpenCreatedAt: null,
+          temporaryOpenOnly: false,
+          seq: prevSeq + 1,
+        };
+      });
+    }
+
+    const persistedConfigs = await persistInventoryOrderConfigs(nextConfigs);
+    const result = buildInventoryOrdersState({
+      docs: [{ key: 'inventoryOrderConfigs', value: persistedConfigs }],
+      today,
+      now,
+    });
+    res.json({
+      success: true,
+      inventoryOrderConfigs: result.inventoryOrderConfigs,
+      inventoryOrdersOpenForm: result.inventoryOrdersOpenForm,
+      inventoryOrdersOpenForms: result.inventoryOrdersOpenForms,
+      inventoryOrdersWindowOpen: result.inventoryOrdersWindowOpen,
+      activeInventoryOrders: result.activeInventoryOrders,
+    });
+  } catch (err) {
+    console.error('Update inventory orders open error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete an entire inventory category (all items + template + schedule config)
+router.delete('/inventory-category/:inventoryKey', authMiddleware, async (req, res) => {
+  try {
+    if (!canManageVendorSettings(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
+    }
+    const inventoryKey = String(req.params.inventoryKey || '').trim();
+    if (!inventoryKey) {
+      return res.status(400).json({ error: 'inventoryKey is required' });
+    }
+
+    // Delete all items for this inventory form
+    await Item.deleteMany({ category: WAREHOUSE_INVENTORY_CATEGORY, vendorKey: inventoryKey });
+
+    // Delete all template settings for this inventory form key
+    const templateKeyPattern = new RegExp(`^orderTemplate:${WAREHOUSE_INVENTORY_CATEGORY}:${inventoryKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?::.*)?$`);
+    await Setting.deleteMany({ key: templateKeyPattern });
+
+    // Remove this inventory key from inventoryOrderConfigs
+    const docs = await Setting.find({ key: 'inventoryOrderConfigs' }).lean();
+    const currentInventoryConfigs = normalizeVendorOrderConfigs(
+      docs.length ? docs[0].value : []
+    );
+    const nextConfigs = currentInventoryConfigs.filter((config) => config.vendorKey !== inventoryKey);
+    if (nextConfigs.length !== currentInventoryConfigs.length) {
+      await persistInventoryOrderConfigs(nextConfigs);
+    }
+
+    // Also return updated settings so the client can refresh
+    const allDocs = await Setting.find({
+      key: { $in: ['inventoryOrderConfigs'] },
+    }).lean();
+    const now = nowInTimezone(ORDER_TIMEZONE);
+    const today = now.getDay();
+    const inventoryOrdersState = buildInventoryOrdersState({ docs: allDocs, today, now });
+
+    res.json({
+      success: true,
+      inventoryOrderConfigs: inventoryOrdersState.inventoryOrderConfigs,
+      activeInventoryOrders: inventoryOrdersState.activeInventoryOrders,
+    });
+  } catch (err) {
+    console.error('Delete inventory category error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 export default router;

@@ -129,8 +129,22 @@ export const apiClient = {
       });
     },
 
-    delete(code) {
-      return apiClient.request(`/items/${encodeURIComponent(String(code || ''))}`, { method: 'DELETE' });
+    delete(code, category, vendorKey) {
+      const params = new URLSearchParams();
+      if (category) params.set('category', category);
+      if (vendorKey) params.set('vendorKey', vendorKey);
+      const query = params.toString();
+      return apiClient.request(`/items/${encodeURIComponent(String(code || ''))}${query ? `?${query}` : ''}`, { method: 'DELETE' });
+    },
+
+    bulkDelete(codes, category, vendorKey) {
+      const body = { codes };
+      if (category) body.category = category;
+      if (vendorKey) body.vendorKey = vendorKey;
+      return apiClient.request('/items/bulk/delete', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
     },
 
     bulkImport(items, mode = 'merge', category = 'vegetables', template = null, vendorKey = null, templateVariant = 'default') {
@@ -152,6 +166,11 @@ export const apiClient = {
     getAll(storeId) {
       const query = storeId ? `?storeId=${storeId}` : '';
       return apiClient.request(`/orders${query}`);
+    },
+
+    getInventoryStockUsage(vendorKey, week) {
+      const params = new URLSearchParams({ vendorKey, week });
+      return apiClient.request(`/orders/inventory-stock-usage?${params.toString()}`);
     },
 
     create(data) {
@@ -480,6 +499,20 @@ export const apiClient = {
       return apiClient.request('/settings/vendor-orders-open', {
         method: 'PATCH',
         body: JSON.stringify(payload),
+      });
+    },
+    updateInventoryOrdersOpen(inventoryKeys, startDay, endDay) {
+      var payload = inventoryKeys && typeof inventoryKeys === 'object' && !Array.isArray(inventoryKeys)
+        ? inventoryKeys
+        : { inventoryKeys: Array.isArray(inventoryKeys) ? inventoryKeys : [], startDay, endDay };
+      return apiClient.request('/settings/inventory-orders-open', {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+    },
+    deleteInventoryCategory(inventoryKey) {
+      return apiClient.request(`/settings/inventory-category/${encodeURIComponent(String(inventoryKey || ''))}`, {
+        method: 'DELETE',
       });
     },
   },

@@ -5,7 +5,7 @@ import Setting from '../models/setting.js';
 import { parseVendorDocxTemplate } from '../services/vendorDocxTemplate.js';
 
 const router = express.Router();
-const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders'];
+const VALID_CATEGORIES = ['vegetables', 'leaves', 'vendor_orders', 'warehouse_inventory'];
 const VALID_TEMPLATE_VARIANTS = ['default', 'supplier', 'monitor'];
 const canManageItems = (user) => ['admin', 'warehouse'].includes(String(user && user.role || '').trim().toLowerCase());
 
@@ -14,7 +14,7 @@ function normalizeCategory(value) {
   return VALID_CATEGORIES.includes(raw) ? raw : 'vegetables';
 }
 function normalizeVendorKey(category, vendorKey) {
-  return normalizeCategory(category) === 'vendor_orders'
+  return ['vendor_orders', 'warehouse_inventory'].includes(normalizeCategory(category))
     ? String(vendorKey || '').trim() || null
     : null;
 }
@@ -42,6 +42,162 @@ function makeTemplateSettingKeyPrefix(category, vendorKey) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   return `orderTemplate:${resolvedCategory}${resolvedVendorKey ? `:${resolvedVendorKey}` : ''}`;
+}
+
+function normalizeTemplateRemovedCodes(template) {
+  const rawCodes = Array.isArray(template && template.removedItemCodes) ? template.removedItemCodes : [];
+  return Array.from(new Set(rawCodes.map((code) => String(code || '').trim()).filter(Boolean)));
+}
+
+function normalizeLegacyAliasUnit(value) {
+  return String(value || '')
+    .replace(/([0-9])([a-z])/gi, '$1 $2')
+    .replace(/([a-z])([0-9])/gi, '$1 $2')
+    .replace(/\bpcs?\b/gi, 'pc')
+    .replace(/\bpieces?\b/gi, 'pc')
+    .replace(/\bcases?\b/gi, 'case')
+    .replace(/\bozs?\b/gi, 'oz')
+    .replace(/\bcts?\b/gi, 'ct')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeCatalogAliasToken(value) {
+  return normalizeLegacyAliasUnit(String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatItemDetailName(name, unit) {
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) return String(unit || '').trim() || '';
+  const trimmedUnit = String(unit || '').trim().toLowerCase();
+  if (trimmedUnit) {
+    const lowerName = trimmedName.toLowerCase();
+    if (lowerName.endsWith(`(${trimmedUnit})`)) return trimmedName.slice(0, -(trimmedUnit.length + 2)).trim();
+    if (lowerName.endsWith(`[${trimmedUnit}]`)) return trimmedName.slice(0, -(trimmedUnit.length + 2)).trim();
+  }
+  return trimmedName;
+}
+
+function extractLooseLegacyTemplateAliasCandidates(code) {
+  const normalizedCode = String(code || '').trim();
+  const out = [];
+  if (!normalizedCode) return out;
+  if (normalizedCode.indexOf('XLS::') === 0) out.push(String(normalizedCode).slice(5));
+  if (normalizedCode.indexOf('::') < 0) return out;
+  const parts = String(normalizedCode).split('::').map((part) => String(part || '').trim()).filter(Boolean);
+  if (parts.length < 2 || String(parts[0] || '').indexOf('__') < 0) return out;
+  const legacyName = String(parts[1] || '').replace(/\s+/g, ' ').trim();
+  const legacyUnit = normalizeLegacyAliasUnit(parts.slice(2).join(' '));
+  if (legacyName) {
+    out.push(legacyName);
+    out.push(`XLS::${legacyName}`);
+    if (legacyUnit) {
+      out.push(buildItemMasterCode(legacyName, legacyUnit));
+      out.push(formatItemDetailName(legacyName, legacyUnit));
+    }
+  }
+  return out.filter((value, index, list) => !!value && list.indexOf(value) === index);
+}
+
+function getTemplateItemRows(template) {
+  if (!template || typeof template !== 'object') return [];
+  if (String(template.kind || '').trim() === 'docx_vendor_form') {
+    return [
+      ...(template.docxMap && Array.isArray(template.docxMap.outline) ? template.docxMap.outline : []),
+      ...(template.docxMap && Array.isArray(template.docxMap.itemRows) ? template.docxMap.itemRows : []),
+    ];
+  }
+  return [
+    ...(Array.isArray(template.outline) ? template.outline : []),
+    ...(Array.isArray(template.itemRows) ? template.itemRows : []),
+    ...(Array.isArray(template.multiSheetItemRows) ? template.multiSheetItemRows : []),
+  ];
+}
+
+function buildTemplateRowAliasCodeMap(rows) {
+  const aliasBuckets = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const isOutlineItem = row && Object.prototype.hasOwnProperty.call(row, 'type');
+    if (isOutlineItem && String(row.type || '').trim() !== 'item') return;
+    const code = String(row && row.code || '').trim();
+    const name = String(row && row.name || '').trim();
+    const unit = String(row && row.unit || '').trim();
+    if (!code) return;
+    [
+      code,
+      name,
+      buildItemMasterCode(name, unit),
+      formatItemDetailName(name, unit),
+      name ? `XLS::${name}` : '',
+      ...extractLooseLegacyTemplateAliasCandidates(code),
+    ].forEach((alias) => {
+      const token = normalizeCatalogAliasToken(alias);
+      if (!token) return;
+      if (!aliasBuckets[token]) aliasBuckets[token] = {};
+      aliasBuckets[token][code] = true;
+    });
+  });
+  return Object.keys(aliasBuckets).reduce((out, token) => {
+    const codes = Object.keys(aliasBuckets[token]);
+    out[token] = codes.length === 1 ? codes[0] : null;
+    return out;
+  }, {});
+}
+
+function resolveTemplateReferenceCodes(template, codesToMatch) {
+  const normalizedCodes = Array.from(new Set((Array.isArray(codesToMatch) ? codesToMatch : []).map((code) => String(code || '').trim()).filter(Boolean)));
+  if (!template || !normalizedCodes.length) return [];
+
+  const removedCodes = normalizeTemplateRemovedCodes(template);
+  const rows = getTemplateItemRows(template).concat(removedCodes.map((code) => ({ type: 'item', code })));
+  const existingRowCodes = new Set();
+  rows.forEach((row) => {
+    const isOutlineItem = row && Object.prototype.hasOwnProperty.call(row, 'type');
+    if (isOutlineItem && String(row.type || '').trim() !== 'item') return;
+    const rowCode = String(row && row.code || '').trim();
+    if (rowCode) existingRowCodes.add(rowCode);
+  });
+  const aliasCodeMap = buildTemplateRowAliasCodeMap(rows);
+  const resolvedCodes = new Set();
+
+  normalizedCodes.forEach((code) => {
+    if (existingRowCodes.has(code)) {
+      resolvedCodes.add(code);
+      return;
+    }
+    const suffixTrimmed = code.replace(/\s*\(\d+\)$/, '');
+    const candidates = [
+      code,
+      code.indexOf('XLS::') === 0 ? code.slice(5) : '',
+      suffixTrimmed,
+      suffixTrimmed && suffixTrimmed.indexOf('XLS::') !== 0 ? `XLS::${suffixTrimmed}` : '',
+      ...extractLooseLegacyTemplateAliasCandidates(code),
+    ].filter((value, index, list) => !!value && list.indexOf(value) === index);
+    candidates.forEach((candidate) => {
+      const token = normalizeCatalogAliasToken(candidate);
+      if (token && aliasCodeMap[token]) resolvedCodes.add(aliasCodeMap[token]);
+    });
+  });
+
+  return Array.from(resolvedCodes);
+}
+
+function listTemplateKeysForItem(category, vendorKey) {
+  const templateKeyPrefix = makeTemplateSettingKeyPrefix(category, vendorKey);
+  return [templateKeyPrefix, `${templateKeyPrefix}::supplier`, `${templateKeyPrefix}::monitor`];
+}
+
+function scopedItemFilter(codeOrCodes, category, vendorKey, scopeProvided = false) {
+  const filter = Array.isArray(codeOrCodes)
+    ? { code: { $in: codeOrCodes } }
+    : { code: String(codeOrCodes || '').trim() };
+  if (!scopeProvided) return filter;
+  const resolvedCategory = normalizeCategory(category);
+  filter.category = resolvedCategory;
+  filter.vendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  return filter;
 }
 
 function updateTemplateItemReferences(template, oldCode, nextCode, nextName) {
@@ -118,6 +274,56 @@ function updateTemplateItemReferences(template, oldCode, nextCode, nextName) {
   };
 }
 
+function pruneTemplateItemReferences(template, codesToRemove) {
+  const normalizedCodes = resolveTemplateReferenceCodes(template, codesToRemove);
+  if (!template || !normalizedCodes.length) return template;
+
+  const removedCodeSet = new Set(normalizedCodes);
+  const removedItemCodes = Array.from(new Set(normalizeTemplateRemovedCodes(template).concat(normalizedCodes)));
+
+  if (String(template.kind || '').trim() === 'docx_vendor_form') {
+    return {
+      ...template,
+      removedItemCodes,
+      docxMap: template.docxMap && typeof template.docxMap === 'object'
+        ? {
+            ...template.docxMap,
+            outline: Array.isArray(template.docxMap.outline)
+              ? template.docxMap.outline.filter((entry) => {
+                  if (!entry || String(entry.type || '').trim() !== 'item') return true;
+                  return !removedCodeSet.has(String(entry.code || '').trim());
+                })
+              : template.docxMap.outline,
+            itemRows: Array.isArray(template.docxMap.itemRows)
+              ? template.docxMap.itemRows.filter((row) => !removedCodeSet.has(String(row && row.code || '').trim()))
+              : template.docxMap.itemRows,
+          }
+        : template.docxMap,
+    };
+  }
+
+  return {
+    ...template,
+    removedItemCodes,
+    outline: Array.isArray(template.outline)
+      ? template.outline.filter((entry) => {
+          if (!entry || String(entry.type || '').trim() !== 'item') return true;
+          return !removedCodeSet.has(String(entry.code || '').trim());
+        })
+      : template.outline,
+    itemRows: Array.isArray(template.itemRows)
+      ? template.itemRows.filter((row) => !removedCodeSet.has(String(row && row.code || '').trim()))
+      : template.itemRows,
+    multiSheetItemRows: Array.isArray(template.multiSheetItemRows)
+      ? template.multiSheetItemRows.filter((row) => !removedCodeSet.has(String(row && row.code || '').trim()))
+      : template.multiSheetItemRows,
+  };
+}
+
+function templateReferencesAnyCodes(template, codesToMatch) {
+  return resolveTemplateReferenceCodes(template, codesToMatch).length > 0;
+}
+
 function normalizeTemplatePayload(template) {
   if (!template || typeof template !== 'object') return null;
   const kind = String(template.kind || '').trim();
@@ -170,6 +376,7 @@ function normalizeTemplatePayload(template) {
     return {
       kind: 'docx_vendor_form',
       sourceFilename: String(template.sourceFilename || '').trim(),
+      removedItemCodes: normalizeTemplateRemovedCodes(template),
       uiHeaders: template.uiHeaders && typeof template.uiHeaders === 'object'
         ? {
             item: String(template.uiHeaders.item || '').trim(),
@@ -203,6 +410,7 @@ function normalizeTemplatePayload(template) {
   return {
     kind: String(template.kind || 'matrix'),
     sourceFilename: String(template.sourceFilename || '').trim(),
+    removedItemCodes: normalizeTemplateRemovedCodes(template),
     sheetName: String(template.sheetName || '').trim(),
     headerRowIndex: Number.isInteger(template.headerRowIndex) ? template.headerRowIndex : null,
     dateCell: template.dateCell && typeof template.dateCell === 'object'
@@ -384,6 +592,7 @@ router.patch('/:code', authMiddleware, async (req, res) => {
     const nextUnit = String(req.body && req.body.unit || '').trim();
     const nextSubheading = String(req.body && req.body.subheading || '').trim();
     const nextSortOrderRaw = req.body ? req.body.sortOrder : null;
+    const nextInventoryCountRaw = req.body && Object.prototype.hasOwnProperty.call(req.body, 'inventoryCount') ? req.body.inventoryCount : undefined;
     const nextCode = buildItemMasterCode(nextName, nextUnit);
 
     if (!nextCode || !nextName) {
@@ -398,24 +607,27 @@ router.patch('/:code', authMiddleware, async (req, res) => {
     }
 
     const nextSortOrder = Number.isFinite(Number(nextSortOrderRaw)) ? Number(nextSortOrderRaw) : null;
+    const nextInventoryCount = nextInventoryCountRaw !== undefined
+      ? (nextInventoryCountRaw != null && Number.isFinite(Number(nextInventoryCountRaw)) && Number(nextInventoryCountRaw) >= 0 ? Number(nextInventoryCountRaw) : null)
+      : existingItem.inventoryCount ?? null;
+
+    const updateSet = {
+      code: nextCode,
+      name: nextName,
+      unit: nextUnit,
+      subheading: nextSubheading,
+      sortOrder: nextSortOrder,
+      inventoryCount: nextInventoryCount,
+    };
 
     await Item.updateOne(
       { code: existingItem.code },
-      {
-        $set: {
-          code: nextCode,
-          name: nextName,
-          unit: nextUnit,
-          subheading: nextSubheading,
-          sortOrder: nextSortOrder,
-        },
-      }
+      { $set: updateSet }
     );
 
-    const templateKeyPrefix = makeTemplateSettingKeyPrefix(existingItem.category, existingItem.vendorKey);
     const templateDocs = await Setting.find({
       key: {
-        $in: [templateKeyPrefix, `${templateKeyPrefix}::supplier`, `${templateKeyPrefix}::monitor`],
+        $in: listTemplateKeysForItem(existingItem.category, existingItem.vendorKey),
       },
     }).lean();
     for (const templateDoc of templateDocs) {
@@ -444,10 +656,100 @@ router.delete('/:code', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
 
-    await Item.deleteOne({ code: req.params.code });
-    res.json({ success: true });
+    const normalizedCode = String(req.params.code || '').trim();
+    if (!normalizedCode) {
+      return res.status(400).json({ error: 'Item code required' });
+    }
+
+    const scopeProvided = req.query && Object.prototype.hasOwnProperty.call(req.query, 'category');
+    const requestedCategory = normalizeCategory(req.query && req.query.category);
+    const requestedVendorKey = normalizeVendorKey(requestedCategory, req.query && req.query.vendorKey);
+    const existingItem = await Item.findOne({ code: normalizedCode }).lean();
+    const templateKeys = existingItem
+      ? listTemplateKeysForItem(existingItem.category, existingItem.vendorKey)
+      : (scopeProvided ? listTemplateKeysForItem(requestedCategory, requestedVendorKey) : null);
+    const templateDocs = await Setting.find(templateKeys ? { key: { $in: templateKeys } } : { key: /^orderTemplate:/ }).lean();
+    let prunedTemplateCount = 0;
+    for (const templateDoc of templateDocs) {
+      if (!templateDoc || !templateDoc.value) continue;
+      if (!templateReferencesAnyCodes(templateDoc.value, [normalizedCode])) continue;
+      const nextTemplate = pruneTemplateItemReferences(templateDoc.value, [normalizedCode]);
+      const normalizedTemplate = normalizeTemplatePayload(nextTemplate);
+      if (!normalizedTemplate) continue;
+      await Setting.updateOne(
+        { key: templateDoc.key },
+        { value: normalizedTemplate },
+        { upsert: true }
+      );
+      prunedTemplateCount += 1;
+    }
+
+    if (existingItem) {
+      await Item.deleteOne({ code: normalizedCode });
+    }
+
+    if (!existingItem && !prunedTemplateCount) {
+      return res.status(404).json({ error: 'No matching items found' });
+    }
+
+    res.json({ success: true, deletedCount: existingItem ? 1 : 0, prunedTemplateCount });
   } catch (err) {
     console.error('Delete item error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/bulk/delete', authMiddleware, async (req, res) => {
+  try {
+    if (!canManageItems(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
+    }
+
+    const codes = Array.isArray(req.body && req.body.codes)
+      ? Array.from(new Set(req.body.codes.map((code) => String(code || '').trim()).filter(Boolean)))
+      : [];
+
+    if (!codes.length) {
+      return res.status(400).json({ error: 'codes must be a non-empty array' });
+    }
+
+    const scopeProvided = req.body && Object.prototype.hasOwnProperty.call(req.body, 'category');
+    const requestedCategory = normalizeCategory(req.body && req.body.category);
+    const requestedVendorKey = normalizeVendorKey(requestedCategory, req.body && req.body.vendorKey);
+    const matchingItems = await Item.find({ code: { $in: codes } }).lean();
+    const templateKeySet = new Set();
+    matchingItems.forEach((item) => {
+      listTemplateKeysForItem(item.category, item.vendorKey).forEach((key) => templateKeySet.add(key));
+    });
+    if (scopeProvided) {
+      listTemplateKeysForItem(requestedCategory, requestedVendorKey).forEach((key) => templateKeySet.add(key));
+    }
+    const templateKeys = Array.from(templateKeySet);
+    const templateDocs = await Setting.find(templateKeys.length ? { key: { $in: templateKeys } } : { key: /^orderTemplate:/ }).lean();
+    let prunedTemplateCount = 0;
+    for (const templateDoc of templateDocs) {
+      if (!templateDoc || !templateDoc.value) continue;
+      if (!templateReferencesAnyCodes(templateDoc.value, codes)) continue;
+      const nextTemplate = pruneTemplateItemReferences(templateDoc.value, codes);
+      const normalizedTemplate = normalizeTemplatePayload(nextTemplate);
+      if (!normalizedTemplate) continue;
+      await Setting.updateOne(
+        { key: templateDoc.key },
+        { value: normalizedTemplate },
+        { upsert: true }
+      );
+      prunedTemplateCount += 1;
+    }
+
+    const result = await Item.deleteMany({ code: { $in: codes } });
+    const deletedCount = Number(result && result.deletedCount || 0);
+    if (!deletedCount && !prunedTemplateCount) {
+      return res.status(404).json({ error: 'No matching items found' });
+    }
+
+    res.json({ success: true, deletedCount, prunedTemplateCount });
+  } catch (err) {
+    console.error('Bulk delete items error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -479,7 +781,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
     const toInsert = [];
     const seenCodes = new Set();
     for (const item of items) {
-      const { name, category: itemCategory, vendorKey: itemVendorKey, unit, subheading, sortOrder } = item;
+      const { name, category: itemCategory, vendorKey: itemVendorKey, unit, subheading, sortOrder, inventoryCount } = item;
       if (name) {
         const normalizedCode = buildItemMasterCode(name, unit);
         if (!normalizedCode || seenCodes.has(normalizedCode)) {
@@ -487,6 +789,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
         }
         seenCodes.add(normalizedCode);
         const nextCategory = normalizeCategory(itemCategory || resolvedCategory);
+        const parsedInventoryCount = inventoryCount != null && Number.isFinite(Number(inventoryCount)) && Number(inventoryCount) >= 0 ? Number(inventoryCount) : null;
         toInsert.push({
           code: normalizedCode,
           name,
@@ -495,6 +798,7 @@ router.post('/bulk/import', authMiddleware, async (req, res) => {
           subheading: String(subheading || '').trim(),
           sortOrder: Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : null,
           unit: unit || '',
+          inventoryCount: parsedInventoryCount,
         });
       }
     }

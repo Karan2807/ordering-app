@@ -35,11 +35,11 @@ function isVendorConfigActiveNow(config, now, today) {
 
 function normalizeCategory(value) {
   const raw = String(value || '').trim().toLowerCase();
-  return ['vegetables', 'leaves', 'vendor_orders'].includes(raw) ? raw : 'vegetables';
+  return ['vegetables', 'leaves', 'vendor_orders', 'warehouse_inventory'].includes(raw) ? raw : 'vegetables';
 }
 
 function normalizeVendorKey(category, vendorKey) {
-  return normalizeCategory(category) === 'vendor_orders'
+  return ['vendor_orders', 'warehouse_inventory'].includes(normalizeCategory(category))
     ? String(vendorKey || '').trim() || null
     : null;
 }

@@ -8,6 +8,7 @@ const itemSchema = new mongoose.Schema({
   subheading: { type: String, default: '' },
   sortOrder: { type: Number, default: null },
   unit: { type: String },
+  inventoryCount: { type: Number, default: null },
   createdAt: { type: Date, default: Date.now },
 });
 
