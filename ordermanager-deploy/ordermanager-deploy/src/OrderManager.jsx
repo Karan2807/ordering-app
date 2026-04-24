@@ -4677,11 +4677,9 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var currentType=selCategory==="vendor_orders"?"VENDOR":displayOrderType;
   var isLeavesFlow=selCategory==="leaves";
   var slotHeaderForIndex=function(slot,idx){
-    if(selCategory==="vendor_orders"){
-      if(slot&&slot.store&&slot.store.name) return slot.store.name;
-      if(slot&&slot.store&&slot.store.id) return slot.store.id;
-    }
-    if(selCategory==="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&Array.isArray(activeTemplate.storeColumns)&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header){
+    if(slot&&slot.store&&slot.store.name) return slot.store.name;
+    if(slot&&slot.store&&slot.store.id) return slot.store.id;
+    if(selCategory!=="vendor_orders"&&activeTemplate&&activeTemplate.kind==="matrix"&&Array.isArray(activeTemplate.storeColumns)&&activeTemplate.storeColumns[idx]&&activeTemplate.storeColumns[idx].header){
       return activeTemplate.storeColumns[idx].header;
     }
     return slot.apna+vt;
