@@ -2669,7 +2669,17 @@ export default function App(){
   var userKey=user?(String(user.username||"")+"|"+String(user.role||"")+"|"+String(user.storeId||"")):"anon";
   var _mw=useState(typeof window!=="undefined"?window.innerWidth<=900:false),isMobile=_mw[0],setIsMobile=_mw[1];
   var _mn=useState(false),showMobileNav=_mn[0],setShowMobileNav=_mn[1];
-  var _p=useState("dashboard"),page=_p[0],setPage=_p[1];
+  var _p=useState(function(){
+    try{
+      var saved=localStorage.getItem("om_page_"+userKey);
+      if(saved) return saved;
+    }catch(_){}
+    return "dashboard";
+  }),page=_p[0],setPageRaw=_p[1];
+  var setPage=useCallback(function(p){
+    setPageRaw(p);
+    try{localStorage.setItem("om_page_"+userKey,p);}catch(_){}
+  },[userKey]);
   var _t=useState(""),tM=_t[0],sTM=_t[1];var _te=useState(false),tE=_te[0],sTE=_te[1];
   var _dr=useState(null),draftRequest=_dr[0],setDraftRequest=_dr[1];
   var _i=useState([]),items=_i[0],setItems=_i[1];
@@ -2723,7 +2733,10 @@ export default function App(){
   
   // Reset UI/data immediately when auth user changes to avoid showing previous user's screen/state.
   useEffect(function(){
-    setPage("dashboard");
+    // Restore persisted page for the new user, or fall back to dashboard
+    var restoredPage="dashboard";
+    try{var saved=localStorage.getItem("om_page_"+userKey);if(saved) restoredPage=saved;}catch(_){}
+    setPageRaw(restoredPage);
     setLoadError(null);
     setConsolidatedType(null);
     setEntryType(null);
@@ -2760,6 +2773,55 @@ export default function App(){
     if(!user){setIsLoading(false);return;}
     var cancelled=false;
     var pollCount=0;
+    // Helper: apply settings data to state
+    var applySettings=function(settings,serverCategoryTemplates,nextItems){
+      var serverSched=settings.schedule||{};
+      var serverScheduleToday=Number.isInteger(settings.scheduleToday)?settings.scheduleToday:null;
+      var serverMsg=settings.message||{};
+      var serverManualOpen=settings.manualOpenOrder||null;
+      var serverManualOpenSeq=settings.manualOpenSeq!=null?Number(settings.manualOpenSeq):null;
+      var serverManualOpenLeaves=!!settings.manualOpenLeaves;
+      var serverVendorOrderConfigs=normalizeVendorOrderConfigs(settings.vendorOrderConfigs);
+      var serverVendorOrdersOpenVendors=normalizeVendorOrderList(settings.vendorOrdersOpenVendors||[]);
+      var serverActiveVendorIds=normalizeVendorOrderList(settings.activeVendorOrders||[]);
+      var serverInventoryOrderConfigs=normalizeInventoryOrderConfigs(settings.inventoryOrderConfigs);
+      var serverActiveInventoryIds=normalizeInventoryOrderList(settings.activeInventoryOrders||settings.inventoryOrdersOpenForms||[]);
+      var serverVendorOrdersWindowStartDay=parseOptionalDay(settings.vendorOrdersWindowStartDay);
+      var serverVendorOrdersWindowEndDay=parseOptionalDay(settings.vendorOrdersWindowEndDay);
+      var nextManualSeq=Number.isNaN(serverManualOpenSeq)?null:serverManualOpenSeq;
+      setOrderMsgs(function(prev){var n={A:serverMsg.A||"",B:serverMsg.B||"",C:serverMsg.C||""};return sameJson(prev,n)?prev:n;});
+      setManualOpenOrder(function(prev){return prev===serverManualOpen?prev:serverManualOpen;});
+      setManualOpenSeq(function(prev){return prev===nextManualSeq?prev:nextManualSeq;});
+      setManualOpenLeaves(function(prev){return prev===serverManualOpenLeaves?prev:serverManualOpenLeaves;});
+      setVendorOrderConfigs(function(prev){return sameJson(prev,serverVendorOrderConfigs)?prev:serverVendorOrderConfigs;});
+      setVendorOrdersOpenVendors(function(prev){return sameJson(prev,serverVendorOrdersOpenVendors)?prev:serverVendorOrdersOpenVendors;});
+      setServerActiveVendorOrderIds(function(prev){return sameJson(prev,serverActiveVendorIds)?prev:serverActiveVendorIds;});
+      setInventoryOrderConfigs(function(prev){return sameJson(prev,serverInventoryOrderConfigs)?prev:serverInventoryOrderConfigs;});
+      setServerActiveInventoryOrderIds(function(prev){return sameJson(prev,serverActiveInventoryIds)?prev:serverActiveInventoryIds;});
+      setVendorOrdersWindowStartDay(function(prev){return prev===serverVendorOrdersWindowStartDay?prev:serverVendorOrdersWindowStartDay;});
+      setVendorOrdersWindowEndDay(function(prev){return prev===serverVendorOrdersWindowEndDay?prev:serverVendorOrdersWindowEndDay;});
+      setScheduleToday(function(prev){return prev===serverScheduleToday?prev:serverScheduleToday;});
+      var schedMap={A:serverSched.A!=null?serverSched.A:null,B:serverSched.B!=null?serverSched.B:null,C:serverSched.C!=null?serverSched.C:null};
+      setSchedule(function(prev){return sameJson(prev,schedMap)?prev:schedMap;});
+      var nextLogo=settings.logo||null;
+      setLogo(function(prev){return prev===nextLogo?prev:nextLogo;});
+      if(nextItems){
+        var repaired=repairLoadedTemplatesAndItems(nextItems,serverCategoryTemplates||{});
+        setItems(function(prev){return sameJson(prev,repaired.items)?prev:repaired.items;});
+        setCategoryTemplates(function(prev){return sameJson(prev,repaired.categoryTemplates)?prev:repaired.categoryTemplates;});
+        return repaired.items;
+      }
+      if(serverCategoryTemplates){
+        setCategoryTemplates(function(prev){
+          return setItems(function(currentItems){
+            var repaired=repairLoadedTemplatesAndItems(currentItems,serverCategoryTemplates);
+            setCategoryTemplates(function(p){return sameJson(p,repaired.categoryTemplates)?p:repaired.categoryTemplates;});
+            return currentItems;
+          }),prev;
+        });
+      }
+      return null;
+    };
     var fetchData=async function(opts){
       var initial=!!(opts&&opts.initial);
       // On background polls, only re-fetch rarely-changing data (items/stores/suppliers/users)
@@ -2768,94 +2830,91 @@ export default function App(){
       if(syncInFlightRef.current) return;
       syncInFlightRef.current=true;
       try{
-        if(initial){setIsLoading(true);}
         var isA=isPrivilegedRole(user);
-        var fetches={
-          notifs:apiClient.notifications.getAll(),
-          orders:apiClient.orders.getAll(isA?null:user.storeId),
-          settings:apiClient.settings.getAll(),
-        };
-        if(fullSync){
-          fetches.items=apiClient.items.getAll();
-          fetches.stores=apiClient.stores.getAll();
-          fetches.suppliers=apiClient.suppliers.getAll();
-          if(isA){fetches.users=apiClient.users.getAll();}
-        }
-        var results=await Promise.all(Object.values(fetches));
-        if(cancelled) return;
-        var keys=Object.keys(fetches);
-        var data={};keys.forEach(function(k,i){data[k]=results[i];});
-        setLoadError(null);
-        
-        var nextNotifs=data.notifs||[];
-        setNotifs(function(prev){return sameJson(prev,nextNotifs)?prev:nextNotifs;});
-        // server now returns nested objects to avoid collisions between
-        // schedule and message keys.  each is keyed by order type (A/B/C).
-        var settings = data.settings || {};
-        var serverSched = settings.schedule || {};
-        var serverScheduleToday=Number.isInteger(settings.scheduleToday)?settings.scheduleToday:null;
-        var serverMsg = settings.message || {};
-        var serverManualOpen = settings.manualOpenOrder || null;
-        var serverManualOpenSeq = settings.manualOpenSeq != null ? Number(settings.manualOpenSeq) : null;
-        var serverManualOpenLeaves = !!settings.manualOpenLeaves;
-        var serverVendorOrderConfigs=normalizeVendorOrderConfigs(settings.vendorOrderConfigs);
-        var serverVendorOrdersOpenVendors = normalizeVendorOrderList(settings.vendorOrdersOpenVendors||[]);
-        var serverActiveVendorIds = normalizeVendorOrderList(settings.activeVendorOrders||[]);
-        var serverInventoryOrderConfigs=normalizeInventoryOrderConfigs(settings.inventoryOrderConfigs);
-        var serverActiveInventoryIds=normalizeInventoryOrderList(settings.activeInventoryOrders||settings.inventoryOrdersOpenForms||[]);
-        var serverVendorOrdersWindowStartDay = parseOptionalDay(settings.vendorOrdersWindowStartDay);
-        var serverVendorOrdersWindowEndDay = parseOptionalDay(settings.vendorOrdersWindowEndDay);
-        var serverCategoryTemplates=settings.categoryTemplates&&typeof settings.categoryTemplates==="object"?settings.categoryTemplates:{};
-        var nextManualSeq=Number.isNaN(serverManualOpenSeq)?null:serverManualOpenSeq;
-        setOrderMsgs(function(prev){var n={A:serverMsg.A||"",B:serverMsg.B||"",C:serverMsg.C||""};return sameJson(prev,n)?prev:n;});
-        setManualOpenOrder(function(prev){return prev===serverManualOpen?prev:serverManualOpen;});
-        setManualOpenSeq(function(prev){return prev===nextManualSeq?prev:nextManualSeq;});
-        setManualOpenLeaves(function(prev){return prev===serverManualOpenLeaves?prev:serverManualOpenLeaves;});
-        setVendorOrderConfigs(function(prev){return sameJson(prev,serverVendorOrderConfigs)?prev:serverVendorOrderConfigs;});
-        setVendorOrdersOpenVendors(function(prev){return sameJson(prev,serverVendorOrdersOpenVendors)?prev:serverVendorOrdersOpenVendors;});
-        setServerActiveVendorOrderIds(function(prev){return sameJson(prev,serverActiveVendorIds)?prev:serverActiveVendorIds;});
-        setInventoryOrderConfigs(function(prev){return sameJson(prev,serverInventoryOrderConfigs)?prev:serverInventoryOrderConfigs;});
-        setServerActiveInventoryOrderIds(function(prev){return sameJson(prev,serverActiveInventoryIds)?prev:serverActiveInventoryIds;});
-        setVendorOrdersWindowStartDay(function(prev){return prev===serverVendorOrdersWindowStartDay?prev:serverVendorOrdersWindowStartDay;});
-        setVendorOrdersWindowEndDay(function(prev){return prev===serverVendorOrdersWindowEndDay?prev:serverVendorOrdersWindowEndDay;});
-        setScheduleToday(function(prev){return prev===serverScheduleToday?prev:serverScheduleToday;});
-        var schedMap={
-          A: serverSched.A != null ? serverSched.A : null,
-          B: serverSched.B != null ? serverSched.B : null,
-          C: serverSched.C != null ? serverSched.C : null,
-        };
-        setSchedule(function(prev){return sameJson(prev,schedMap)?prev:schedMap;});
-        if(fullSync){
-          var nextItems=sortItems(data.items||[]);
-          var nextStores=data.stores||[];
-          var serverCategoryTemplatesRepaired=repairLoadedTemplatesAndItems(nextItems,serverCategoryTemplates);
-          nextItems=serverCategoryTemplatesRepaired.items;
-          serverCategoryTemplates=serverCategoryTemplatesRepaired.categoryTemplates;
-          setItems(function(prev){return sameJson(prev,nextItems)?prev:nextItems;});
+        if(initial){
+          // ── Phase 1: fetch dynamic data first so UI appears quickly ──
+          setIsLoading(true);
+          var phase1=await Promise.all([
+            apiClient.settings.getAll(),
+            apiClient.orders.getAll(isA?null:user.storeId),
+            apiClient.notifications.getAll(),
+          ]);
+          if(cancelled) return;
+          var p1Settings=phase1[0]||{};
+          var p1Orders=phase1[1]||[];
+          var p1Notifs=phase1[2]||[];
+          setLoadError(null);
+          setNotifs(function(prev){return sameJson(prev,p1Notifs)?prev:p1Notifs;});
+          var p1ServerCategoryTemplates=p1Settings.categoryTemplates&&typeof p1Settings.categoryTemplates==="object"?p1Settings.categoryTemplates:{};
+          // apply settings without items first (items not loaded yet)
+          applySettings(p1Settings,null,null);
+          // apply orders with empty items for now (will re-apply after phase 2)
+          var orderMap=buildOrderStateMap(p1Orders,[]);
+          setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
+          setIsLoading(false);
+          // ── Phase 2: fetch static data in background ──
+          var phase2=await Promise.all([
+            apiClient.items.getAll(),
+            apiClient.stores.getAll(),
+            apiClient.suppliers.getAll(),
+            isA?apiClient.users.getAll():Promise.resolve([]),
+          ]);
+          if(cancelled) return;
+          var nextItems=sortItems(phase2[0]||[]);
+          var nextStores=phase2[1]||[];
+          var nextSuppliers=normalizeSupplierList(phase2[2]||[]);
+          var nextUsers=phase2[3]||[];
+          var repairedItems=applySettings(p1Settings,p1ServerCategoryTemplates,nextItems);
+          var finalItems=repairedItems||nextItems;
           setStores(function(prev){return sameJson(prev,nextStores)?prev:nextStores;});
-          setCategoryTemplates(function(prev){return sameJson(prev,serverCategoryTemplates)?prev:serverCategoryTemplates;});
-          var nextLogo=settings.logo||null;
-          setLogo(function(prev){return prev===nextLogo?prev:nextLogo;});
-          var nextSuppliers=normalizeSupplierList(data.suppliers||[]);
           setSuppliers(function(prev){return sameJson(prev,nextSuppliers)?prev:nextSuppliers;});
-          if(isA){var nextUsers=data.users||[];setUsers(function(prev){return sameJson(prev,nextUsers)?prev:nextUsers;});}
-          else{setUsers(function(prev){return prev.length?[]:prev;});}
-          // apply orders with latest items for initial/full syncs
-          if(data.orders&&Array.isArray(data.orders)){
-            var orderMap=buildOrderStateMap(data.orders,nextItems);
-            setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
-          }
+          if(isA){setUsers(function(prev){return sameJson(prev,nextUsers)?prev:nextUsers;});}
+          // re-apply orders now that we have the full item catalogue
+          var orderMap2=buildOrderStateMap(p1Orders,finalItems);
+          setOrders(function(prev){return sameJson(prev,orderMap2)?prev:orderMap2;});
         }else{
-          // light poll: apply orders using already-loaded items state
-          if(data.orders&&Array.isArray(data.orders)){
-            setItems(function(currentItems){
-              var orderMap=buildOrderStateMap(data.orders,currentItems);
-              setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
-              return currentItems;
-            });
+          var fetches={
+            notifs:apiClient.notifications.getAll(),
+            orders:apiClient.orders.getAll(isA?null:user.storeId),
+            settings:apiClient.settings.getAll(),
+          };
+          if(fullSync){
+            fetches.items=apiClient.items.getAll();
+            fetches.stores=apiClient.stores.getAll();
+            fetches.suppliers=apiClient.suppliers.getAll();
+            if(isA){fetches.users=apiClient.users.getAll();}
+          }
+          var results=await Promise.all(Object.values(fetches));
+          if(cancelled) return;
+          var keys=Object.keys(fetches);
+          var data={};keys.forEach(function(k,i){data[k]=results[i];});
+          setLoadError(null);
+          setNotifs(function(prev){return sameJson(prev,data.notifs||[])?prev:(data.notifs||[]);});
+          var settings=data.settings||{};
+          var pollServerCategoryTemplates=settings.categoryTemplates&&typeof settings.categoryTemplates==="object"?settings.categoryTemplates:null;
+          if(fullSync&&data.items){
+            var pollItems=sortItems(data.items||[]);
+            applySettings(settings,pollServerCategoryTemplates,pollItems);
+            var pollFinalItems=pollItems;
+            setStores(function(prev){return sameJson(prev,data.stores||[])?prev:(data.stores||[]);});
+            var pollSuppliers=normalizeSupplierList(data.suppliers||[]);
+            setSuppliers(function(prev){return sameJson(prev,pollSuppliers)?prev:pollSuppliers;});
+            if(isA){var pollUsers=data.users||[];setUsers(function(prev){return sameJson(prev,pollUsers)?prev:pollUsers;});}
+            if(data.orders&&Array.isArray(data.orders)){
+              var pollOrderMap=buildOrderStateMap(data.orders,pollFinalItems);
+              setOrders(function(prev){return sameJson(prev,pollOrderMap)?prev:pollOrderMap;});
+            }
+          }else{
+            applySettings(settings,pollServerCategoryTemplates,null);
+            if(data.orders&&Array.isArray(data.orders)){
+              setItems(function(currentItems){
+                var pollOrderMap=buildOrderStateMap(data.orders,currentItems);
+                setOrders(function(prev){return sameJson(prev,pollOrderMap)?prev:pollOrderMap;});
+                return currentItems;
+              });
+            }
           }
         }
-        if(initial){setIsLoading(false);}
       }catch(e){
         if(cancelled) return;
         if(initial){setLoadError(e.message);setIsLoading(false);toast(e.message,true);}
