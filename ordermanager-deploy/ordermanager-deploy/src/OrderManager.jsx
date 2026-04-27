@@ -489,7 +489,13 @@ function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type
   if(normalizeCategory(category)===WAREHOUSE_INVENTORY_CATEGORY){
     var exactInventory=getCurrentOrderForStoreType(orderMap,storeId,type,category,vendorKey,manualOpenOrder,manualOpenSeq,vendorSeq);
     if(exactInventory) return exactInventory;
-    if(parseInt(vendorSeq,10)>0) return null;
+    // Fallback: broad scan scoped to the current IS sequence.
+    // getCurrentOrderForStoreType may miss orders where the stored type differs from the
+    // current active type (e.g. submitted under type A, looked up when type B is active).
+    // We deliberately do NOT bail out when vendorSeq>0 — the guard here was dead code
+    // because getVendorSeqFromConfigs always returns ≥1.
+    var requestedInventorySeq=parseInt(vendorSeq,10);
+    var seqSuffix=(Number.isFinite(requestedInventorySeq)&&requestedInventorySeq>0)?("-IS"+requestedInventorySeq):null;
     var bestVisible=null;
     var bestAny=null;
     Object.values(orderMap||{}).forEach(function(o){
@@ -498,6 +504,8 @@ function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type
       if(String(orderStoreId||"")!==String(storeId||"")) return;
       if(normalizeCategory(o.category||"vegetables")!==WAREHOUSE_INVENTORY_CATEGORY) return;
       if(normalizeVendorKey(WAREHOUSE_INVENTORY_CATEGORY,o.vendorKey)!==normalizeVendorKey(WAREHOUSE_INVENTORY_CATEGORY,vendorKey)) return;
+      // Scope to current IS sequence so a submitted IS1 order doesn't lock the store for IS2.
+      if(seqSuffix&&String(o.week||"").indexOf(seqSuffix)<0) return;
       var ts=orderTimestampMs(o);
       if(!bestAny||ts>bestAny.ts) bestAny={order:o,ts:ts};
       if(["submitted","processed","draft_shared"].indexOf(String(o.status||"").toLowerCase())>=0){
