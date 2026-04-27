@@ -443,21 +443,22 @@ function getCurrentOrderForStoreType(orderMap, storeId, type, category, vendorKe
   // under an adjacent-day key. When a VS sequence is explicitly known, match only
   // that sequence and do not apply a recency cutoff; old submissions in the same
   // unsent cycle must remain visible in consolidated.
-  if(orderMap&&category==="vendor_orders"&&vendorKey){
+  if(orderMap&&(category==="vendor_orders"||category===WAREHOUSE_INVENTORY_CATEGORY)&&vendorKey){
     var suffix="-"+type+"-"+categoryKey(category,vendorKey);
     var requestedSeq=parseInt(vendorSeq,10);
     var bestSubmitted=null;
     var bestAny=null;
     var nowTs=Date.now();
     var maxAgeMs=VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS;
-    var applyAgeCutoff=!(Number.isFinite(requestedSeq)&&requestedSeq>0);
+    var applyAgeCutoff=category!==WAREHOUSE_INVENTORY_CATEGORY&&!(Number.isFinite(requestedSeq)&&requestedSeq>0);
     var keyPrefix=String(storeId||"")+"_";
     Object.keys(orderMap).forEach(function(k){
       if(k.indexOf(keyPrefix)!==0) return;
-      if(k.indexOf("-VS")<0) return;
+      if(category==="vendor_orders"&&k.indexOf("-VS")<0) return;
+      if(category===WAREHOUSE_INVENTORY_CATEGORY&&k.indexOf("-IS")<0) return;
       if(!k.endsWith(suffix)) return;
       if(Number.isFinite(requestedSeq)&&requestedSeq>0){
-        var seqMatch=String(k).match(/-VS(\d+)-/i);
+        var seqMatch=String(k).match(category===WAREHOUSE_INVENTORY_CATEGORY?/-IS(\d+)-/i:/-VS(\d+)-/i);
         var foundSeq=seqMatch?parseInt(seqMatch[1],10):NaN;
         if(!Number.isFinite(foundSeq)||foundSeq!==requestedSeq) return;
       }
@@ -4664,7 +4665,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
 }
 
 /* ═══ CONSOLIDATED ═══ */
-function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendors,setVendorOrdersOpenVendors,setServerActiveVendorOrderIds,vendorOrderConfigs,setVendorOrderConfigs,inventoryOrderConfigs,consolidatedType,setConsolidatedType,consolidatedRequest,setConsolidatedRequest,reopenedFromId,setReopenedFromId,user,users,forcedCategory,forcedVendorKey}){
+function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,manualOpenLeaves,toast,stores,suppliers,categoryTemplates,vendorOrdersOpenVendors,setVendorOrdersOpenVendors,setServerActiveVendorOrderIds,vendorOrderConfigs,setVendorOrderConfigs,inventoryOrderConfigs,activeInventoryOrderIds,consolidatedType,setConsolidatedType,consolidatedRequest,setConsolidatedRequest,reopenedFromId,setReopenedFromId,user,users,forcedCategory,forcedVendorKey}){
   var isWarehouseUser=isWarehouseRole(user);
   var forcedResolvedCategory=forcedCategory?normalizeCategory(forcedCategory):null;
   var forcedResolvedVendorKey=forcedResolvedCategory?normalizeVendorKey(forcedResolvedCategory,forcedVendorKey):null;
@@ -4771,6 +4772,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[supplierList,supplierSearch]);
   var configuredVendorOrderIds=normalizeVendorOrderList(vendorOrdersOpenVendors);
   var configuredVendorOrderIdsKey=configuredVendorOrderIds.join("|");
+  var activeInventoryIds=normalizeInventoryOrderList(activeInventoryOrderIds);
+  var activeInventoryIdsKey=activeInventoryIds.map(function(value){return encodeInventorySettingsKey(value);}).join("|");
   var reopenedVendorKeyForAccess=useMemo(function(){
     if(consolidatedRequest&&consolidatedRequest.reopenedFromId){
       return normalizeVendorKey("vendor_orders",consolidatedRequest.vendorKey||null);
@@ -4788,7 +4791,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var warehouseInventoryFormOptions=useMemo(function(){
     return buildWarehouseInventoryFormOptions(items,categoryTemplates);
   },[items,categoryTemplates]);
+  var visibleWarehouseInventoryFormOptions=useMemo(function(){
+    if(activeInventoryIds.length){
+      return warehouseInventoryFormOptions.filter(function(option){return activeInventoryIds.indexOf(String(option&&option.id||""))>=0;});
+    }
+    return warehouseInventoryFormOptions;
+  },[warehouseInventoryFormOptions,activeInventoryIdsKey]);
   var warehouseInventoryFormOptionsKey=warehouseInventoryFormOptions.map(function(option){return String(option&&option.id||"");}).join("|");
+  var visibleWarehouseInventoryFormOptionsKey=visibleWarehouseInventoryFormOptions.map(function(option){return String(option&&option.id||"");}).join("|");
   var syncVendorStateFromResponse=function(resp){
     if(!resp) return;
     if(setVendorOrdersOpenVendors&&Object.prototype.hasOwnProperty.call(resp,"vendorOrdersOpenVendors")){
@@ -4839,13 +4849,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[selCategory,selectedVendorKey,configuredVendorOrderIdsKey,visibleVendorOptionsKey]);
   useEffect(function(){
     if(selCategory!==WAREHOUSE_INVENTORY_CATEGORY) return;
-    if(selectedVendorKey&&warehouseInventoryFormOptions.some(function(option){return String(option&&option.id||"")===String(selectedVendorKey||"");})) return;
-    if(warehouseInventoryFormOptions.length===1){
-      setSelectedVendorKey(warehouseInventoryFormOptions[0].id||null);
+    var availableOptions=visibleWarehouseInventoryFormOptions.length?visibleWarehouseInventoryFormOptions:warehouseInventoryFormOptions;
+    if(selectedVendorKey&&availableOptions.some(function(option){return String(option&&option.id||"")===String(selectedVendorKey||"");})) return;
+    if(availableOptions.length===1){
+      setSelectedVendorKey(availableOptions[0].id||null);
       return;
     }
     if(selectedVendorKey) setSelectedVendorKey(null);
-  },[selCategory,selectedVendorKey,warehouseInventoryFormOptionsKey]);
+  },[selCategory,selectedVendorKey,warehouseInventoryFormOptionsKey,visibleWarehouseInventoryFormOptionsKey]);
   useEffect(function(){
     persistReopenTarget(reopenTarget);
   },[reopenTarget]);
@@ -5988,8 +5999,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         setSelCategory={setSelCategory}
         orderType={vt}
         setOrderType={function(t){if(editingAll){toast("Save quantities before switching order type",true);return;}sVt(t);if(setConsolidatedType)setConsolidatedType(t);}}
-        categories={forcedResolvedCategory?[{id:forcedResolvedCategory,label:CATEGORY_LABELS[forcedResolvedCategory]}]:(isWarehouseUser?[{id:"vendor_orders",label:"Vendors"}]:[{id:"vegetables",label:"Vegetables"},{id:"leaves",label:"Leaves"},{id:"vendor_orders",label:"Vendor Orders"}])}
-        getCategoryDisabled={function(catId){if(forcedResolvedCategory) return false;if(catId==="vendor_orders") return visibleVendorOptions.length===0;if(catId===WAREHOUSE_INVENTORY_CATEGORY) return !buildWarehouseInventoryFormOptions(items,categoryTemplates).length;return !isCategoryOpenForType(catId,vt,categoryAccessTypes,manualOpenLeaves);}}
+        categories={forcedResolvedCategory?[{id:forcedResolvedCategory,label:CATEGORY_LABELS[forcedResolvedCategory]}]:(isWarehouseUser?[{id:"vendor_orders",label:"Vendors"}]:[{id:"vegetables",label:"Vegetables"},{id:"leaves",label:"Leaves"},{id:"vendor_orders",label:"Vendor Orders"},{id:WAREHOUSE_INVENTORY_CATEGORY,label:"Warehouse Inventory"}])}
+        getCategoryDisabled={function(catId){if(forcedResolvedCategory) return false;if(catId==="vendor_orders") return visibleVendorOptions.length===0;if(catId===WAREHOUSE_INVENTORY_CATEGORY) return visibleWarehouseInventoryFormOptions.length===0;return !isCategoryOpenForType(catId,vt,categoryAccessTypes,manualOpenLeaves);}}
         getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:true;}}
         onCategoryChanged={function(){setStep(1);}}
         vendorOptions={visibleVendorOptions}
@@ -6009,7 +6020,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         </Fragment>)}
       </div>
     </div>
-    {selCategory===WAREHOUSE_INVENTORY_CATEGORY&&warehouseInventoryFormOptions.length>0&&<div style={S.card}><div style={S.lb}>Inventory Form</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setStep(1);}}><option value="">Select inventory form</option>{warehouseInventoryFormOptions.map(function(option){return <option key={String(option.id||"default")} value={option.id||""}>{option.name}</option>;})}</select><div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{warehouseInventoryFormOptions.map(function(option){var optionValue=option.id||"";var isSelected=String(selectedVendorKey||"")===String(optionValue);return <button key={String(optionValue||"default")} style={Object.assign({},S.b,isSelected?S.bP:S.bS,{padding:"4px 10px",fontSize:10.5})} onClick={function(){setSelectedVendorKey(option.id||null);setStep(1);}}>{option.name}</button>;})}</div></div>}
+    {selCategory===WAREHOUSE_INVENTORY_CATEGORY&&warehouseInventoryFormOptions.length>0&&<div style={S.card}><div style={S.lb}>Inventory Form</div><select style={Object.assign({},S.inp,{maxWidth:320})} value={selectedVendorKey||""} onChange={function(e){setSelectedVendorKey(e.target.value||null);setStep(1);}}><option value="">Select inventory form</option>{visibleWarehouseInventoryFormOptions.map(function(option){return <option key={String(option.id||"default")} value={option.id||""}>{option.name}</option>;})}</select><div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{visibleWarehouseInventoryFormOptions.map(function(option){var optionValue=option.id||"";var isSelected=String(selectedVendorKey||"")===String(optionValue);return <button key={String(optionValue||"default")} style={Object.assign({},S.b,isSelected?S.bP:S.bS,{padding:"4px 10px",fontSize:10.5})} onClick={function(){setSelectedVendorKey(option.id||null);setStep(1);}}>{option.name}</button>;})}</div>{!visibleWarehouseInventoryFormOptions.length&&<div style={S.nP}>No warehouse inventory forms are currently open.</div>}</div>}
     {!isSingleVendorFlow&&primaryOpenType&&<div style={S.nI}>{manualOpenOrder?("Manual override active: only Order "+primaryOpenType+" is open right now."):(reopenedRequestedType?("Reopened mode active for Order "+primaryOpenType+"."):("Schedule mode active: only Order "+primaryOpenType+" is open right now."))}</div>}
     {!isSingleVendorFlow&&carryOpenType&&carryOpenType!==primaryOpenType&&<div style={S.nI}>Order {carryOpenType} remains available for up to 48 hours because supplier email has not been sent yet.</div>}
     {!isSingleVendorFlow&&!primaryOpenType&&!carryOpenType&&<div style={S.nP}>No consolidated order is open right now. The next order will open on its scheduled day unless an override or reopen is used.</div>}
