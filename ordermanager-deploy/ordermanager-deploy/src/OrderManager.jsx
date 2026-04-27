@@ -3523,10 +3523,11 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     return selCategory==="vendor_orders"?orderRowsByTemplate(activeTemplate,filtered):sortItemsAlphabetical(filtered);
   },[items,selCategory,resolvedVendorKey,activeTemplate]);
   var scopedSeq=getScopedSeqForCategory(selCategory,resolvedVendorKey,vendorOrderConfigs,inventoryOrderConfigs);
+  var referenceWeekKey=activeWeekLookupKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,scopedSeq);
   var oKey=user.storeId+"_"+dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,scopedSeq);var lwKey=user.storeId+"_"+lastWeekKey(currentType,selCategory,resolvedVendorKey);
   var vendorLocked=selCategory==="vendor_orders"&&!isAdmin&&(!resolvedVendorKey||activeVendorIds.indexOf(resolvedVendorKey)<0);
   var inventoryLocked=selCategory===WAREHOUSE_INVENTORY_CATEGORY&&!isAdmin&&(!resolvedVendorKey||activeInventoryIds.indexOf(resolvedVendorKey)<0);
-  var ex=getCurrentOrderForStoreType(orders,user.storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,scopedSeq);var lw=orders[lwKey];var locked=selCategory==="vendor_orders"?vendorLocked:(selCategory===WAREHOUSE_INVENTORY_CATEGORY?inventoryLocked:!isCategoryOpenForType(selCategory,sel,resolvedOpenTypes,manualOpenLeaves));
+  var ex=getDashboardOrderForStoreType(orders,user.storeId,referenceWeekKey,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,scopedSeq);var lw=orders[lwKey];var locked=selCategory==="vendor_orders"?vendorLocked:(selCategory===WAREHOUSE_INVENTORY_CATEGORY?inventoryLocked:!isCategoryOpenForType(selCategory,sel,resolvedOpenTypes,manualOpenLeaves));
   var exStatus=String(ex&&ex.status||"").toLowerCase();
   // Warehouse inventory store orders should stay locked after the store has placed
   // them, even while the admin schedule remains open, unless reopened from history.
