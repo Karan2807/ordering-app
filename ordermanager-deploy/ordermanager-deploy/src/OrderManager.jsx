@@ -4208,8 +4208,8 @@ function WarehouseInventoryHub(props){
       <div style={S.tabs}>{tabs.map(function(entry){return <button key={entry.id} style={Object.assign({},S.tab,tab===entry.id?S.tA:S.tI)} onClick={function(){setTab(entry.id);}}>{entry.label}</button>;})}</div>
     </div>
     {tab==="items"&&<ItemMaster {...props} forcedCategory={WAREHOUSE_INVENTORY_CATEGORY} forcedVendorKey={selectedFormKey} uploadTrigger={uploadTrigger} uploadVendorKeyOverride={pendingUploadInventoryKey} onUploadComplete={handleInventoryUploadComplete}/>}
-    {tab==="consolidated"&&selectedFormIsOpen&&<Consolidated {...props} forcedCategory={WAREHOUSE_INVENTORY_CATEGORY} forcedVendorKey={selectedFormKey}/>}
-    {tab==="consolidated"&&!selectedFormIsOpen&&(<div style={S.card}><div style={S.nP}>{selectedFormKey?("Inventory order for "+warehouseInventoryFormDisplayName(selectedFormKey)+" is not currently open. Open it from Settings to collect store orders and view the consolidated result."):"No inventory form selected."}</div>{openFormOptions.length>0&&(<div style={{marginTop:12}}><div style={Object.assign({},S.lb,{marginBottom:6})}>Open now:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{openFormOptions.map(function(opt){return(<button key={opt.id||""} style={Object.assign({},S.b,S.bG,{padding:"5px 14px",fontSize:12})} onClick={function(){setSelectedFormKey(opt.id||null);}}>{opt.name||warehouseInventoryFormDisplayName(opt.id)}</button>);})}</div></div>)}</div>)}
+    {tab==="consolidated"&&selectedFormKey&&<Consolidated {...props} forcedCategory={WAREHOUSE_INVENTORY_CATEGORY} forcedVendorKey={selectedFormKey}/>}
+    {tab==="consolidated"&&!selectedFormKey&&(<div style={S.card}><div style={S.nP}>No inventory form selected.</div>{openFormOptions.length>0&&(<div style={{marginTop:12}}><div style={Object.assign({},S.lb,{marginBottom:6})}>Open now:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{openFormOptions.map(function(opt){return(<button key={opt.id||""} style={Object.assign({},S.b,S.bG,{padding:"5px 14px",fontSize:12})} onClick={function(){setSelectedFormKey(opt.id||null);}}>{opt.name||warehouseInventoryFormDisplayName(opt.id)}</button>);})}</div></div>)}</div>)}
     {tab==="stats"&&<WarehouseInventoryStats {...props} forcedVendorKey={selectedFormKey}/>}
     {showCreateInventory&&(<div style={S.ov} onClick={function(){setShowCreateInventory(false);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>New Inventory</div>
@@ -4267,7 +4267,8 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   };
   var loadSheetPreviewForLog=async function(log){
     if(!log) return null;
-    var isVendorLog=normalizeCategory(log.category||"vegetables")==="vendor_orders";
+    var normalizedLogCat=normalizeCategory(log.category||"vegetables");
+    var isVendorLog=normalizedLogCat==="vendor_orders"||normalizedLogCat===WAREHOUSE_INVENTORY_CATEGORY;
     var id=isVendorLog?historyGroupKey(log):String(log._id||"");
     if(!id) return null;
     if(!isVendorLog&&!log.hasExcel) return null;
