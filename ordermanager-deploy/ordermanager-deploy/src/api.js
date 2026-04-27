@@ -267,13 +267,14 @@ export const apiClient = {
         body: JSON.stringify(body),
       });
     },
-    storeOrderExcelPreview(type, category, vendorKey, items, notes, storeId, date, itemNames, itemDetails) {
+    storeOrderExcelPreview(type, category, vendorKey, items, notes, storeId, date, itemNames, itemDetails, documentMode) {
       const body = { type, category: category || 'vegetables', items: items || {}, notes: notes || {} };
       if (vendorKey) body.vendorKey = vendorKey;
       if (storeId) body.storeId = storeId;
       if (date) body.date = date;
       if (itemNames && typeof itemNames === 'object') body.itemNames = itemNames;
       if (itemDetails && typeof itemDetails === 'object') body.itemDetails = itemDetails;
+      if (documentMode) body.documentMode = documentMode;
       return apiClient.request('/orders/store-order/excel-preview', {
         method: 'POST',
         body: JSON.stringify(body),

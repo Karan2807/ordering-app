@@ -3843,9 +3843,10 @@ async function buildConsolidatedExcelPayload(type, category, vendorKey, splitDat
   };
 }
 
-async function buildStoreOrderDocumentPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride, itemNamesObj, itemDetailsObj }) {
+async function buildStoreOrderDocumentPayload({ type, category, vendorKey, storeId, itemsObj, notesObj, dateOverride, itemNamesObj, itemDetailsObj, documentMode }) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+  const requestedDocumentMode = String(documentMode || '').trim().toLowerCase();
   const supplierDisplayName = await resolveConsolidatedSupplierName({ category: resolvedCategory, vendorKey: resolvedVendorKey, supplierName: '' });
   const stores = await Store.find().sort({ id: 1 }).lean();
   const itemDocs = await Item.find({ category: resolvedCategory, vendorKey: resolvedVendorKey }).lean();
@@ -3871,7 +3872,7 @@ async function buildStoreOrderDocumentPayload({ type, category, vendorKey, store
     }
     return itemNameByCode[trimmedCode] || displayOrderItemCode(trimmedCode);
   };
-  const templateVariant = 'default';
+  const templateVariant = requestedDocumentMode === 'monitor' ? 'monitor' : 'default';
   const template = await getCategoryTemplate(resolvedCategory, resolvedVendorKey, templateVariant);
   const hasDocxStoreTemplate = !!(template && template.kind === 'docx_vendor_form' && template.docxMap && template.originalFile && template.originalFile.base64);
   const hasExcelCategoryTemplate = !!(template && resolveAllTemplateItemRows(template).length > 0 && template.originalFile && template.originalFile.base64);
@@ -4746,7 +4747,7 @@ router.post('/consolidated/:type/excel-preview', authMiddleware, async (req, res
 // build single-store order Excel preview (manager/admin)
 router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
   try {
-    const { type, category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {}, itemDetails = {} } = req.body || {};
+    const { type, category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {}, itemDetails = {}, documentMode } = req.body || {};
     if (!type) return res.status(400).json({ error: 'type is required' });
     const resolvedStoreId = canManageWarehouseOrders(req.user) && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
@@ -4761,6 +4762,7 @@ router.post('/store-order/excel-preview', authMiddleware, async (req, res) => {
       dateOverride: date,
       itemNamesObj: itemNames,
       itemDetailsObj: itemDetails,
+      documentMode,
     });
 
     let previewHtml = null;
@@ -4786,7 +4788,7 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
   try {
     const body = req.body || {};
     const type = body.type || req.params.type;
-    const { category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {}, itemDetails = {} } = body;
+    const { category, vendorKey, items = {}, notes = {}, storeId, date, itemNames = {}, itemDetails = {}, documentMode } = body;
     if (!type) return res.status(400).json({ error: 'type is required' });
     const resolvedStoreId = canManageWarehouseOrders(req.user) && storeId ? String(storeId) : String(req.user.storeId || '');
     if (!resolvedStoreId) return res.status(400).json({ error: 'storeId is required' });
@@ -4801,6 +4803,7 @@ router.post('/store-order/:type/excel-preview', authMiddleware, async (req, res)
       dateOverride: date,
       itemNamesObj: itemNames,
       itemDetailsObj: itemDetails,
+      documentMode,
     });
 
     let previewHtml = null;
@@ -5139,7 +5142,7 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
     const normalizedCategory = normalizeCategory(doc.category);
     let fileBuffer = null;
     let contentType = EXCEL_CONTENT_TYPE;
-    if (normalizedCategory === 'leaves') {
+    if (normalizedCategory === 'leaves' || normalizedCategory === 'warehouse_inventory') {
       const detailedHistory = await buildConsolidatedHistoryExcelPayload({
         week: doc.week,
         type: doc.type,
@@ -5164,7 +5167,7 @@ router.get('/supplier-orders/:id/excel', authMiddleware, async (req, res) => {
       }
     }
     if (!fileBuffer) return res.status(404).json({ error: 'Document not stored for this record' });
-    if (normalizedCategory === 'leaves' && requestedDateValue && isExcelContentType(contentType)) {
+    if ((normalizedCategory === 'leaves' || normalizedCategory === 'warehouse_inventory') && requestedDateValue && isExcelContentType(contentType)) {
       fileBuffer = await withWorkbookDateLabel(fileBuffer, requestedDateValue);
     }
     const downloadFilename = buildConsolidatedFilenameForContent({
@@ -5193,7 +5196,7 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
     const normalizedCategory = normalizeCategory(doc.category);
     let excelBuffer = null;
     let contentType = EXCEL_CONTENT_TYPE;
-    if (normalizedCategory === 'leaves') {
+    if (normalizedCategory === 'leaves' || normalizedCategory === 'warehouse_inventory') {
       const detailedHistory = await buildConsolidatedHistoryExcelPayload({
         week: doc.week,
         type: doc.type,
@@ -5226,7 +5229,7 @@ router.get('/supplier-orders/:id/excel-preview', authMiddleware, async (req, res
       });
     }
     if (!excelBuffer) return res.status(404).json({ error: 'Excel file not stored for this record' });
-    if (normalizedCategory === 'leaves' && requestedDateValue) {
+    if ((normalizedCategory === 'leaves' || normalizedCategory === 'warehouse_inventory') && requestedDateValue) {
       excelBuffer = await withWorkbookDateLabel(excelBuffer, requestedDateValue);
     }
 

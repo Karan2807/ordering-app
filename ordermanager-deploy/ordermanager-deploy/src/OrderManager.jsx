@@ -4586,7 +4586,8 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>Sent Consolidated Order {selDone.type} - {fmtDT(selDone.sentAt)}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:8}}>Supplier: {selDone.supplierName} | {selDone.email} | Week: {selDone.week}</div>
       {(function(){
-        var selDoneIsVendorLog=normalizeCategory((selDone.category)||"vegetables")==="vendor_orders";
+        var selDoneCategory=normalizeCategory((selDone.category)||"vegetables");
+        var selDoneIsVendorLog=selDoneCategory==="vendor_orders"||selDoneCategory===WAREHOUSE_INVENTORY_CATEGORY;
         var selDonePreviewId=selDoneIsVendorLog?historyGroupKey(selDone):String(selDone._id||"");
         var isLoading=!!sheetPreviewLoadingById[selDonePreviewId];
         var preview=sheetPreviewById[selDonePreviewId];
@@ -4678,6 +4679,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var _v=useState(initialType),vt=_v[0],sVt=_v[1];
   var _cat=useState(initialCategory),selCategory=_cat[0],setSelCategory=_cat[1];
   var _vk=useState(initialVendorKey),selectedVendorKey=_vk[0],setSelectedVendorKey=_vk[1];
+  var forcedVendorKeySyncRef=useRef(forcedResolvedVendorKey);
   var _ea=useState(false),editingAll=_ea[0],setEditingAll=_ea[1];
   var _eb=useState({}),editQtyByStore=_eb[0],setEditQtyByStore=_eb[1];
   var _ec=useState({}),editNotesByStore=_ec[0],setEditNotesByStore=_ec[1];
@@ -4824,9 +4826,10 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   },[forcedResolvedCategory,isWarehouseUser,selCategory]);
   useEffect(function(){
     if(!forcedResolvedCategory) return;
-    if(String(selectedVendorKey||"")===String(forcedResolvedVendorKey||"")) return;
+    if(String(forcedVendorKeySyncRef.current||"")===String(forcedResolvedVendorKey||"")) return;
+    forcedVendorKeySyncRef.current=forcedResolvedVendorKey;
     setSelectedVendorKey(forcedResolvedVendorKey);
-  },[forcedResolvedCategory,forcedResolvedVendorKey,selectedVendorKey]);
+  },[forcedResolvedCategory,forcedResolvedVendorKey]);
   useEffect(function(){
     if(categorySupportsScopedKey(selCategory)){
       return;
@@ -5755,7 +5758,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
       var itemNamesByCode={};
       Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
+      var documentMode=isWarehouseInventoryFlow?"monitor":null;
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode,documentMode);
       downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
       toast("Document downloaded for "+(row.store.name||row.store.id));
     }catch(e){toast(e.message||"Failed to download document",true);}
@@ -5773,7 +5777,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
       var itemNamesByCode={};
       Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
+      var documentMode=isWarehouseInventoryFlow?"monitor":null;
+      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode,documentMode);
       await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
       toast("Print dialog opened");
     }catch(e){
