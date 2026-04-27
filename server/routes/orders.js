@@ -1090,7 +1090,7 @@ function inferWorksheetTemplateOffset(template, ws, itemRows = []) {
 function buildTabularAppendPlan({ template, rows = [], slots = [], noteByCode = {}, category }) {
   if (!template || template.kind !== 'tabular' || (template.quantityColumn && template.quantityColumn.colIndex != null)) return null;
   const resolvedCategory = normalizeCategory(category);
-  if (resolvedCategory !== 'vendor_orders' && resolvedCategory !== 'leaves') return null;
+  if (resolvedCategory !== 'vendor_orders' && resolvedCategory !== 'leaves' && resolvedCategory !== 'warehouse_inventory') return null;
   const singleStoreSlot = Array.isArray(slots) && slots.length === 1 ? slots[0] : null;
   const columns = [];
   const headerRowIndex = Number.isInteger(template.headerRowIndex) ? template.headerRowIndex : 0;
@@ -1605,6 +1605,7 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
     let singleStoreMaxCol = 0;
     let singleStoreMergeRanges = [];
     if (singleStoreSlot) {
+      const usesTabularAppendColumns = !((template.storeColumns || []).length) && !matrixLayout && !!tabularAppendPlan;
       const mergeRanges = ws.model && Array.isArray(ws.model.merges) ? [...ws.model.merges] : [];
       singleStoreMergeRanges = mergeRanges.slice();
       mergeRanges.forEach((rangeStr) => {
@@ -1612,9 +1613,22 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
       });
 
       const match = (template.storeColumns || []).find((c) => c.slotKey === singleStoreSlot.apna);
-      singleStoreSelectedColNum = match ? match.colIndex + 1 + worksheetColumnOffset : null;
-      const storeColNums = (template.storeColumns || []).map((c) => c.colIndex + 1);
-      singleStoreFirstStoreCol = storeColNums.length > 0 ? Math.min(...storeColNums) + worksheetColumnOffset : 1 + worksheetColumnOffset;
+      if (usesTabularAppendColumns) {
+        const appendedStoreColumns = (tabularAppendPlan.columns || []).filter((column) => column.kind === 'store');
+        const appendedColNumbers = appendedStoreColumns.map((column) => column.colIndex + 1 + worksheetColumnOffset);
+        singleStoreSelectedColNum = appendedColNumbers.length ? appendedColNumbers[0] : null;
+        singleStoreFirstStoreCol = appendedColNumbers.length ? Math.min(...appendedColNumbers) : null;
+        singleStoreMaxCol = appendedColNumbers.length ? Math.max(...appendedColNumbers) : 0;
+        if (tabularAppendPlan.noteColIndex != null) {
+          const noteColNumber = tabularAppendPlan.noteColIndex + 1 + worksheetColumnOffset;
+          if (!singleStoreFirstStoreCol || noteColNumber < singleStoreFirstStoreCol) singleStoreFirstStoreCol = noteColNumber;
+          if (noteColNumber > singleStoreMaxCol) singleStoreMaxCol = noteColNumber;
+        }
+      } else {
+        singleStoreSelectedColNum = match ? match.colIndex + 1 + worksheetColumnOffset : null;
+        const storeColNums = (template.storeColumns || []).map((c) => c.colIndex + 1);
+        singleStoreFirstStoreCol = storeColNums.length > 0 ? Math.min(...storeColNums) + worksheetColumnOffset : 1 + worksheetColumnOffset;
+      }
       ws.eachRow({ includeEmpty: true }, (row) => {
         row.eachCell({ includeEmpty: true }, (_cell, colNumber) => {
           if (colNumber > singleStoreMaxCol) singleStoreMaxCol = colNumber;
@@ -1741,11 +1755,16 @@ async function buildWorkbookFromCategoryTemplate({ template, dateText, slots, qt
       // Hidden columns produce collapsed gaps in Excel (A,B,C,L,...) which
       // makes the exported sheet look broken even when the data is correct.
       const columnsToRemove = [];
+      const preservedDynamicColNumbers = new Set();
+      if (tabularAppendPlan && tabularAppendPlan.noteColIndex != null) {
+        preservedDynamicColNumbers.add(tabularAppendPlan.noteColIndex + 1 + worksheetColumnOffset);
+      }
       if (matrixLayout && Number.isInteger(matrixLayout.codeCol) && matrixLayout.codeCol >= 0) {
         columnsToRemove.push(matrixLayout.codeCol + 1 + worksheetColumnOffset);
       }
       for (let c = firstStoreCol; c <= maxCol; c++) {
         if (preservedStaticCols.has(c - 1 - worksheetColumnOffset)) continue;
+        if (preservedDynamicColNumbers.has(c)) continue;
         if (c !== selectedColNum) columnsToRemove.push(c);
       }
       if (matrixLayout && matrixLayout.totalCol != null && matrixLayout.totalCol < matrixLayout.firstStoreCol) {
