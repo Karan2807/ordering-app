@@ -4228,6 +4228,8 @@ function WarehouseInventoryHub(props){
 /* ═══ ORDER MONITOR (with time + process button) ═══ */
 function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,setPage,setConsolidatedType,setConsolidatedRequest,setReopenedFromId,suppliers,user,categoryTemplates}){
   var _f=useState("all"),ft=_f[0],sFt=_f[1];
+  var _snc=useState("vegetables"),selNavCat=_snc[0],setSelNavCat=_snc[1];
+  var _scs=useState("consolidated"),selCompletedSub=_scs[0],setSelCompletedSub=_scs[1];
   var isWarehouseUser=isWarehouseRole(user);
   var _cl=useState([]),completedLogs=_cl[0],setCompletedLogs=_cl[1];
   var _sd=useState(null),selDone=_sd[0],setSelDone=_sd[1];
@@ -4240,7 +4242,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var _hsp=useState({}),historySheetPreviewById=_hsp[0],setHistorySheetPreviewById=_hsp[1];
   var _hspl=useState({}),historySheetPreviewLoadingById=_hspl[0],setHistorySheetPreviewLoadingById=_hspl[1];
   var all=Object.entries(orders).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
-  var f=(ft==="all"||ft==="completed")?all:all.filter(function(e){return e[1].type===ft;});
+  var f=ft==="all"?all:all.filter(function(e){return e[1].type===ft;});
   var monitorTabs=["all","A","B","C","completed"];
   var vegSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
   var leavesSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});
@@ -4382,15 +4384,11 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     }
   };
   useEffect(function(){
-    if(ft==="completed") refreshCompletedLogs();
-  },[ft]);
+    if(selNavCat==="completed") refreshCompletedLogs();
+  },[selNavCat]);
   useEffect(function(){
-    if(ft==="completed") refreshConsolidatedHistory();
-  },[ft]);
-  useEffect(function(){
-    if(monitorTabs.indexOf(ft)>=0) return;
-    sFt("all");
-  },[ft,isWarehouseUser]);
+    if(selNavCat==="completed") refreshConsolidatedHistory();
+  },[selNavCat]);
   var reopenCompleted=async function(log){
     try{
       await apiClient.supplierOrders.reopen(log._id);
@@ -4466,8 +4464,8 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var completedLeavesLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="leaves";});
   var completedVendorLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vendor_orders";});
   var completedInventoryLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;});
-  var _hcf=useState("all"),historyCategory=_hcf[0],setHistoryCategory=_hcf[1];
-  var visibleConsolidatedHistory=historyCategory==="all"?consolidatedHistory:consolidatedHistory.filter(function(r){return normalizeCategory(r.category||"vegetables")===historyCategory;});
+  var _hcf=useState("vegetables"),historyCategory=_hcf[0],setHistoryCategory=_hcf[1];
+  var visibleConsolidatedHistory=consolidatedHistory.filter(function(r){return normalizeCategory(r.category||"vegetables")===historyCategory;});
   var monitorOrderLabel=function(o){
     if(!o) return "Order -";
     var category=normalizeCategory(o.category||"vegetables");
@@ -4498,51 +4496,90 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     </div>);
   };
   return(<div>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:14}}>
-      <div style={S.tabs}>{monitorTabs.map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?"All":t==="completed"?"Completed":"Order "+t}</button>;})}</div>
-      {ft!=="all"&&ft!=="completed"&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){processAll(ft);}}>Process Order {ft} (All Stores)</button>}
-    </div>
-    {ft==="completed" ? (
-      <Fragment>
-        <div style={S.card}>
-          <div style={S.cH}>
-            <div style={{flex:1}}>
-              <div style={S.t}>Consolidated History (All Time)</div>
-              <div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div>
-              <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
-                {[{id:"all",label:"All"},{id:"vegetables",label:"Vegetables"},{id:"leaves",label:"Leaves"},{id:"vendor_orders",label:"Vendor Orders"}].map(function(cat){
-                  var isActive=historyCategory===cat.id;
-                  return <button key={cat.id} style={Object.assign({},S.b,isActive?S.bG:S.bS,{padding:"3px 12px",fontSize:11,fontWeight:isActive?700:400})} onClick={function(){setHistoryCategory(cat.id);}}>{cat.label}</button>;
-                })}
-              </div>
-            </div>
-            <button style={Object.assign({},S.b,S.bS)} onClick={refreshConsolidatedHistory} disabled={historyLoading}>{historyLoading?"Refreshing...":"Refresh"}</button>
+    <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+      <div style={{width:190,minWidth:160,flexShrink:0,background:"rgba(248,250,252,.82)",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)",border:"1px solid rgba(148,163,184,.26)",borderRadius:10,padding:"8px 6px",position:"sticky",top:12}}>
+        <div style={{fontSize:10,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:.6,padding:"4px 10px 8px"}}>Order Monitor</div>
+        {[{id:"vegetables",label:"Vegetables",count:all.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";}).length},{id:"leaves",label:"Leaves",count:all.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";}).length},{id:"vendor_orders",label:"Vendor Orders",count:all.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";}).length},{id:WAREHOUSE_INVENTORY_CATEGORY,label:"Inventory",count:all.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;}).length},{id:"completed",label:"Completed",count:completedLogs.length}].map(function(item){
+          var isActive=selNavCat===item.id;
+          return(<button key={item.id} onClick={function(){setSelNavCat(item.id);}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",padding:"8px 10px",borderRadius:7,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:isActive?700:500,marginBottom:2,textAlign:"left",background:isActive?"rgba(22,163,74,.14)":"transparent",color:isActive?"#166534":"#475569"}}>
+            <span>{item.label}</span>
+            {item.count>0&&<span style={{fontSize:10.5,fontWeight:700,background:isActive?"rgba(22,163,74,.2)":"rgba(148,163,184,.22)",color:isActive?"#166534":"#64748B",borderRadius:10,padding:"1px 6px",minWidth:18,textAlign:"center"}}>{item.count}</span>}
+          </button>);
+        })}
+      </div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:12}}>
+          <div style={S.t}>{selNavCat==="vegetables"?"Vegetable Orders":selNavCat==="leaves"?"Leaves Orders":selNavCat==="vendor_orders"?"Vendor Orders":selNavCat===WAREHOUSE_INVENTORY_CATEGORY?"Inventory Orders":"Completed"}</div>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+            {selNavCat!=="completed"&&<div style={S.tabs}>{["all","A","B","C"].map(function(t){return <button key={t} style={Object.assign({},S.tab,ft===t?S.tA:S.tI)} onClick={function(){sFt(t);}}>{t==="all"?"All Types":"Order "+t}</button>;})}</div>}
+            {ft!=="all"&&selNavCat!=="completed"&&<button style={Object.assign({},S.b,S.bW)} onClick={function(){processAll(ft);}}>Process Order {ft} (All)</button>}
           </div>
-          {historyLoading?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>Loading consolidated history...</div>:
-          visibleConsolidatedHistory.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No consolidated records found</div>:
-          <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Latest</th><th style={S.th}>Week</th><th style={S.th}>Type</th><th style={S.th}>Category</th><th style={S.th}>Scope</th><th style={S.th}>Stores</th><th style={S.th}>Sent</th><th style={S.th}>Actions</th></tr></thead><tbody>
-            {visibleConsolidatedHistory.map(function(r){
-              var rowKey=historyGroupKey(r);
-              var isDownloading=!!historyDownloading[rowKey];
-              return(<tr key={rowKey}>
-                <td style={S.tm}>{fmtDT(r.latestAt)}</td>
-                <td style={S.tm}>{r.week||"-"}</td>
-                <td style={S.td}>Order {r.type||"-"}</td>
-                <td style={S.td}>{historyCategoryLabel(r.category)}</td>
-                <td style={S.td}>{historyScopeLabel(r.category,r.vendorKey)}</td>
-                <td style={Object.assign({},S.td,{textAlign:"center"})}>{r.storeCount||0}</td>
-                <td style={S.td}><span style={Object.assign({},S.bg,r.sent?S.bgG:S.bgY)}>{r.sent?("Sent ("+(r.sentCount||0)+")"):"Not sent"}</span></td>
-                <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelHistory(r);loadSheetPreviewForHistory(r);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printConsolidatedHistoryExcel(r);}}>Print</button></div></td>
-              </tr>);
-            })}
-          </tbody></table></div>}
         </div>
-        {renderCompletedSection("Completed Vegetable Orders",completedVegetableLogs)}
-        {renderCompletedSection("Completed Leaves Orders",completedLeavesLogs)}
-        {renderCompletedSection("Completed Vendor Orders",completedVendorLogs)}
-        {renderCompletedSection("Completed Inventory Orders",completedInventoryLogs)}
-      </Fragment>
-    ) : (<Fragment>{renderSubmissionSection("Vegetable Orders",vegSubmissions)}{renderSubmissionSection("Leaves Orders",leavesSubmissions)}{renderSubmissionSection("Vendor Orders",vendorSubmissions)}{renderSubmissionSection("Inventory Orders",inventorySubmissions)}</Fragment>)}
+        {selNavCat==="completed" ? (
+          <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+            <div style={{width:170,minWidth:150,flexShrink:0,background:"rgba(248,250,252,.82)",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)",border:"1px solid rgba(148,163,184,.26)",borderRadius:10,padding:"8px 6px"}}>
+              <div style={{fontSize:10,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:.6,padding:"4px 10px 8px"}}>Completed</div>
+              {[{id:"consolidated",label:"Consolidated History",count:consolidatedHistory.length},{id:"vegetables",label:"Vegetable Orders",count:completedVegetableLogs.length},{id:"leaves",label:"Leaves Orders",count:completedLeavesLogs.length},{id:"vendor_orders",label:"Vendor Orders",count:completedVendorLogs.length},{id:WAREHOUSE_INVENTORY_CATEGORY,label:"Inventory Orders",count:completedInventoryLogs.length}].map(function(sub){
+                var isActive=selCompletedSub===sub.id;
+                return(<button key={sub.id} onClick={function(){setSelCompletedSub(sub.id);}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",padding:"8px 10px",borderRadius:7,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:12.5,fontWeight:isActive?700:500,marginBottom:2,textAlign:"left",background:isActive?"rgba(22,163,74,.14)":"transparent",color:isActive?"#166534":"#475569"}}>
+                  <span>{sub.label}</span>
+                  {sub.count>0&&<span style={{fontSize:10,fontWeight:700,background:isActive?"rgba(22,163,74,.2)":"rgba(148,163,184,.22)",color:isActive?"#166534":"#64748B",borderRadius:10,padding:"1px 6px",minWidth:16,textAlign:"center"}}>{sub.count}</span>}
+                </button>);
+              })}
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              {selCompletedSub==="consolidated"&&(
+                <div style={S.card}>
+                  <div style={S.cH}>
+                    <div style={{flex:1}}>
+                      <div style={S.t}>Consolidated History (All Time)</div>
+                      <div style={S.d}>All consolidated groups with sent/not sent status and store-level order details.</div>
+                      <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                        {[{id:"vegetables",label:"Vegetables"},{id:"leaves",label:"Leaves"},{id:"vendor_orders",label:"Vendor Orders"},{id:WAREHOUSE_INVENTORY_CATEGORY,label:"Warehouse Inventory"}].map(function(cat){
+                          var isActive=historyCategory===cat.id;
+                          return <button key={cat.id} style={Object.assign({},S.b,isActive?S.bG:S.bS,{padding:"3px 12px",fontSize:11,fontWeight:isActive?700:400})} onClick={function(){setHistoryCategory(cat.id);}}>{cat.label}</button>;
+                        })}
+                      </div>
+                    </div>
+                    <button style={Object.assign({},S.b,S.bS)} onClick={refreshConsolidatedHistory} disabled={historyLoading}>{historyLoading?"Refreshing...":"Refresh"}</button>
+                  </div>
+                  {historyLoading?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>Loading consolidated history...</div>:
+                  visibleConsolidatedHistory.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No consolidated records found</div>:
+                  <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Latest</th><th style={S.th}>Week</th><th style={S.th}>Type</th><th style={S.th}>Category</th><th style={S.th}>Scope</th><th style={S.th}>Stores</th><th style={S.th}>Sent</th><th style={S.th}>Actions</th></tr></thead><tbody>
+                    {visibleConsolidatedHistory.map(function(r){
+                      var rowKey=historyGroupKey(r);
+                      var isDownloading=!!historyDownloading[rowKey];
+                      return(<tr key={rowKey}>
+                        <td style={S.tm}>{fmtDT(r.latestAt)}</td>
+                        <td style={S.tm}>{r.week||"-"}</td>
+                        <td style={S.td}>Order {r.type||"-"}</td>
+                        <td style={S.td}>{historyCategoryLabel(r.category)}</td>
+                        <td style={S.td}>{historyScopeLabel(r.category,r.vendorKey)}</td>
+                        <td style={Object.assign({},S.td,{textAlign:"center"})}>{r.storeCount||0}</td>
+                        <td style={S.td}><span style={Object.assign({},S.bg,r.sent?S.bgG:S.bgY)}>{r.sent?("Sent ("+(r.sentCount||0)+")"):"Not sent"}</span></td>
+                        <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelHistory(r);loadSheetPreviewForHistory(r);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printConsolidatedHistoryExcel(r);}}>Print</button></div></td>
+                      </tr>);
+                    })}
+                  </tbody></table></div>}
+                </div>
+              )}
+              {selCompletedSub==="vegetables"&&renderCompletedSection("Completed Vegetable Orders",completedVegetableLogs)}
+              {selCompletedSub==="leaves"&&renderCompletedSection("Completed Leaves Orders",completedLeavesLogs)}
+              {selCompletedSub==="vendor_orders"&&renderCompletedSection("Completed Vendor Orders",completedVendorLogs)}
+              {selCompletedSub===WAREHOUSE_INVENTORY_CATEGORY&&renderCompletedSection("Completed Inventory Orders",completedInventoryLogs)}
+            </div>
+          </div>
+        ) : selNavCat==="vegetables" ? (
+          renderSubmissionSection("Vegetable Orders",vegSubmissions)
+        ) : selNavCat==="leaves" ? (
+          renderSubmissionSection("Leaves Orders",leavesSubmissions)
+        ) : selNavCat==="vendor_orders" ? (
+          renderSubmissionSection("Vendor Orders",vendorSubmissions)
+        ) : (
+          renderSubmissionSection("Inventory Orders",inventorySubmissions)
+        )}
+      </div>
+    </div>
     {selDone&&(<div style={S.ov} onClick={function(){setSelDone(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:10}}>Sent Consolidated Order {selDone.type} - {fmtDT(selDone.sentAt)}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:8}}>Supplier: {selDone.supplierName} | {selDone.email} | Week: {selDone.week}</div>
@@ -4651,6 +4688,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var _ov=useState({}),itemOverrides=_ov[0],setItemOverrides=_ov[1];
   var _ss=useState({}),sentSplitBySupplier=_ss[0],setSentSplitBySupplier=_ss[1];
   var _fl=useState(false),forceCompletedLock=_fl[0],setForceCompletedLock=_fl[1];
+  var _sahi=useState(false),savingHistory=_sahi[0],setSavingHistory=_sahi[1];
   var _logs=useState([]),logs=_logs[0],setLogs=_logs[1];
   var _sq=useState(""),supplierSearch=_sq[0],setSupplierSearch=_sq[1];
   var _vsm=useState("individual"),vendorSendMode=_vsm[0],setVendorSendMode=_vsm[1];
@@ -5841,6 +5879,23 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       toast((selectedVendor&&selectedVendor.name?selectedVendor.name+" store orders":"Store orders")+" marked processed");
     }catch(e){toast(e.message||"Failed to mark store orders processed",true);}
   };
+  var saveToHistory=async function(){
+    if(!resolvedVendorKey){toast("No inventory form selected",true);return;}
+    setSavingHistory(true);
+    try{
+      var splitPayload=buildSplitPayload(baseRows,true);
+      if(isSingleVendorFlow){
+        var documentMode=getVendorConsolidatedDocumentMode();
+        if(documentMode) splitPayload.documentMode=documentMode;
+      }
+      var resp=await apiClient.orders.saveConsolidatedHistory(currentType,selCategory,resolvedVendorKey,splitPayload,activeWeekKey,selectedVendor&&selectedVendor.name||'');
+      var latestLogs=await apiClient.supplierOrders.getAll();
+      setLogs(latestLogs||[]);
+      setForceCompletedLock(true);
+      toast("Consolidated inventory order saved to history");
+    }catch(e){toast(e.message||"Failed to save to history",true);}
+    finally{setSavingHistory(false);}
+  };
   var downloadSplitExcel=async function(sid){
     var rows=splitRowsBySupplier[sid]||[];
     if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
@@ -5970,6 +6025,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         <div><div style={S.t}>{selectedVendor?(selectedVendor.name+" - "+(selCategory===WAREHOUSE_INVENTORY_CATEGORY?"Consolidated Inventory Orders":"Consolidated Vendor Orders")):(selCategory===WAREHOUSE_INVENTORY_CATEGORY?"Inventory Consolidated Orders":"Vendor Consolidated Orders")}</div><div style={S.d}>All store quantities are consolidated below with total qty, while keeping the uploaded template format.</div></div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
           {(latestTypeLog&&vendorStoreDocs.length>0)&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
+          {isWarehouseInventoryFlow&&!isCompletedLocked&&<button style={Object.assign({},S.b,S.bP)} onClick={saveToHistory} disabled={savingHistory||!selectedVendor||vendorStoreDocs.length<1}>{savingHistory?"Saving...":"Save to History"}</button>}
           {!editingAll&&<button style={Object.assign({},S.b,S.bS)} onClick={startEditAll} disabled={isCompletedLocked||!selectedVendor||vendorStoreDocs.length<1}>Edit All Stores</button>}
           {editingAll&&<button style={Object.assign({},S.b,S.bP)} onClick={saveAllEdits} disabled={savingAll||isCompletedLocked||!selectedVendor||vendorStoreDocs.length<1}>{savingAll?"Saving...":"Save"}</button>}
           <button style={Object.assign({},S.b,S.bS)} onClick={downloadVendorConsolidatedDocument} disabled={downloadingVendorConsolidated||!selectedVendor||baseRows.length<1}>{downloadingVendorConsolidated?"Downloading...":"Download Document"}</button>
@@ -6196,7 +6252,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           </div>;
         })}
       </div>
-      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setStep(2);}}>Back</button>{isSingleVendorFlow&&latestTypeLog&&vendorStoreDocs.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}</div>
+      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setStep(2);}}>Back</button>{isSingleVendorFlow&&latestTypeLog&&vendorStoreDocs.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}{isWarehouseInventoryFlow&&!isCompletedLocked&&<button style={Object.assign({},S.b,S.bP)} onClick={saveToHistory} disabled={savingHistory||eMailing}>{savingHistory?"Saving...":"Save to History"}</button>}</div>
     </div>)}
     {vendorStoreDialogRow&&(<div style={S.ov} onClick={function(){if(!savingVendorStoreDialog) closeVendorStoreDialog();}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>{vendorStoreDialogEditing?"Edit":"View"} Store Order - {(vendorStoreDialogRow.store&&vendorStoreDialogRow.store.name)||vendorStoreDialogRow.store&&vendorStoreDialogRow.store.id}</div>

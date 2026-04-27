@@ -4592,6 +4592,119 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
   }
 });
 
+// save consolidated order to history without sending email (admin/warehouse only)
+// Used for warehouse inventory orders and other cases where email is not required
+router.post('/consolidated/:type/save-history', authMiddleware, async (req, res) => {
+  try {
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
+    }
+    const { supplierName, splitData, category, vendorKey, week } = req.body || {};
+    const resolvedCategory = normalizeCategory(category);
+    const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
+    const requestedWeekKey = normalizeRequestedWeekKey(week);
+    if (week && !requestedWeekKey) {
+      return res.status(400).json({ error: 'Invalid week key' });
+    }
+
+    const effectiveSplitData = splitData && typeof splitData === 'object'
+      ? { ...splitData, supplierName: splitData.supplierName || supplierName || '' }
+      : splitData;
+
+    const { weekKey, stores, slots, slotOrders, snapshotLines, fileBuffer, fileFilename, contentType, excelBuffer, excelFilename } =
+      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, effectiveSplitData, requestedWeekKey);
+
+    const monitorHistory = (resolvedCategory === 'vendor_orders' || resolvedCategory === 'leaves' || resolvedCategory === 'warehouse_inventory')
+      ? await buildConsolidatedExcelPayload(
+          req.params.type,
+          resolvedCategory,
+          resolvedVendorKey,
+          effectiveSplitData && typeof effectiveSplitData === 'object'
+            ? { ...effectiveSplitData, documentMode: 'monitor' }
+            : { documentMode: 'monitor' },
+          requestedWeekKey
+        )
+      : null;
+
+    const finishedFlag = splitData && typeof splitData.finished === 'boolean' ? splitData.finished : true;
+    const storeBreakdown = buildStoreBreakdownFromConsolidatedData({
+      stores,
+      slots,
+      slotOrders,
+      splitData,
+    });
+
+    const totalObj = {};
+    if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
+      splitData.rows.forEach((r) => {
+        const code = r.itemCode || `XLS::${String(r.itemName || '').trim()}`;
+        const sum = slots.reduce((acc, slot) => {
+          if (!slot.store) return acc;
+          return acc + (Number(r.qtyByStoreId && r.qtyByStoreId[slot.store.id]) || 0);
+        }, 0);
+        if (sum > 0) totalObj[code] = (totalObj[code] || 0) + sum;
+      });
+    } else {
+      slots.forEach((slot) => {
+        const order = slotOrders[slot.apna];
+        if (order) {
+          orderItemsToList(order.items).forEach((i) => {
+            totalObj[i.itemCode] = (totalObj[i.itemCode] || 0) + (i.quantity || 0);
+          });
+        }
+      });
+    }
+
+    const resolvedSupplierName = await resolveConsolidatedSupplierName({ category: resolvedCategory, vendorKey: resolvedVendorKey, supplierName: supplierName || '' });
+
+    const supplierOrder = await SupplierOrder.create({
+      supplierName: resolvedSupplierName,
+      email: '',
+      emails: [],
+      type: req.params.type,
+      category: resolvedCategory,
+      vendorKey: resolvedVendorKey,
+      week: weekKey,
+      items: totalObj,
+      snapshotLines,
+      storeBreakdown,
+      excelBase64: (fileBuffer || excelBuffer).toString('base64'),
+      excelFilename: fileFilename || excelFilename,
+      excelContentType: contentType || EXCEL_CONTENT_TYPE,
+      monitorSnapshotLines: monitorHistory ? monitorHistory.snapshotLines : [],
+      monitorExcelBase64: monitorHistory ? (monitorHistory.fileBuffer || monitorHistory.excelBuffer).toString('base64') : null,
+      monitorExcelFilename: monitorHistory ? (monitorHistory.fileFilename || monitorHistory.excelFilename) : null,
+      monitorExcelContentType: monitorHistory ? (monitorHistory.contentType || EXCEL_CONTENT_TYPE) : EXCEL_CONTENT_TYPE,
+      finished: finishedFlag,
+      sentToSupplier: false,
+    });
+    invalidateConsolidatedHistoryCache();
+
+    res.json({
+      success: true,
+      supplierOrder: {
+        _id: supplierOrder._id,
+        supplierName: supplierOrder.supplierName,
+        email: supplierOrder.email,
+        emails: supplierOrder.emails || [],
+        type: supplierOrder.type,
+        category: normalizeCategory(supplierOrder.category),
+        vendorKey: supplierOrder.vendorKey || null,
+        week: supplierOrder.week,
+        items: supplierOrder.items,
+        snapshotLines: supplierOrder.snapshotLines,
+        sentAt: supplierOrder.sentAt,
+        finished: supplierOrder.finished,
+        sentToSupplier: supplierOrder.sentToSupplier,
+        hasExcel: !!supplierOrder.excelBase64,
+      },
+    });
+  } catch (err) {
+    console.error('Save consolidated history error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // build consolidated Excel preview without sending email (admin only)
 router.post('/consolidated/:type/excel-preview', authMiddleware, async (req, res) => {
   try {

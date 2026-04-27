@@ -227,6 +227,17 @@ export const apiClient = {
         body: JSON.stringify(body),
       });
     },
+    saveConsolidatedHistory(type, category, vendorKey, splitData, week, supplierName) {
+      const body = { category: category || 'vegetables' };
+      if (vendorKey) body.vendorKey = vendorKey;
+      if (splitData) body.splitData = splitData;
+      if (week) body.week = week;
+      if (supplierName) body.supplierName = supplierName;
+      return apiClient.request(`/orders/consolidated/${type}/save-history`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
     getConsolidatedHistory(days = 7) {
       return apiClient.request(`/orders/consolidated-history?days=${encodeURIComponent(days)}`);
     },
