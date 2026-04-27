@@ -3349,6 +3349,12 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
   var inventorySummary=summarizeInventoryKeys(activeInventoryOrderIds,items,categoryTemplates);
   var vendorStatValue=!vendorGroups.length?"Locked":(vendorGroups.length===1?vendorGroups[0].vendorName:(vendorGroups.length+" Open"));
   var inventoryStatValue=!inventoryGroups.length?"Locked":(inventoryGroups.length===1?inventoryGroups[0].inventoryName:(inventoryGroups.length+" Open"));
+  var dashboardLinkStyle={background:"none",border:"none",padding:0,margin:0,font:"inherit",fontWeight:700,fontSize:22,color:"inherit",cursor:"pointer",textAlign:"left",textDecoration:"underline",textUnderlineOffset:"3px"};
+  var renderDashboardTitle=function(text,color,onClick){
+    var titleStyle=Object.assign({},S.t,{color:color||S.t.color});
+    if(!onClick) return <div style={titleStyle}>{text}</div>;
+    return <button style={Object.assign({},dashboardLinkStyle,titleStyle)} onClick={onClick}>{text}</button>;
+  };
   var openVendorOrder=function(vendorKey){
     if(setDraftRequest) setDraftRequest({type:"VENDOR",category:"vendor_orders",vendorKey:vendorKey});
     setPage("order-entry");
@@ -3356,6 +3362,14 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
   var openInventoryOrder=function(inventoryKey){
     var draftType=dashboardTypes.length===1?dashboardTypes[0]:null;
     if(setDraftRequest) setDraftRequest({type:draftType,category:WAREHOUSE_INVENTORY_CATEGORY,vendorKey:inventoryKey});
+    setPage("order-entry");
+  };
+  var openVegetableOrder=function(type){
+    if(setDraftRequest) setDraftRequest({type:type,category:"vegetables"});
+    setPage("order-entry");
+  };
+  var openLeavesOrder=function(){
+    if(setDraftRequest) setDraftRequest({type:"B",category:"leaves"});
     setPage("order-entry");
   };
   return(<div>
@@ -3369,39 +3383,35 @@ function MgrDash({user,orders,notifs,aot,openOrderTypes,setPage,stores,schedule,
     </div>
     {openTypeGroups.map(function(group){return(<div key={group.type} style={S.card}>
       <div style={S.cH}>
-        <div>{group.status==="submitted"?(<Fragment><div style={Object.assign({},S.t,{color:"#34D399"})}>Order {group.type} is Submitted</div><div style={S.d}>Your order has been submitted successfully.</div></Fragment>)
-          :group.status==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>Order {group.type} is Processed</div><div style={S.d}>Admin has processed this order.</div></Fragment>)
-          :group.status==="draft"||group.status==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>Order {group.type} is Draft</div><div style={S.d}>Draft saved. Open Place Order to edit draft or submit final.</div></Fragment>)
-          :(<Fragment><div style={Object.assign({},S.t,{color:"#FBBF24"})}>Order {group.type} - Action Required</div><div style={S.d}>{orderMsgs[group.type]||"Please submit your order."}</div></Fragment>)}</div>
-        {group.isCurrentlyOpen&&group.status!=="submitted"&&group.status!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setDraftRequest)setDraftRequest({type:group.type,category:"vegetables"});setPage("order-entry");}}>{group.status==="draft"||group.status==="draft_shared"?"Open Draft":"Place Order"}</button>}
+        <div>{group.status==="submitted"?(<Fragment>{renderDashboardTitle("Order "+group.type+" is Submitted","#34D399",null)}<div style={S.d}>Your order has been submitted successfully.</div></Fragment>)
+          :group.status==="processed"?(<Fragment>{renderDashboardTitle("Order "+group.type+" is Processed","#0F766E",null)}<div style={S.d}>Admin has processed this order.</div></Fragment>)
+          :group.status==="draft"||group.status==="draft_shared"?(<Fragment>{renderDashboardTitle("Order "+group.type+" is Draft","#F59E0B",function(){openVegetableOrder(group.type);})}<div style={S.d}>Draft saved. Open Place Order to edit draft or submit final.</div></Fragment>)
+          :(<Fragment>{renderDashboardTitle("Order "+group.type+" - Action Required","#FBBF24",group.isCurrentlyOpen?function(){openVegetableOrder(group.type);}:null)}<div style={S.d}>{orderMsgs[group.type]||"Please submit your order."}</div></Fragment>)}</div>
       </div>
     </div>);})}
     {showLeavesCard&&(<div style={S.card}>
       <div style={S.cH}>
-        <div>{leavesStatus==="submitted"?(<Fragment><div style={Object.assign({},S.t,{color:"#34D399"})}>Leaves Order is Submitted</div><div style={S.d}>Your leaves order has been submitted successfully.</div></Fragment>)
-          :leavesStatus==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>Leaves Order is Processed</div><div style={S.d}>Admin has processed this leaves order.</div></Fragment>)
-          :leavesStatus==="draft"||leavesStatus==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>Leaves Order is Draft</div><div style={S.d}>Draft saved. Open to edit or submit final.</div></Fragment>)
-          :(<Fragment><div style={Object.assign({},S.t,{color:"#16A34A"})}>Leaves Order - Action Required</div><div style={S.d}>Leaves order is open. Please submit your order.</div></Fragment>)}</div>
-        {leavesOpen&&leavesStatus!=="submitted"&&leavesStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){if(setDraftRequest)setDraftRequest({type:"B",category:"leaves"});setPage("order-entry");}}>{leavesStatus==="draft"||leavesStatus==="draft_shared"?"Open Leaves Draft":"Place Leaves Order"}</button>}
+        <div>{leavesStatus==="submitted"?(<Fragment>{renderDashboardTitle("Leaves Order is Submitted","#34D399",null)}<div style={S.d}>Your leaves order has been submitted successfully.</div></Fragment>)
+          :leavesStatus==="processed"?(<Fragment>{renderDashboardTitle("Leaves Order is Processed","#0F766E",null)}<div style={S.d}>Admin has processed this leaves order.</div></Fragment>)
+          :leavesStatus==="draft"||leavesStatus==="draft_shared"?(<Fragment>{renderDashboardTitle("Leaves Order is Draft","#F59E0B",function(){openLeavesOrder();})}<div style={S.d}>Draft saved. Open to edit or submit final.</div></Fragment>)
+          :(<Fragment>{renderDashboardTitle("Leaves Order - Action Required","#16A34A",leavesOpen?function(){openLeavesOrder();}:null)}<div style={S.d}>Leaves order is open. Please submit your order.</div></Fragment>)}</div>
       </div>
     </div>)}
     {vendorGroups.map(function(group){return(<div key={group.vendorKey} style={S.card}>
       <div style={S.cH}>
-        <div>{group.vendorStatus==="submitted"?(<Fragment><div style={Object.assign({},S.t,{color:"#34D399"})}>{group.vendorName} is Submitted</div><div style={S.d}>Your {group.vendorName} order has been submitted.</div></Fragment>)
-          :group.vendorStatus==="processed"?(<Fragment><div style={Object.assign({},S.t,{color:"#0F766E"})}>{group.vendorName} is Processed</div><div style={S.d}>Admin has processed this vendor order.</div></Fragment>)
-          :group.vendorStatus==="draft"||group.vendorStatus==="draft_shared"?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>{group.vendorName} is Draft</div><div style={S.d}>Draft saved for {group.vendorName}.</div></Fragment>)
-          :(<Fragment><div style={Object.assign({},S.t,{color:"#166534"})}>{group.vendorName} - Action Required</div><div style={S.d}>{group.vendorName} is open for ordering.</div></Fragment>)}</div>
-        {group.vendorStatus!=="submitted"&&group.vendorStatus!=="processed"&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){openVendorOrder(group.vendorKey);}}>{group.vendorStatus==="draft"||group.vendorStatus==="draft_shared"?("Open "+group.vendorName+" Draft"):("Place "+group.vendorName+" Order")}</button>}
+        <div>{group.vendorStatus==="submitted"?(<Fragment>{renderDashboardTitle(group.vendorName+" is Submitted","#34D399",null)}<div style={S.d}>Your {group.vendorName} order has been submitted.</div></Fragment>)
+          :group.vendorStatus==="processed"?(<Fragment>{renderDashboardTitle(group.vendorName+" is Processed","#0F766E",null)}<div style={S.d}>Admin has processed this vendor order.</div></Fragment>)
+          :group.vendorStatus==="draft"||group.vendorStatus==="draft_shared"?(<Fragment>{renderDashboardTitle(group.vendorName+" is Draft","#F59E0B",function(){openVendorOrder(group.vendorKey);})}<div style={S.d}>Draft saved for {group.vendorName}.</div></Fragment>)
+          :(<Fragment>{renderDashboardTitle(group.vendorName+" - Action Required","#166534",function(){openVendorOrder(group.vendorKey);})}<div style={S.d}>{group.vendorName} is open for ordering.</div></Fragment>)}</div>
       </div>
     </div>);})}
     {inventoryGroups.map(function(group){
       var detailText=group.inventoryName+" inventory order is open.";
       return(<div key={encodeInventorySettingsKey(group.inventoryKey)} style={S.card}>
         <div style={S.cH}>
-          <div>{group.allSubmitted?(<Fragment><div style={Object.assign({},S.t,{color:group.allProcessed?"#0F766E":"#34D399"})}>{group.inventoryName} is {group.allProcessed?"Processed":"Submitted"}</div><div style={S.d}>{group.allProcessed?"Admin has processed this inventory order.":"Your inventory order has been submitted."}</div></Fragment>)
-            :group.hasDraft?(<Fragment><div style={Object.assign({},S.t,{color:"#F59E0B"})}>{group.inventoryName} is Draft</div><div style={S.d}>Draft saved for {group.inventoryName}.</div></Fragment>)
-            :(<Fragment><div style={Object.assign({},S.t,{color:"#166534"})}>{group.inventoryName} - Action Required</div><div style={S.d}>{detailText}</div></Fragment>)}</div>
-          {!group.allSubmitted&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){openInventoryOrder(group.inventoryKey);}}>{group.hasDraft?("Open "+group.inventoryName+" Draft"):("Place "+group.inventoryName+" Order")}</button>}
+          <div>{group.allSubmitted?(<Fragment>{renderDashboardTitle(group.inventoryName+" is "+(group.allProcessed?"Processed":"Submitted"),group.allProcessed?"#0F766E":"#34D399",null)}<div style={S.d}>{group.allProcessed?"Admin has processed this inventory order.":"Your inventory order has been submitted."}</div></Fragment>)
+            :group.hasDraft?(<Fragment>{renderDashboardTitle(group.inventoryName+" is Draft","#F59E0B",function(){openInventoryOrder(group.inventoryKey);})}<div style={S.d}>Draft saved for {group.inventoryName}.</div></Fragment>)
+            :(<Fragment>{renderDashboardTitle(group.inventoryName+" - Action Required","#166534",function(){openInventoryOrder(group.inventoryKey);})}<div style={S.d}>{detailText}</div></Fragment>)}</div>
         </div>
       </div>);
     })}
@@ -3517,9 +3527,11 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
   var vendorLocked=selCategory==="vendor_orders"&&!isAdmin&&(!resolvedVendorKey||activeVendorIds.indexOf(resolvedVendorKey)<0);
   var inventoryLocked=selCategory===WAREHOUSE_INVENTORY_CATEGORY&&!isAdmin&&(!resolvedVendorKey||activeInventoryIds.indexOf(resolvedVendorKey)<0);
   var ex=getCurrentOrderForStoreType(orders,user.storeId,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,scopedSeq);var lw=orders[lwKey];var locked=selCategory==="vendor_orders"?vendorLocked:(selCategory===WAREHOUSE_INVENTORY_CATEGORY?inventoryLocked:!isCategoryOpenForType(selCategory,sel,resolvedOpenTypes,manualOpenLeaves));
-  // Draft and draft_shared remain editable; only submitted/processed are read-only.
-  var done=ex&&(ex.status==="submitted"||ex.status==="processed");
-  var hasServerDraft=!!(ex&&(ex.status==="draft"||ex.status==="draft_shared"));
+  var exStatus=String(ex&&ex.status||"").toLowerCase();
+  // Warehouse inventory store orders should stay locked after the store has placed
+  // them, even while the admin schedule remains open, unless reopened from history.
+  var done=!!(ex&&(exStatus==="submitted"||exStatus==="processed"||(selCategory===WAREHOUSE_INVENTORY_CATEGORY&&exStatus==="draft_shared")));
+  var hasServerDraft=!!(ex&&(exStatus==="draft"||(selCategory!==WAREHOUSE_INVENTORY_CATEGORY&&exStatus==="draft_shared")));
   var isDraftOrder=hasServerDraft||!!draftLockByKey[oKey];
   var requiresScopedSelection=selCategory==="vendor_orders"||(selCategory===WAREHOUSE_INVENTORY_CATEGORY&&warehouseInventoryFormOptions.length>0);
   var hasScopedSelection=!requiresScopedSelection||((selCategory==="vendor_orders"?visibleVendorOptions:visibleWarehouseInventoryFormOptions).some(function(option){return String(option&&option.id||"")===String(selectedVendorKey||"");}));
@@ -3583,13 +3595,13 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
     if(setDraftRequest) setDraftRequest(null);
   },[draftRequest]);
   useEffect(function(){
-    if(ex&& (ex.status==="submitted"||ex.status==="processed")){
+    if(ex&&(exStatus==="submitted"||exStatus==="processed"||(selCategory===WAREHOUSE_INVENTORY_CATEGORY&&exStatus==="draft_shared"))){
       setDraftLockByKey(function(prev){
         if(!prev[oKey]) return prev;
         var n=Object.assign({},prev);delete n[oKey];return n;
       });
     }
-  },[oKey,ex&&ex.status]);
+  },[oKey,exStatus,selCategory]);
   var setQ=function(c,v){
     if(ro)return;
     setQty(function(p){
@@ -3907,12 +3919,13 @@ function OrderEntry({user,items,orders,setOrders,refreshOrders,aot,openOrderType
 }
 
 /* ═══ ORDER HISTORY ═══ */
-function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,openOrderTypes,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType,setDraftRequest,vendorOrderConfigs,categoryTemplates,suppliers}){
+function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,aot,openOrderTypes,manualOpenOrder,manualOpenSeq,manualOpenLeaves,setEntryType,setDraftRequest,vendorOrderConfigs,inventoryOrderConfigs,categoryTemplates,suppliers}){
   var my=Object.entries(orders).filter(function(e){return e[0].indexOf(user.storeId)===0;}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var vegOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
   var leavesOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});
   var vendorOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";});
   var warehouseInventoryOrders=my.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;});
+  var _hc=useState("vegetables"),selHistoryCat=_hc[0],setSelHistoryCat=_hc[1];
   var _s=useState(null),sel=_s[0],setSel=_s[1];
   var statusBg=function(st){return st==="processed"?S.bgP:st==="submitted"?S.bgG:S.bgY;};
   var visibleStatus={submitted:true,processed:true,draft_shared:true};
@@ -3930,12 +3943,15 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
     return !!(latestInfo&&String(latestInfo.week||"")===String(o.week||""));
   };
   var canReopenAsDraft=function(k,o){
-    if(!o||!(o.status==="submitted"||o.status==="processed")) return false;
+    var orderStatus=String(o&&o.status||"").toLowerCase();
+    var isWarehouseInventoryOrder=normalizeCategory(o&&o.category||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;
+    if(!o||!(orderStatus==="submitted"||orderStatus==="processed"||(isWarehouseInventoryOrder&&orderStatus==="draft_shared"))) return false;
     if(o.supplierSent) return false;
     var category=o.category||"vegetables";
     var hasMatchingOpenType=openTypes.indexOf(o.type)>=0;
     if(hasMatchingOpenType&&isCategoryOpenForType(category,o.type,o.type,manualOpenLeaves)){
-      var openWeek=activeWeekLookupKey(o.type,category,o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));
+      var scopedSeq=getScopedSeqForCategory(category,o.vendorKey||null,vendorOrderConfigs,inventoryOrderConfigs);
+      var openWeek=activeWeekLookupKey(o.type,category,o.vendorKey||null,manualOpenOrder,manualOpenSeq,scopedSeq);
       if(isSameOrAdjacentDateWeekKey(o.week,openWeek)) return true;
     }
     return isLatestUnsentCycle(o);
@@ -4000,14 +4016,31 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       <div style={S.t}>{title} ({rows.length})</div>
       {rows.length===0?<div style={{textAlign:"center",padding:18,color:"#6B7186"}}>No orders</div>:
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
-        {rows.map(function(e){var k=e[0],o=e[1];var canReopen=canReopenAsDraft(k,o);var openWeek=activeWeekLookupKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,o.vendorKey||null));var sameCurrentCycle=isSameOrAdjacentDateWeekKey(o.week,openWeek);var reopenTip=o.supplierSent?"Supplier order already sent":(canReopen?"":(openTypes.indexOf(o.type)>=0?(!sameCurrentCycle?"Only the current open-slot order can be reopened":""):"Only the latest unsent supplier cycle can be reopened"));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countOrderItemsWithFallback(o)}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{(o.status==="submitted"||o.status==="processed")&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
+        {rows.map(function(e){var k=e[0],o=e[1];var orderStatus=String(o&&o.status||"").toLowerCase();var canReopen=canReopenAsDraft(k,o);var scopedSeq=getScopedSeqForCategory(o.category||"vegetables",o.vendorKey||null,vendorOrderConfigs,inventoryOrderConfigs);var openWeek=activeWeekLookupKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,scopedSeq);var sameCurrentCycle=isSameOrAdjacentDateWeekKey(o.week,openWeek);var reopenTip=o.supplierSent?"Supplier order already sent":(canReopen?"":(openTypes.indexOf(o.type)>=0?(!sameCurrentCycle?"Only the current open-slot order can be reopened":""):"Only the latest unsent supplier cycle can be reopened"));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countOrderItemsWithFallback(o)}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{(orderStatus==="submitted"||orderStatus==="processed"||orderStatus==="draft_shared")&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
       </tbody></table></div>}
     </div>);
   };
-  return(<div><div style={S.card}><div style={S.t}>Past Orders</div>
+  var historySections=[
+    {id:"vegetables",label:"Vegetable Orders",rows:vegOrders},
+    {id:"leaves",label:"Leaves Orders",rows:leavesOrders},
+    {id:"vendor_orders",label:"Vendor Orders",rows:vendorOrders},
+    {id:WAREHOUSE_INVENTORY_CATEGORY,label:"Inventory Orders",rows:warehouseInventoryOrders}
+  ];
+  var activeHistorySection=historySections.find(function(section){return section.id===selHistoryCat;})||historySections[0];
+  return(<div><div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+    <div style={{width:190,minWidth:160,flexShrink:0,background:"rgba(248,250,252,.82)",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)",border:"1px solid rgba(148,163,184,.26)",borderRadius:10,padding:"8px 6px",position:"sticky",top:12}}>
+      <div style={{fontSize:10,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:.6,padding:"4px 10px 8px"}}>Order History</div>
+      {historySections.map(function(section){
+        var isActive=selHistoryCat===section.id;
+        return(<button key={section.id} onClick={function(){setSelHistoryCat(section.id);}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",padding:"8px 10px",borderRadius:7,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:isActive?700:500,marginBottom:2,textAlign:"left",background:isActive?"rgba(22,163,74,.14)":"transparent",color:isActive?"#166534":"#475569"}}>
+          <span>{section.label}</span>
+          {section.rows.length>0&&<span style={{fontSize:10.5,fontWeight:700,background:isActive?"rgba(22,163,74,.2)":"rgba(148,163,184,.22)",color:isActive?"#166534":"#64748B",borderRadius:10,padding:"1px 6px",minWidth:18,textAlign:"center"}}>{section.rows.length}</span>}
+        </button>);
+      })}
+    </div>
+    <div style={{flex:1,minWidth:0}}><div style={S.card}><div style={S.t}>Past Orders</div>
     <div style={S.d}>Reopen as Draft stays available until supplier email is sent. Current open orders reopen directly; the latest unsent cycle also remains reopenable from history.</div>
-    {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:
-    <Fragment>{renderHistorySection("Vegetable Orders",vegOrders)}{renderHistorySection("Leaves Orders",leavesOrders)}{renderHistorySection("Vendor Orders",vendorOrders)}{renderHistorySection("Inventory Orders",warehouseInventoryOrders)}</Fragment>}</div>
+    {my.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No orders yet</div>:renderHistorySection(activeHistorySection.label,activeHistorySection.rows)}</div></div></div>
     {sel&&orders[sel]&&(<div style={S.ov} onClick={function(){setSel(null);}}><div style={S.mo} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:12}}>{(normalizeCategory(orders[sel].category||"vegetables")==="vendor_orders"||normalizeCategory(orders[sel].category||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY)?historyOrderLabel(orders[sel]):(CATEGORY_LABELS[orders[sel].category||"vegetables"]+" Order "+orders[sel].type)} - {fmtDT(orders[sel].date)}</div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"right"})}>Qty</th><th style={S.th}>Note</th></tr></thead><tbody>
