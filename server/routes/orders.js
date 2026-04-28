@@ -19,6 +19,7 @@ import { fixStuckVendorOrders } from '../services/vendorCycleManager.js';
 
 const ORDER_TIMEZONE = process.env.ORDER_TIMEZONE || 'America/Los_Angeles';
 const VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS = 48 * 60 * 60 * 1000;
+const MANUAL_OPEN_CYCLE_MATCH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 function listifyVendorInputs(input) {
   if (Array.isArray(input)) return input.slice();
@@ -2556,17 +2557,79 @@ function isStoreOrderVisibleInConsolidated(status) {
   return status === 'submitted' || status === 'processed' || status === 'draft_shared';
 }
 
+function parseDateWeekKey(value) {
+  const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:-(?:M\d+|VS\d+|IS\d+))?$/i);
+  if (!match) return null;
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10) - 1;
+  const day = parseInt(match[3], 10);
+  const ts = Date.UTC(year, month, day);
+  return Number.isNaN(ts) ? null : ts;
+}
+
+function extractWeekKeyCycleSuffix(value) {
+  const match = String(value || '').trim().match(/(-M\d+|-VS\d+|-IS\d+)$/i);
+  return match ? match[1].toUpperCase() : '';
+}
+
+function isSameOrAdjacentDateWeekKey(left, right) {
+  if (String(left || '') === String(right || '')) return true;
+  const leftTs = parseDateWeekKey(left);
+  const rightTs = parseDateWeekKey(right);
+  if (leftTs == null || rightTs == null) return false;
+  const diff = Math.abs(leftTs - rightTs);
+  const leftSuffix = extractWeekKeyCycleSuffix(left);
+  const rightSuffix = extractWeekKeyCycleSuffix(right);
+  if (leftSuffix && rightSuffix) {
+    if (leftSuffix !== rightSuffix) return false;
+    if (/^-(VS|IS)\d+$/i.test(leftSuffix)) return diff <= VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS;
+    if (/^-M\d+$/i.test(leftSuffix)) return diff <= MANUAL_OPEN_CYCLE_MATCH_WINDOW_MS;
+    return diff <= 24 * 60 * 60 * 1000;
+  }
+  return diff <= 24 * 60 * 60 * 1000;
+}
+
+function consolidatedHistoryType(type, category) {
+  return normalizeCategory(category) === 'warehouse_inventory' ? 'INVENTORY' : String(type || '').toUpperCase();
+}
+
+function consolidatedHistoryIdentity(type, category, vendorKey) {
+  const normalizedCategory = normalizeCategory(category);
+  const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
+  return [consolidatedHistoryType(type, normalizedCategory), normalizedCategory, normalizedVendorKey || ''].join('::');
+}
+
+function resolveCompatibleHistoryGroupKey(registry, week, type, category, vendorKey) {
+  const normalizedWeek = String(week || '').trim();
+  const key = consolidatedHistoryKey(normalizedWeek, type, category, vendorKey);
+  const identity = consolidatedHistoryIdentity(type, category, vendorKey);
+  if (!registry[identity]) registry[identity] = [];
+  const entries = registry[identity];
+  let match = entries.find((entry) => String(entry.week || '') === normalizedWeek);
+  if (!match && normalizedWeek) {
+    match = entries.find((entry) => isSameOrAdjacentDateWeekKey(entry.week, normalizedWeek));
+  }
+  if (match) {
+    if (normalizedWeek && !entries.some((entry) => entry.key === match.key && String(entry.week || '') === normalizedWeek)) {
+      entries.push({ key: match.key, week: normalizedWeek });
+    }
+    return match.key;
+  }
+  entries.push({ key, week: normalizedWeek });
+  return key;
+}
+
 function consolidatedHistoryKey(week, type, category, vendorKey) {
   const normalizedCategory = normalizeCategory(category);
   const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
-  const normalizedType = normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(type || '').toUpperCase();
+  const normalizedType = consolidatedHistoryType(type, normalizedCategory);
   return [String(week || ''), normalizedType, normalizedCategory, normalizedVendorKey || ''].join('::');
 }
 
 function supplierGroupKey(week, type, category, vendorKey) {
   const normalizedCategory = normalizeCategory(category);
   const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
-  const normalizedType = normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(type || '').toUpperCase();
+  const normalizedType = consolidatedHistoryType(type, normalizedCategory);
   return [String(week || ''), normalizedType, normalizedCategory, normalizedVendorKey || ''].join('::');
 }
 
@@ -2758,12 +2821,13 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
   // Reverse map: store name (lowercased) → storeId, for snapshotLines resolution
   const storeIdByName = Object.fromEntries(stores.map((s) => [String(s.name || s.id || '').toLowerCase(), String(s.id || '')]));
   const { itemNameByCode } = buildItemDisplayMaps(itemDocs);
+  const historyGroupRegistry = {};
 
   // Track full log objects by group key so we can use storeBreakdown for archived entries
   const fullLogsByGroup = {};
   const sentByGroup = {};
   sentLogs.forEach((log) => {
-    const key = consolidatedHistoryKey(log.week, log.type, log.category, log.vendorKey);
+    const key = resolveCompatibleHistoryGroupKey(historyGroupRegistry, log.week, log.type, log.category, log.vendorKey);
     if (!fullLogsByGroup[key]) fullLogsByGroup[key] = [];
     fullLogsByGroup[key].push(log);
     if (!sentByGroup[key]) {
@@ -2799,7 +2863,7 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
   orders.forEach((order) => {
     const normalizedCategory = normalizeCategory(order.category);
     const normalizedVendorKey = normalizeVendorKey(normalizedCategory, order.vendorKey);
-    const key = consolidatedHistoryKey(order.week, order.type, normalizedCategory, normalizedVendorKey);
+    const key = resolveCompatibleHistoryGroupKey(historyGroupRegistry, order.week, order.type, normalizedCategory, normalizedVendorKey);
     if (!grouped[key]) {
       grouped[key] = {
         week: order.week,
@@ -2814,6 +2878,7 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
     const candidateLatest = order.submittedAt || order.createdAt || new Date(0);
     if (new Date(candidateLatest) > new Date(group.latestAt || 0)) {
       group.latestAt = candidateLatest;
+      group.week = order.week || group.week;
     }
 
     const rawOrderMaps = orderItemsToMaps(order.items);
@@ -2964,13 +3029,85 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
   return { rows: result, total, page, limit, hasMore: page * limit < total };
 }
 
+async function collectCompatibleHistoryWeeks({ week, type, category, vendorKey }) {
+  const normalizedCategory = normalizeCategory(category);
+  const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
+  const normalizedType = consolidatedHistoryType(type, normalizedCategory);
+  const normalizedWeek = String(week || '').trim();
+  if (!normalizedWeek) return [];
+  const typeFilter = orderTypeFilterForCategory(normalizedType, normalizedCategory);
+  const [orderWeeks, sentLogWeeks] = await Promise.all([
+    Order.find({ ...typeFilter, category: normalizedCategory, vendorKey: normalizedVendorKey })
+      .select({ week: 1, _id: 0 })
+      .lean(),
+    SupplierOrder.find({ ...typeFilter, category: normalizedCategory, vendorKey: normalizedVendorKey })
+      .select({ week: 1, _id: 0 })
+      .lean(),
+  ]);
+  const weeks = new Set([normalizedWeek]);
+  orderWeeks.concat(sentLogWeeks).forEach((entry) => {
+    const candidateWeek = String(entry && entry.week || '').trim();
+    if (!candidateWeek) return;
+    if (isSameOrAdjacentDateWeekKey(candidateWeek, normalizedWeek)) {
+      weeks.add(candidateWeek);
+    }
+  });
+  return Array.from(weeks);
+}
+
+async function upsertSupplierOrderHistory(payload) {
+  const normalizedCategory = normalizeCategory(payload && payload.category);
+  const normalizedVendorKey = normalizeVendorKey(normalizedCategory, payload && payload.vendorKey);
+  const historyType = consolidatedHistoryType(payload && payload.type, normalizedCategory);
+  const normalizedWeek = String(payload && payload.week || '').trim();
+  const compatibleWeeks = await collectCompatibleHistoryWeeks({
+    week: normalizedWeek,
+    type: historyType,
+    category: normalizedCategory,
+    vendorKey: normalizedVendorKey,
+  });
+  const existingFilter = {
+    ...orderTypeFilterForCategory(historyType, normalizedCategory),
+    category: normalizedCategory,
+    vendorKey: normalizedVendorKey,
+    week: compatibleWeeks.length > 0 ? { $in: compatibleWeeks } : normalizedWeek,
+  };
+  if (payload && payload.sentToSupplier === false) {
+    existingFilter.sentToSupplier = false;
+  }
+  const existing = await SupplierOrder.findOne(existingFilter)
+    .sort({ sentAt: -1, _id: -1 });
+  if (existing) {
+    Object.assign(existing, payload, {
+      category: normalizedCategory,
+      vendorKey: normalizedVendorKey,
+      week: normalizedWeek,
+    });
+    await existing.save();
+    return existing;
+  }
+  return SupplierOrder.create({
+    ...payload,
+    category: normalizedCategory,
+    vendorKey: normalizedVendorKey,
+    week: normalizedWeek,
+  });
+}
+
 async function buildConsolidatedHistoryExcelPayload({ week, type, category, vendorKey }) {
   const normalizedCategory = normalizeCategory(category);
   const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
-  const normalizedType = normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(type || '').toUpperCase();
+  const normalizedType = consolidatedHistoryType(type, normalizedCategory);
   const normalizedWeek = String(week || '').trim();
-  const latestSentLog = await SupplierOrder.findOne({
+  const compatibleWeeks = await collectCompatibleHistoryWeeks({
     week: normalizedWeek,
+    type: normalizedType,
+    category: normalizedCategory,
+    vendorKey: normalizedVendorKey,
+  });
+  const weekFilter = compatibleWeeks.length > 0 ? { $in: compatibleWeeks } : normalizedWeek;
+  const latestSentLog = await SupplierOrder.findOne({
+    week: weekFilter,
     ...orderTypeFilterForCategory(normalizedType, normalizedCategory),
     category: normalizedCategory,
     vendorKey: normalizedVendorKey,
@@ -3112,7 +3249,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
     usesMonitorHistory
   ) {
     const liveOrders = await Order.find({
-      week: normalizedWeek,
+      week: weekFilter,
       ...orderTypeFilterForCategory(normalizedType, normalizedCategory),
       category: normalizedCategory,
       vendorKey: normalizedVendorKey,
@@ -4623,7 +4760,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
           }
         });
       }
-      supplierOrder = await SupplierOrder.create({
+      supplierOrder = await upsertSupplierOrderHistory({
         supplierName: supplierDisplayName,
         email: recipients.join(', '),
         emails: recipients,
@@ -4643,6 +4780,7 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
         monitorExcelFilename: monitorHistory ? (monitorHistory.fileFilename || monitorHistory.excelFilename) : null,
         monitorExcelContentType: monitorHistory ? (monitorHistory.contentType || EXCEL_CONTENT_TYPE) : EXCEL_CONTENT_TYPE,
         finished: finishedFlag,
+        sentToSupplier: true,
       });
       invalidateConsolidatedHistoryCache();
     } catch (historyErr) {
@@ -4773,20 +4911,7 @@ router.post('/consolidated/:type/save-history', authMiddleware, async (req, res)
       sentToSupplier: false,
       sentAt: new Date(),
     };
-    const supplierOrder = resolvedCategory === 'warehouse_inventory'
-      ? await SupplierOrder.findOneAndUpdate(
-          {
-            week: weekKey,
-            category: resolvedCategory,
-            vendorKey: resolvedVendorKey,
-            sentToSupplier: false,
-          },
-          {
-            $set: supplierOrderPayload,
-          },
-          { upsert: true, new: true, sort: { sentAt: -1, _id: -1 } }
-        )
-      : await SupplierOrder.create(supplierOrderPayload);
+    const supplierOrder = await upsertSupplierOrderHistory(supplierOrderPayload);
     invalidateConsolidatedHistoryCache();
 
     res.json({
@@ -5023,7 +5148,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
     const vendorOrdersOpenVendorState = await clearVendorOrdersOpenIfMatching(vendorKey);
     const resolvedSupplierName = await resolveConsolidatedSupplierName({ category, vendorKey, supplierName: '' });
     try {
-      supplierOrder = await SupplierOrder.create({
+      supplierOrder = await upsertSupplierOrderHistory({
         supplierName: resolvedSupplierName,
         email: recipients.join(', '),
         emails: recipients,
@@ -5035,6 +5160,7 @@ router.post('/vendor-orders/:vendorKey/email-individual', authMiddleware, async 
         snapshotLines,
         storeBreakdown: Object.keys(storeBreakdown).length > 0 ? storeBreakdown : null,
         finished: true,
+        sentToSupplier: true,
       });
       invalidateConsolidatedHistoryCache();
     } catch (historyErr) {
@@ -5240,7 +5366,7 @@ router.post('/supplier-orders', authMiddleware, async (req, res) => {
     if (!supplierName || recipients.length === 0 || !type || !week) {
       return res.status(400).json({ error: 'Missing fields' });
     }
-    const so = new SupplierOrder({
+    const so = await upsertSupplierOrderHistory({
       supplierName,
       email: recipients.join(', '),
       emails: recipients,
@@ -5249,8 +5375,8 @@ router.post('/supplier-orders', authMiddleware, async (req, res) => {
       vendorKey: normalizeVendorKey(category, vendorKey),
       week,
       items,
+      sentToSupplier: true,
     });
-    await so.save();
     invalidateConsolidatedHistoryCache();
     res.json({ success: true, supplierOrder: so });
   } catch (err) {
