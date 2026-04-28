@@ -2189,7 +2189,7 @@ function orderTimestampMs(order){
   return Number.isNaN(ts)?0:ts;
 }
 function parseDateWeekKey(value){
-  var match=String(value||"").trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:-(?:M\d+|VS\d+))?$/);
+  var match=String(value||"").trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:-(?:M\d+|VS\d+|IS\d+))?$/);
   if(!match) return null;
   var year=parseInt(match[1],10);
   var month=parseInt(match[2],10)-1;
@@ -2198,7 +2198,7 @@ function parseDateWeekKey(value){
   return Number.isNaN(ts)?null:ts;
 }
 function extractWeekKeyCycleSuffix(value){
-  var match=String(value||"").trim().match(/(-M\d+|-VS\d+)$/);
+  var match=String(value||"").trim().match(/(-M\d+|-VS\d+|-IS\d+)$/);
   return match?match[1]:"";
 }
 function isSameOrAdjacentDateWeekKey(left,right){
@@ -2210,10 +2210,10 @@ function isSameOrAdjacentDateWeekKey(left,right){
   var leftSuffix=extractWeekKeyCycleSuffix(left);
   var rightSuffix=extractWeekKeyCycleSuffix(right);
   // Both sides have a cycle suffix: must be the SAME cycle to match,
-  // but vendor scheduled cycles should only bridge short UTC-boundary drift.
+  // but scoped scheduled cycles should only bridge short UTC-boundary drift.
   if(leftSuffix&&rightSuffix){
     if(leftSuffix!==rightSuffix) return false;
-    if(/^\-VS\d+$/i.test(leftSuffix)) return diff<=VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS;
+    if(/^\-(VS|IS)\d+$/i.test(leftSuffix)) return diff<=VENDOR_CURRENT_CYCLE_MATCH_WINDOW_MS;
     if(/^\-M\d+$/i.test(leftSuffix)) return diff<=MANUAL_OPEN_CYCLE_MATCH_WINDOW_MS;
     return diff<=24*60*60*1000;
   }
