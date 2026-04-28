@@ -506,6 +506,7 @@ function getDashboardOrderForStoreType(orderMap, storeId, referenceWeekKey, type
       if(normalizeVendorKey(WAREHOUSE_INVENTORY_CATEGORY,o.vendorKey)!==normalizeVendorKey(WAREHOUSE_INVENTORY_CATEGORY,vendorKey)) return;
       // Scope to current IS sequence so a submitted IS1 order doesn't lock the store for IS2.
       if(seqSuffix&&String(o.week||"").indexOf(seqSuffix)<0) return;
+      if(referenceWeekKey&&!isSameOrAdjacentDateWeekKey(o.week,referenceWeekKey)) return;
       var ts=orderTimestampMs(o);
       if(!bestAny||ts>bestAny.ts) bestAny={order:o,ts:ts};
       if(["submitted","processed","draft_shared"].indexOf(String(o.status||"").toLowerCase())>=0){
@@ -4695,7 +4696,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
     </div></div>)}
     {selHistory&&(<div style={S.ov} onClick={function(){setSelHistory(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>{normalizeCategory(selHistory.category||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY?("Warehouse Inventory - Week "+selHistory.week):("Consolidated Week "+selHistory.week+" - Order "+selHistory.type)}</div>
-      <div style={{fontSize:12,color:"#64748B",marginBottom:10}}>{historyCategoryLabel(selHistory.category)} | Vendor: {historyVendorLabel(selHistory.vendorKey)} | Sent: {selHistory.sent?("Yes ("+(selHistory.sentCount||0)+")"):"No"}</div>
+      <div style={{fontSize:12,color:"#64748B",marginBottom:10}}>{historyCategoryLabel(selHistory.category)} | Scope: {historyScopeLabel(selHistory.category,selHistory.vendorKey)} | Sent: {selHistory.sent?("Yes ("+(selHistory.sentCount||0)+")"):"No"}</div>
       {selHistory.sentLogs&&selHistory.sentLogs.length>0&&<div style={Object.assign({},S.card,{marginBottom:10,padding:"10px 12px"})}>
         <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:8}}>Sent Supplier Files</div>
         <div style={{display:"grid",gap:8}}>
@@ -4864,6 +4865,15 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     }
     return null;
   },[consolidatedRequest,reopenTarget]);
+  var reopenedInventoryKeyForAccess=useMemo(function(){
+    if(consolidatedRequest&&consolidatedRequest.reopenedFromId&&normalizeCategory(consolidatedRequest.category||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY){
+      return normalizeVendorKey(WAREHOUSE_INVENTORY_CATEGORY,consolidatedRequest.vendorKey||null);
+    }
+    if(reopenTarget&&reopenTarget.reopenedFromId&&normalizeCategory(reopenTarget.category||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY){
+      return normalizeVendorKey(WAREHOUSE_INVENTORY_CATEGORY,reopenTarget.vendorKey||null);
+    }
+    return forcedResolvedCategory===WAREHOUSE_INVENTORY_CATEGORY?forcedResolvedVendorKey:null;
+  },[consolidatedRequest,reopenTarget,forcedResolvedCategory,forcedResolvedVendorKey]);
   var visibleVendorOptions=supplierList.filter(function(v){
     if(selCategory!=="vendor_orders") return true;
     return configuredVendorOrderIds.indexOf(v.id)>=0||v.id===reopenedVendorKeyForAccess;
@@ -4873,11 +4883,14 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     return buildWarehouseInventoryFormOptions(items,categoryTemplates);
   },[items,categoryTemplates]);
   var visibleWarehouseInventoryFormOptions=useMemo(function(){
-    if(activeInventoryIds.length){
-      return warehouseInventoryFormOptions.filter(function(option){return activeInventoryIds.indexOf(String(option&&option.id||""))>=0;});
+    var allowedKeys={};
+    activeInventoryIds.forEach(function(value){allowedKeys[String(value||"")]=true;});
+    if(reopenedInventoryKeyForAccess!=null){
+      allowedKeys[String(reopenedInventoryKeyForAccess||"")]=true;
     }
-    return warehouseInventoryFormOptions;
-  },[warehouseInventoryFormOptions,activeInventoryIdsKey]);
+    if(!Object.keys(allowedKeys).length) return [];
+    return warehouseInventoryFormOptions.filter(function(option){return !!allowedKeys[String(option&&option.id||"")];});
+  },[warehouseInventoryFormOptions,activeInventoryIdsKey,reopenedInventoryKeyForAccess]);
   var warehouseInventoryFormOptionsKey=warehouseInventoryFormOptions.map(function(option){return String(option&&option.id||"");}).join("|");
   var visibleWarehouseInventoryFormOptionsKey=visibleWarehouseInventoryFormOptions.map(function(option){return String(option&&option.id||"");}).join("|");
   var syncVendorStateFromResponse=function(resp){
@@ -5055,6 +5068,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       var sid=sl.store.id;
       if(selCategory===WAREHOUSE_INVENTORY_CATEGORY){
         var inventoryOrder=getDashboardOrderForStoreType(orders,sid,activeWeekKey,currentType,WAREHOUSE_INVENTORY_CATEGORY,resolvedVendorKey,manualOpenOrder,manualOpenSeq,scopedSeq);
+        if(inventoryOrder&&hasFinishedLogForWeek(currentType,inventoryOrder.week||activeWeekKey)) inventoryOrder=null;
         var inventoryStatus=String(inventoryOrder&&inventoryOrder.status||"").toLowerCase();
         if(!visibleStatus[inventoryStatus]) inventoryOrder=null;
         out[sid]={order:inventoryOrder||null,week:inventoryOrder?(inventoryOrder.week||activeWeekKey):activeWeekKey};
@@ -5089,7 +5103,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       out[sid]={order:exact||null,week:(exact&&exact.week)||activeWeekKey};
     });
     return out;
-  },[slots,orders,activeWeekKey,currentType,selCategory,resolvedVendorKey,isSingleVendorFlow,preferScheduledNewGroup,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
+  },[slots,orders,activeWeekKey,currentType,selCategory,resolvedVendorKey,isSingleVendorFlow,preferScheduledNewGroup,manualOpenOrder,manualOpenSeq,vendorOrderConfigs,scopedSeq,logs]);
   var getStoreOrder=function(storeId){
     return storeOrderInfoById[storeId]&&storeOrderInfoById[storeId].order?storeOrderInfoById[storeId].order:null;
   };
