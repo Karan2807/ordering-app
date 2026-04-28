@@ -26,5 +26,9 @@ const orderSchema = new mongoose.Schema({
 });
 
 orderSchema.index({ storeId: 1, type: 1, category: 1, vendorKey: 1, week: 1 }, { unique: true });
+orderSchema.index({ submittedAt: -1, createdAt: -1 });
+orderSchema.index({ category: 1, status: 1, submittedAt: -1 });
+orderSchema.index({ category: 1, vendorKey: 1, week: 1, type: 1 });
+orderSchema.index({ status: 1, category: 1, storeId: 1, type: 1 });
 
 export default mongoose.model('Order', orderSchema);

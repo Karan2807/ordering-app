@@ -173,16 +173,42 @@ async function rebuildWarehouseHistory() {
   return backfilled;
 }
 
+async function dedupeCompletedHistory() {
+  const docs = await SupplierOrder.find().sort({ sentAt: -1, _id: -1 }).lean();
+  const byKey = new Map();
+  docs.forEach((doc) => {
+    const key = groupKey([
+      doc.week,
+      doc.category,
+      doc.category === 'warehouse_inventory' ? 'INVENTORY' : doc.type,
+      doc.vendorKey || '',
+      doc.sentToSupplier === false ? 'unsent' : 'sent',
+      doc.supplierName || '',
+      doc.email || '',
+    ]);
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(doc);
+  });
+  const duplicateIds = [];
+  byKey.forEach((list) => {
+    if (list.length > 1) duplicateIds.push(...list.slice(1).map((doc) => doc._id));
+  });
+  if (APPLY && duplicateIds.length) await SupplierOrder.deleteMany({ _id: { $in: duplicateIds } });
+  return duplicateIds.length;
+}
+
 async function main() {
   await mongoose.connect(getMongoUri(), { serverSelectionTimeoutMS: 12000, socketTimeoutMS: 45000, family: 4 });
   const expiredVegetableOrders = await expireStaleVegetableOrders();
   const warehouseOrders = await normalizeWarehouseOrders();
   const warehouseHistoryGroups = await rebuildWarehouseHistory();
+  const duplicateCompletedRecords = await dedupeCompletedHistory();
   console.log(JSON.stringify({
     mode: APPLY ? 'apply' : 'dry-run',
     expiredVegetableOrders,
     warehouseOrders,
     warehouseHistoryGroups,
+    duplicateCompletedRecords,
   }, null, 2));
   await mongoose.disconnect();
 }

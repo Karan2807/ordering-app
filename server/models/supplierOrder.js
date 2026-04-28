@@ -28,5 +28,7 @@ const supplierOrderSchema = new mongoose.Schema({
 supplierOrderSchema.index({ sentAt: -1 });
 supplierOrderSchema.index({ week: 1, type: 1, category: 1, vendorKey: 1 });
 supplierOrderSchema.index({ finished: 1, sentAt: -1 });
+supplierOrderSchema.index({ category: 1, vendorKey: 1, sentAt: -1 });
+supplierOrderSchema.index({ sentToSupplier: 1, category: 1, week: 1, vendorKey: 1 });
 
 export default mongoose.model('SupplierOrder', supplierOrderSchema);

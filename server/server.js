@@ -4,6 +4,7 @@ import 'dotenv/config';
 
 import express from 'express';
 import cors from 'cors';
+import zlib from 'zlib';
 import { initializeDatabase, seedDatabase } from './database.js';
 import { getMongoUri, isProduction } from './config/databaseConfig.js';
 import authRoutes from './routes/auth.js';
@@ -83,6 +84,25 @@ app.use(
 // allow larger payloads for Excel/Word template uploads (base64 + layout metadata)
 app.use(express.json({ limit: process.env.REQUEST_BODY_LIMIT || '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: process.env.REQUEST_BODY_LIMIT || '50mb' }));
+app.use((req, res, next) => {
+  const acceptsGzip = /\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''));
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (!acceptsGzip || res.headersSent) return originalJson(body);
+    const payload = Buffer.from(JSON.stringify(body));
+    if (payload.length < 2048) return originalJson(body);
+    zlib.gzip(payload, (err, compressed) => {
+      if (err || res.headersSent) return originalJson(body);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Vary', 'Accept-Encoding');
+      res.setHeader('Content-Length', compressed.length);
+      res.end(compressed);
+    });
+    return res;
+  };
+  next();
+});
 
 // Routes
 app.use('/api/auth', authRoutes);

@@ -2845,7 +2845,7 @@ export default function App(){
           setIsLoading(true);
           var phase1=await Promise.all([
             apiClient.settings.getAll(),
-            apiClient.orders.getAll(isA?null:user.storeId),
+            apiClient.orders.getAll(isA?null:user.storeId,{days:45,limit:700}),
             apiClient.notifications.getAll(),
           ]);
           if(cancelled) return;
@@ -2884,7 +2884,7 @@ export default function App(){
         }else{
           var fetches={
             notifs:apiClient.notifications.getAll(),
-            orders:apiClient.orders.getAll(isA?null:user.storeId),
+            orders:apiClient.orders.getAll(isA?null:user.storeId,{days:45,limit:700}),
             settings:apiClient.settings.getAll(),
           };
           if(fullSync){
@@ -2952,7 +2952,7 @@ export default function App(){
   var refreshOrders=useCallback(async function(storeId){
     var isAdminUser=isPrivilegedRole(user);
     var requestedStoreId=(typeof storeId==="string"&&storeId)?storeId:null;
-    var raw=await apiClient.orders.getAll(isAdminUser?requestedStoreId:(user&&user.storeId?user.storeId:null));
+    var raw=await apiClient.orders.getAll(isAdminUser?requestedStoreId:(user&&user.storeId?user.storeId:null),{days:45,limit:700});
     var orderMap=buildOrderStateMap(raw,items);
     setOrders(function(prev){return sameJson(prev,orderMap)?prev:orderMap;});
     
@@ -4026,7 +4026,7 @@ function OrderHistory({user,orders,items,setOrders,refreshOrders,toast,setPage,a
       {rows.length===0?<div style={{textAlign:"center",padding:18,color:"#6B7186"}}>No orders</div>:
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Order</th><th style={S.th}>Date/Time</th><th style={S.th}>Status</th><th style={S.th}>Items</th><th style={S.th}></th></tr></thead><tbody>
         {rows.map(function(e){var k=e[0],o=e[1];var orderStatus=String(o&&o.status||"").toLowerCase();var canReopen=canReopenAsDraft(k,o);var scopedSeq=getScopedSeqForCategory(o.category||"vegetables",o.vendorKey||null,vendorOrderConfigs,inventoryOrderConfigs);var openWeek=activeWeekLookupKey(o.type,o.category||"vegetables",o.vendorKey||null,manualOpenOrder,manualOpenSeq,scopedSeq);var sameCurrentCycle=isSameOrAdjacentDateWeekKey(o.week,openWeek);var reopenTip=o.supplierSent?"Supplier order already sent":(canReopen?"":(openTypes.indexOf(o.type)>=0?(!sameCurrentCycle?"Only the current open-slot order can be reopened":""):"Only the latest unsent supplier cycle can be reopened"));return(<tr key={k}><td style={Object.assign({},S.td,{fontWeight:600})}>{historyOrderLabel(o)}</td><td style={S.tm}>{fmtDT(o.date)}</td><td style={S.td}><span style={Object.assign({},S.bg,statusBg(o.status))}>{o.status}</span></td><td style={S.td}>{countOrderItemsWithFallback(o)}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSel(k);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadHistoryExcel(o);}}>Download File</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printHistoryExcel(o);}}>Print</button>{(orderStatus==="submitted"||orderStatus==="processed"||orderStatus==="draft_shared")&&<button title={reopenTip} style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10.5},canReopen?{}:{opacity:.45,cursor:"not-allowed"})} onClick={function(){if(!canReopen)return;reopenAsDraft(o);}} disabled={!canReopen}>Reopen as Draft</button>}{o.status==="draft"&&<button style={Object.assign({},S.b,S.bG,{padding:"3px 8px",fontSize:10.5})} onClick={function(){openDraft(o);}}>Open Draft</button>}</div></td></tr>);})}
-      </tbody></table></div>}
+      </tbody></table>{completedMeta.hasMore&&<div style={{padding:10,textAlign:"center"}}><button style={Object.assign({},S.b,S.bS)} onClick={function(){loadCompletedLogs((completedMeta.page||1)+1,true);}}>{ "Load More" }</button></div>}</div>}
     </div>);
   };
   var historySections=[
@@ -4275,37 +4275,49 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var _scs=useState("consolidated"),selCompletedSub=_scs[0],setSelCompletedSub=_scs[1];
   var isWarehouseUser=isWarehouseRole(user);
   var _cl=useState([]),completedLogs=_cl[0],setCompletedLogs=_cl[1];
+  var _cmp=useState({page:1,hasMore:false,total:0}),completedMeta=_cmp[0],setCompletedMeta=_cmp[1];
   var _sd=useState(null),selDone=_sd[0],setSelDone=_sd[1];
   var _sp=useState({}),sheetPreviewById=_sp[0],setSheetPreviewById=_sp[1];
   var _spl=useState({}),sheetPreviewLoadingById=_spl[0],setSheetPreviewLoadingById=_spl[1];
   var _ch=useState([]),consolidatedHistory=_ch[0],setConsolidatedHistory=_ch[1];
+  var _chm=useState({page:1,hasMore:false,total:0}),consolidatedHistoryMeta=_chm[0],setConsolidatedHistoryMeta=_chm[1];
   var _sh=useState(null),selHistory=_sh[0],setSelHistory=_sh[1];
   var _hl=useState(false),historyLoading=_hl[0],setHistoryLoading=_hl[1];
   var _hd=useState({}),historyDownloading=_hd[0],setHistoryDownloading=_hd[1];
   var _hsp=useState({}),historySheetPreviewById=_hsp[0],setHistorySheetPreviewById=_hsp[1];
   var _hspl=useState({}),historySheetPreviewLoadingById=_hspl[0],setHistorySheetPreviewLoadingById=_hspl[1];
-  var all=Object.entries(orders).filter(function(e){return String(e[1]&&e[1].status||"").toLowerCase()!=="expired";}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
-  var f=ft==="all"?all:all.filter(function(e){return e[1].type===ft;});
+  var all=useMemo(function(){return Object.entries(orders).filter(function(e){return String(e[1]&&e[1].status||"").toLowerCase()!=="expired";}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});},[orders]);
+  var f=useMemo(function(){return ft==="all"?all:all.filter(function(e){return e[1].type===ft;});},[all,ft]);
   var monitorTabs=["all","A","B","C","completed"];
-  var vegSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
-  var leavesSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});
-  var vendorSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";});
-  var inventorySubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;});
+  var vegSubmissions=useMemo(function(){return f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});},[f]);
+  var leavesSubmissions=useMemo(function(){return f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="leaves";});},[f]);
+  var vendorSubmissions=useMemo(function(){return f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vendor_orders";});},[f]);
+  var inventorySubmissions=useMemo(function(){return f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;});},[f]);
   var isReceived=function(st){return st==="submitted"||st==="draft_shared";};
   var statusBg=function(st){return st==="processed"?S.bgP:isReceived(st)?S.bgG:S.bgY;};
   var statusLabel=function(st){return st==="draft_shared"?"submitted":st;};
+  var loadCompletedLogs=async function(page,append){
+    var resp=await apiClient.supplierOrders.getAll({days:30,page:page||1,limit:100,returnPage:true});
+    var rows=(resp&&resp.rows)||[];
+    setCompletedMeta({page:(resp&&resp.page)||page||1,hasMore:!!(resp&&resp.hasMore),total:(resp&&resp.total)||rows.length});
+    setCompletedLogs(function(prev){
+      var next=append?(prev||[]).concat(rows):rows;
+      return next.slice().sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);});
+    });
+  };
   useEffect(function(){
     var cancelled=false;
-    apiClient.supplierOrders.getAll().then(function(list){
+    apiClient.supplierOrders.getAll({days:30,page:1,limit:100,returnPage:true}).then(function(resp){
       if(cancelled) return;
-      setCompletedLogs((list||[]).slice().sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);}));
+      var rows=(resp&&resp.rows)||[];
+      setCompletedMeta({page:(resp&&resp.page)||1,hasMore:!!(resp&&resp.hasMore),total:(resp&&resp.total)||rows.length});
+      setCompletedLogs(rows.slice().sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);}));
     }).catch(function(){});
     return function(){cancelled=true;};
   },[]);
   var refreshCompletedLogs=async function(){
     try{
-      const list=await apiClient.supplierOrders.getAll();
-      setCompletedLogs((list||[]).slice().sort(function(a,b){return new Date(b.sentAt||0)-new Date(a.sentAt||0);}));
+      await loadCompletedLogs(1,false);
     }catch(e){}
   };
   var loadSheetPreviewForLog=async function(log){
@@ -4336,13 +4348,27 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var refreshConsolidatedHistory=async function(){
     try{
       setHistoryLoading(true);
-      var list=await apiClient.orders.getConsolidatedHistory(0);
-      setConsolidatedHistory(Array.isArray(list)?list:[]);
+      var resp=await apiClient.orders.getConsolidatedHistory(30,1,100);
+      var rows=Array.isArray(resp)?resp:((resp&&resp.rows)||[]);
+      setConsolidatedHistoryMeta({page:(resp&&resp.page)||1,hasMore:!!(resp&&resp.hasMore),total:(resp&&resp.total)||rows.length});
+      setConsolidatedHistory(rows);
     }catch(e){
       setConsolidatedHistory([]);
     }finally{
       setHistoryLoading(false);
     }
+  };
+  var loadMoreConsolidatedHistory=async function(){
+    if(historyLoading||!consolidatedHistoryMeta.hasMore) return;
+    try{
+      setHistoryLoading(true);
+      var nextPage=(consolidatedHistoryMeta.page||1)+1;
+      var resp=await apiClient.orders.getConsolidatedHistory(30,nextPage,100);
+      var rows=(resp&&resp.rows)||[];
+      setConsolidatedHistory(function(prev){return (prev||[]).concat(rows);});
+      setConsolidatedHistoryMeta({page:(resp&&resp.page)||nextPage,hasMore:!!(resp&&resp.hasMore),total:(resp&&resp.total)||0});
+    }catch(e){toast(e.message||"Failed to load more history",true);}
+    finally{setHistoryLoading(false);}
   };
   var historyCategoryLabel=function(cat){
     return CATEGORY_LABELS[normalizeCategory(cat||"vegetables")]||cat||"-";
@@ -4371,6 +4397,16 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       return next;
     }catch(e){toast(e.message||"Failed to load history sheet preview",true);return null;}
     finally{setHistorySheetPreviewLoadingById(function(prev){var n=Object.assign({},prev);delete n[k];return n;});}
+  };
+  var openHistoryRecord=async function(r){
+    setSelHistory(r);
+    loadSheetPreviewForHistory(r);
+    if(r&&(!r.storeOrders||!r.storeOrders.length)){
+      try{
+        var detail=await apiClient.orders.consolidatedHistoryDetail(r.week,r.type,r.category||"vegetables",r.vendorKey||null);
+        setSelHistory(function(prev){return prev&&historyGroupKey(prev)===historyGroupKey(r)?Object.assign({},prev,detail):prev;});
+      }catch(_e){}
+    }
   };
   var downloadConsolidatedHistoryExcel=async function(rec){
     if(!rec||!rec.week||!rec.type){toast("Missing history record details",true);return;}
@@ -4504,12 +4540,12 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
         </tr>);})}</tbody></table></div>}
     </div>);
   };
-  var completedVegetableLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vegetables";});
-  var completedLeavesLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="leaves";});
-  var completedVendorLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vendor_orders";});
-  var completedInventoryLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;});
+  var completedVegetableLogs=useMemo(function(){return completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vegetables";});},[completedLogs]);
+  var completedLeavesLogs=useMemo(function(){return completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="leaves";});},[completedLogs]);
+  var completedVendorLogs=useMemo(function(){return completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")==="vendor_orders";});},[completedLogs]);
+  var completedInventoryLogs=useMemo(function(){return completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;});},[completedLogs]);
   var _hcf=useState("vegetables"),historyCategory=_hcf[0],setHistoryCategory=_hcf[1];
-  var visibleConsolidatedHistory=consolidatedHistory.filter(function(r){return normalizeCategory(r.category||"vegetables")===historyCategory;});
+  var visibleConsolidatedHistory=useMemo(function(){return consolidatedHistory.filter(function(r){return normalizeCategory(r.category||"vegetables")===historyCategory;});},[consolidatedHistory,historyCategory]);
   var isWarehouseInventoryHistory=historyCategory===WAREHOUSE_INVENTORY_CATEGORY;
   var monitorOrderLabel=function(o){
     if(!o) return "Order -";
@@ -4602,10 +4638,10 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
                         <td style={S.td}>{historyScopeLabel(r.category,r.vendorKey)}</td>
                         <td style={Object.assign({},S.td,{textAlign:"center"})}>{r.storeCount||0}</td>
                         <td style={S.td}><span style={Object.assign({},S.bg,r.sent?S.bgG:S.bgY)}>{r.sent?("Sent ("+(r.sentCount||0)+")"):"Not sent"}</span></td>
-                        <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelHistory(r);loadSheetPreviewForHistory(r);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printConsolidatedHistoryExcel(r);}}>Print</button></div></td>
+                        <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){openHistoryRecord(r);}}>View</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Sheet"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printConsolidatedHistoryExcel(r);}}>Print</button></div></td>
                       </tr>);
                     })}
-                  </tbody></table></div>}
+                  </tbody></table>{consolidatedHistoryMeta.hasMore&&<div style={{padding:10,textAlign:"center"}}><button style={Object.assign({},S.b,S.bS)} onClick={loadMoreConsolidatedHistory} disabled={historyLoading}>{historyLoading?"Loading...":"Load More"}</button></div>}</div>}
                 </div>
               )}
               {selCompletedSub==="vegetables"&&renderCompletedSection("Completed Vegetable Orders",completedVegetableLogs)}

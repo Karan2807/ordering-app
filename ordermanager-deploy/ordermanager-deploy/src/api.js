@@ -163,8 +163,14 @@ export const apiClient = {
 
   // Orders
   orders: {
-    getAll(storeId) {
-      const query = storeId ? `?storeId=${storeId}` : '';
+    getAll(storeId, options = {}) {
+      const params = new URLSearchParams();
+      if (storeId) params.set('storeId', storeId);
+      if (options.days) params.set('days', options.days);
+      if (options.limit) params.set('limit', options.limit);
+      if (options.category) params.set('category', options.category);
+      if (options.status) params.set('status', options.status);
+      const query = params.toString() ? `?${params.toString()}` : '';
       return apiClient.request(`/orders${query}`);
     },
 
@@ -238,8 +244,13 @@ export const apiClient = {
         body: JSON.stringify(body),
       });
     },
-    getConsolidatedHistory(days = 7) {
-      return apiClient.request(`/orders/consolidated-history?days=${encodeURIComponent(days)}`);
+    getConsolidatedHistory(days = 30, page = 1, limit = 100) {
+      return apiClient.request(`/orders/consolidated-history?days=${encodeURIComponent(days)}&page=${encodeURIComponent(page)}&limit=${encodeURIComponent(limit)}`);
+    },
+    consolidatedHistoryDetail(week, type, category, vendorKey) {
+      const params = new URLSearchParams({ week, type, category: category || 'vegetables' });
+      if (vendorKey) params.set('vendorKey', vendorKey);
+      return apiClient.request(`/orders/consolidated-history/detail?${params.toString()}`);
     },
     consolidatedHistoryExcel(week, type, category, vendorKey, dateValue) {
       const body = {
@@ -441,8 +452,14 @@ export const apiClient = {
 
   // Supplier orders (history/log)
   supplierOrders: {
-    getAll() {
-      return apiClient.request('/orders/supplier-orders');
+    async getAll(options = {}) {
+      const params = new URLSearchParams();
+      if (options.days) params.set('days', options.days);
+      if (options.page) params.set('page', options.page);
+      if (options.limit) params.set('limit', options.limit);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const resp = await apiClient.request(`/orders/supplier-orders${query}`);
+      return options.returnPage ? resp : (Array.isArray(resp) ? resp : (resp && resp.rows) || []);
     },
     create(data) {
       return apiClient.request('/orders/supplier-orders', {

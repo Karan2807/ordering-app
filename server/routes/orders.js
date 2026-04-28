@@ -2725,12 +2725,22 @@ function parseVendorSnapshotLines(lines, storeIdByName = {}) {
 
 async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
   const parsedDays = Number(days);
+  const includeDetails = arguments[0] && arguments[0].includeDetails === true;
+  const parsedLimit = parseInt(arguments[0] && arguments[0].limit, 10);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 250) : 100;
+  const parsedPage = parseInt(arguments[0] && arguments[0].page, 10);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
   const noLimit = parsedDays === 0 || !Number.isFinite(parsedDays) || parsedDays < 0;
   // Only cache the all-time (noLimit) query since that's the expensive one
   if (noLimit && !bustCache) {
     const now = Date.now();
     if (_consolidatedHistoryCache && (now - _consolidatedHistoryCacheTime) < CONSOLIDATED_HISTORY_CACHE_TTL) {
-      return _consolidatedHistoryCache;
+      const cachedRows = Array.isArray(_consolidatedHistoryCache.rows) ? _consolidatedHistoryCache.rows : [];
+      const total = Number(_consolidatedHistoryCache.total) || cachedRows.length;
+      const rows = cachedRows.slice((page - 1) * limit, page * limit).map((row) => (
+        includeDetails ? row : { ...row, storeOrders: undefined }
+      ));
+      return { rows, total, page, limit, hasMore: page * limit < total };
     }
   }
   const since = noLimit ? null : new Date(Date.now() - Math.floor(parsedDays) * 24 * 60 * 60 * 1000);
@@ -2911,7 +2921,7 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
     };
   });
 
-  const result = Object.values(grouped)
+  const allRows = Object.values(grouped)
     .map((group) => {
       const key = consolidatedHistoryKey(group.week, group.type, group.category, group.vendorKey);
       const sentInfo = sentByGroup[key] || { sentCount: 0, lastSentAt: null, sentLogs: [] };
@@ -2940,16 +2950,18 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
         lastSentAt: sentInfo.lastSentAt,
         sentLogs: sortedSentLogs,
         storeCount: sortedStoreOrders.length,
-        storeOrders: sortedStoreOrders,
+        storeOrders: includeDetails ? sortedStoreOrders : undefined,
       };
     })
     .sort((a, b) => new Date(b.latestAt || 0) - new Date(a.latestAt || 0));
+  const total = allRows.length;
+  const result = allRows.slice((page - 1) * limit, page * limit);
 
   if (noLimit) {
-    _consolidatedHistoryCache = result;
+    _consolidatedHistoryCache = { rows: allRows, total };
     _consolidatedHistoryCacheTime = Date.now();
   }
-  return result;
+  return { rows: result, total, page, limit, hasMore: page * limit < total };
 }
 
 async function buildConsolidatedHistoryExcelPayload({ week, type, category, vendorKey }) {
@@ -4163,8 +4175,19 @@ router.get('/', authMiddleware, async (req, res) => {
     const storeId = canManageWarehouseOrders(req.user) ? req.query.storeId : req.user.storeId;
     const filter = {};
     if (storeId) filter.storeId = storeId;
+    const category = req.query.category ? normalizeCategory(req.query.category) : null;
+    if (category) filter.category = category;
+    const status = String(req.query.status || '').trim();
+    if (status) filter.status = status;
+    const days = parseInt(req.query.days, 10);
+    if (!Number.isNaN(days) && days > 0) {
+      const since = new Date(Date.now() - Math.min(days, 3650) * 24 * 60 * 60 * 1000);
+      filter.$or = [{ submittedAt: { $gte: since } }, { createdAt: { $gte: since } }];
+    }
+    const limitRaw = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 500;
 
-    let orders = await Order.find(filter).sort({ submittedAt: -1, createdAt: -1 }).lean();
+    let orders = await Order.find(filter).sort({ submittedAt: -1, createdAt: -1 }).limit(limit).lean();
     const allItemDocs = await Item.find().select({ code: 1, name: 1, unit: 1, category: 1, vendorKey: 1, _id: 0 }).lean();
 
     const groupKeys = new Set(
@@ -5053,11 +5076,37 @@ router.get('/consolidated-history', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
     const days = parseInt(req.query.days, 10);
+    const limit = parseInt(req.query.limit, 10);
+    const page = parseInt(req.query.page, 10);
     // Default to 0 (all-time) when no days param provided
-    const history = await buildConsolidatedHistory({ days: Number.isNaN(days) ? 0 : days });
+    const history = await buildConsolidatedHistory({ days: Number.isNaN(days) ? 30 : days, limit, page, includeDetails: false });
     res.json(history);
   } catch (err) {
     console.error('Get consolidated history error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/consolidated-history/detail', authMiddleware, async (req, res) => {
+  try {
+    if (!canManageWarehouseOrders(req.user)) {
+      return res.status(403).json({ error: 'Admin or warehouse only' });
+    }
+    const { week, type, category, vendorKey } = req.query || {};
+    if (!week || !type) return res.status(400).json({ error: 'week and type are required' });
+    const history = await buildConsolidatedHistory({ days: 0, limit: 10000, page: 1, includeDetails: true, bustCache: true });
+    const normalizedCategory = normalizeCategory(category);
+    const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
+    const row = (history.rows || []).find((entry) => {
+      return String(entry.week || '') === String(week || '')
+        && String(entry.type || '') === String(normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : type || '')
+        && normalizeCategory(entry.category || 'vegetables') === normalizedCategory
+        && String(entry.vendorKey || '') === String(normalizedVendorKey || '');
+    });
+    if (!row) return res.status(404).json({ error: 'History record not found' });
+    res.json(row);
+  } catch (err) {
+    console.error('Get consolidated history detail error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -5140,8 +5189,26 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
     if (!canManageWarehouseOrders(req.user)) {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
-    const list = await SupplierOrder.find().sort({ sentAt: -1 }).lean();
-    res.json(
+    const days = parseInt(req.query.days, 10);
+    const limitRaw = parseInt(req.query.limit, 10);
+    const pageRaw = parseInt(req.query.page, 10);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 250) : 100;
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+    const filter = {};
+    const effectiveDays = Number.isNaN(days) ? 30 : days;
+    if (effectiveDays > 0) {
+      filter.sentAt = { $gte: new Date(Date.now() - Math.min(effectiveDays, 3650) * 24 * 60 * 60 * 1000) };
+    }
+    const [list, total] = await Promise.all([
+      SupplierOrder.find(filter)
+        .select('-excelBase64 -monitorExcelBase64 -snapshotLines -monitorSnapshotLines -storeBreakdown -items')
+        .sort({ sentAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      SupplierOrder.countDocuments(filter),
+    ]);
+    const rows =
       list.map(({ excelBase64, monitorExcelBase64, ...row }) => {
         const emails = normalizeRecipientEmails(row.email, row.emails);
         return {
@@ -5155,8 +5222,8 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
           fileContentType: String(row.excelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE,
           monitorFileContentType: String(row.monitorExcelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE,
         };
-      })
-    );
+      });
+    res.json({ rows, total, page, limit, hasMore: page * limit < total });
   } catch (err) {
     console.error('Get supplier orders error:', err);
     res.status(500).json({ error: 'Server error' });
