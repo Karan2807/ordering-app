@@ -292,6 +292,9 @@ function normalizeVendorKey(category, vendorKey) {
     ? String(vendorKey || '').trim() || null
     : null;
 }
+function orderTypeFilterForCategory(type, category) {
+  return normalizeCategory(category) === 'warehouse_inventory' ? {} : { type };
+}
 
 function isExcelContentType(value) {
   return String(value || '').trim().toLowerCase() === EXCEL_CONTENT_TYPE;
@@ -2306,14 +2309,14 @@ async function getStoresForConsolidatedWindow(type, category, vendorKey, weekKey
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
   const scopedSeqPrefix = resolvedCategory === 'vendor_orders' ? 'VS' : (resolvedCategory === 'warehouse_inventory' ? 'IS' : '');
   const isScopedSeqOrder = !!(scopedSeqPrefix && (resolvedVendorKey || resolvedCategory === 'warehouse_inventory'));
-  const resolvedWeekBase = weekBase || String(weekKey || '').split('-VS')[0].split('-IS')[0].split('-M')[0];
+  const resolvedWeekBase = String(weekKey || '').split('-VS')[0].split('-IS')[0].split('-M')[0] || weekBase;
   const scopedWeekRegex = isScopedSeqOrder && resolvedWeekBase
     ? new RegExp(`^${escapeRegex(resolvedWeekBase)}-${scopedSeqPrefix}\\d+$`)
     : null;
   const [stores, extraOrders] = await Promise.all([
     Store.find().sort({ id: 1 }).lean(),
     Order.find({
-      type,
+      ...orderTypeFilterForCategory(type, resolvedCategory),
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
       ...(scopedWeekRegex ? { week: { $regex: scopedWeekRegex } } : weekWindowFilter(weekKey, weekBase)),
@@ -2364,7 +2367,10 @@ function mapStoresToTemplateSlots(stores = []) {
 async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetables', vendorKey = null, weekBase = null) {
   const resolvedCategory = normalizeCategory(category);
   const resolvedVendorKey = normalizeVendorKey(resolvedCategory, vendorKey);
-  const exact = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey }).lean();
+  const typeFilter = orderTypeFilterForCategory(type, resolvedCategory);
+  const exact = await Order.findOne({ storeId, ...typeFilter, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey })
+    .sort({ submittedAt: -1, createdAt: -1, _id: -1 })
+    .lean();
   if (exact && !(
     resolvedCategory === 'vendor_orders' &&
     resolvedVendorKey &&
@@ -2394,7 +2400,7 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
     
     const submittedFallback = await Order.findOne({
       storeId,
-      type,
+      ...typeFilter,
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
       status: { $in: ['submitted', 'processed', 'draft_shared'] },
@@ -2407,7 +2413,7 @@ async function findCurrentWeekOrder(storeId, type, weekKey, category = 'vegetabl
 
     const fallback = await Order.findOne({
       storeId,
-      type,
+      ...typeFilter,
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
       ...sameSeqFilter,
@@ -2553,13 +2559,47 @@ function isStoreOrderVisibleInConsolidated(status) {
 function consolidatedHistoryKey(week, type, category, vendorKey) {
   const normalizedCategory = normalizeCategory(category);
   const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
-  return [String(week || ''), String(type || '').toUpperCase(), normalizedCategory, normalizedVendorKey || ''].join('::');
+  const normalizedType = normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(type || '').toUpperCase();
+  return [String(week || ''), normalizedType, normalizedCategory, normalizedVendorKey || ''].join('::');
 }
 
 function supplierGroupKey(week, type, category, vendorKey) {
   const normalizedCategory = normalizeCategory(category);
   const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
-  return [String(week || ''), String(type || '').toUpperCase(), normalizedCategory, normalizedVendorKey || ''].join('::');
+  const normalizedType = normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(type || '').toUpperCase();
+  return [String(week || ''), normalizedType, normalizedCategory, normalizedVendorKey || ''].join('::');
+}
+
+async function expireStaleVegetableOrders() {
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  const candidates = await Order.find({
+    category: { $in: ['vegetables', 'leaves'] },
+    status: { $in: ['submitted', 'draft_shared', 'processed'] },
+    $or: [
+      { submittedAt: { $lt: cutoff } },
+      { submittedAt: null, createdAt: { $lt: cutoff } },
+      { submittedAt: { $exists: false }, createdAt: { $lt: cutoff } },
+    ],
+  })
+    .select({ week: 1, type: 1, category: 1, vendorKey: 1, _id: 1 })
+    .lean();
+  if (!candidates.length) return { expired: 0 };
+  const groupKeys = [...new Set(candidates.map((order) => supplierGroupKey(order.week, order.type, order.category, order.vendorKey)))];
+  const sentLogs = await SupplierOrder.find({
+    category: { $in: ['vegetables', 'leaves'] },
+    finished: true,
+  })
+    .select({ week: 1, type: 1, category: 1, vendorKey: 1, _id: 0 })
+    .lean();
+  const sentGroups = new Set(sentLogs.map((log) => supplierGroupKey(log.week, log.type, log.category, log.vendorKey)));
+  const staleIds = candidates
+    .filter((order) => groupKeys.includes(supplierGroupKey(order.week, order.type, order.category, order.vendorKey)))
+    .filter((order) => !sentGroups.has(supplierGroupKey(order.week, order.type, order.category, order.vendorKey)))
+    .map((order) => order._id);
+  if (!staleIds.length) return { expired: 0 };
+  const result = await Order.updateMany({ _id: { $in: staleIds } }, { $set: { status: 'expired' } });
+  invalidateConsolidatedHistoryCache();
+  return { expired: result.modifiedCount || 0 };
 }
 
 function hasPositiveOrderLineItems(items) {
@@ -2729,7 +2769,7 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
     sentByGroup[key].sentLogs.push({
       _id: log._id,
       week: log.week,
-      type: String(log.type || '').toUpperCase(),
+      type: normalizeCategory(log.category) === 'warehouse_inventory' ? 'INVENTORY' : String(log.type || '').toUpperCase(),
       supplierName: log.supplierName || '',
       email: normalizeRecipientEmails(log.email, log.emails).join(', '),
       emails: normalizeRecipientEmails(log.email, log.emails),
@@ -2753,7 +2793,7 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
     if (!grouped[key]) {
       grouped[key] = {
         week: order.week,
-        type: String(order.type || '').toUpperCase(),
+        type: normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(order.type || '').toUpperCase(),
         category: normalizedCategory,
         vendorKey: normalizedVendorKey,
         latestAt: order.submittedAt || order.createdAt || new Date(0),
@@ -2862,7 +2902,7 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
 
     grouped[key] = {
       week: representativeLog.week,
-      type: String(representativeLog.type || '').toUpperCase(),
+      type: normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(representativeLog.type || '').toUpperCase(),
       category: normalizedCategory,
       vendorKey: normalizedVendorKey,
       latestAt: representativeLog.sentAt || new Date(0),
@@ -2915,11 +2955,11 @@ async function buildConsolidatedHistory({ days = 0, bustCache = false } = {}) {
 async function buildConsolidatedHistoryExcelPayload({ week, type, category, vendorKey }) {
   const normalizedCategory = normalizeCategory(category);
   const normalizedVendorKey = normalizeVendorKey(normalizedCategory, vendorKey);
-  const normalizedType = String(type || '').toUpperCase();
+  const normalizedType = normalizedCategory === 'warehouse_inventory' ? 'INVENTORY' : String(type || '').toUpperCase();
   const normalizedWeek = String(week || '').trim();
   const latestSentLog = await SupplierOrder.findOne({
     week: normalizedWeek,
-    type: normalizedType,
+    ...orderTypeFilterForCategory(normalizedType, normalizedCategory),
     category: normalizedCategory,
     vendorKey: normalizedVendorKey,
   })
@@ -3061,7 +3101,7 @@ async function buildConsolidatedHistoryExcelPayload({ week, type, category, vend
   ) {
     const liveOrders = await Order.find({
       week: normalizedWeek,
-      type: normalizedType,
+      ...orderTypeFilterForCategory(normalizedType, normalizedCategory),
       category: normalizedCategory,
       vendorKey: normalizedVendorKey,
     }).lean();
@@ -4119,6 +4159,7 @@ router.get('/inventory-stock-usage', authMiddleware, async (req, res) => {
 // Get orders for user
 router.get('/', authMiddleware, async (req, res) => {
   try {
+    await expireStaleVegetableOrders();
     const storeId = canManageWarehouseOrders(req.user) ? req.query.storeId : req.user.storeId;
     const filter = {};
     if (storeId) filter.storeId = storeId;
@@ -4216,6 +4257,7 @@ router.post('/', authMiddleware, async (req, res) => {
     if (!VALID_ORDER_STATUSES.has(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
+    const storedType = resolvedCategory === 'warehouse_inventory' ? 'INVENTORY' : type;
 
     const weekBase = getWeekKey();
     const mo = await getManualOpenState();
@@ -4230,10 +4272,10 @@ router.post('/', authMiddleware, async (req, res) => {
     if (canManageAcrossStores && requestedWeekKey) {
       weekKey = requestedWeekKey;
     } else {
-      weekKey = await composeScopedWeekKey(weekBase, type, resolvedCategory, resolvedVendorKey, mo.manualOpenOrder, mo.manualOpenSeq);
+      weekKey = await composeScopedWeekKey(weekBase, storedType, resolvedCategory, resolvedVendorKey, mo.manualOpenOrder, mo.manualOpenSeq);
     }
 
-    const existingOrder = await Order.findOne({ storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey })
+    const existingOrder = await Order.findOne({ storeId, type: storedType, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey })
       .select({ status: 1, items: 1, _id: 0 })
       .lean();
 
@@ -4241,7 +4283,7 @@ router.post('/', authMiddleware, async (req, res) => {
       const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
       const submittedRecently = await Order.findOne({
         storeId,
-        type,
+        type: storedType,
         category: resolvedCategory,
         vendorKey: resolvedVendorKey,
         status: { $in: ['submitted', 'processed'] },
@@ -4316,7 +4358,7 @@ router.post('/', authMiddleware, async (req, res) => {
     }
     const now = new Date();
     const orderId = uuidv4();
-    const query = { storeId, type, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey };
+    const query = { storeId, type: storedType, category: resolvedCategory, vendorKey: resolvedVendorKey, week: weekKey };
     const update = {
       $set: {
         category: resolvedCategory,
@@ -4327,7 +4369,7 @@ router.post('/', authMiddleware, async (req, res) => {
       $setOnInsert: {
         id: orderId,
         storeId,
-        type,
+        type: storedType,
         week: weekKey,
         createdAt: now,
       },
@@ -4423,6 +4465,7 @@ router.get('/consolidated/:type', authMiddleware, async (req, res) => {
     if (!canManageWarehouseOrders(req.user)) {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
+    await expireStaleVegetableOrders();
 
     const category = normalizeCategory(req.query.category);
     const vendorKey = normalizeVendorKey(category, req.query.vendorKey);
@@ -4490,15 +4533,19 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
       ? { ...splitData, supplierName: splitData.supplierName || supplierName || '' }
       : splitData;
 
+    const historyType = resolvedCategory === 'warehouse_inventory' ? 'INVENTORY' : req.params.type;
+    const historySplitData = resolvedCategory === 'warehouse_inventory'
+      ? { documentMode: 'monitor', finished: splitData && typeof splitData.finished === 'boolean' ? splitData.finished : true }
+      : effectiveSplitData;
     const { weekKey, stores, slots, slotOrders, snapshotLines, fileBuffer, fileFilename, contentType, excelBuffer, excelFilename } =
-      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, effectiveSplitData, requestedWeekKey);
+      await buildConsolidatedExcelPayload(historyType, resolvedCategory, resolvedVendorKey, historySplitData, requestedWeekKey);
     const monitorHistory = (resolvedCategory === 'vendor_orders' || resolvedCategory === 'leaves' || resolvedCategory === 'warehouse_inventory')
       ? await buildConsolidatedExcelPayload(
-          req.params.type,
+          historyType,
           resolvedCategory,
           resolvedVendorKey,
-          effectiveSplitData && typeof effectiveSplitData === 'object'
-            ? { ...effectiveSplitData, documentMode: 'monitor' }
+          historySplitData && typeof historySplitData === 'object'
+            ? { ...historySplitData, documentMode: 'monitor' }
             : { documentMode: 'monitor' },
           requestedWeekKey
         )
@@ -4630,17 +4677,21 @@ router.post('/consolidated/:type/save-history', authMiddleware, async (req, res)
     const effectiveSplitData = splitData && typeof splitData === 'object'
       ? { ...splitData, supplierName: splitData.supplierName || supplierName || '' }
       : splitData;
+    const historyType = resolvedCategory === 'warehouse_inventory' ? 'INVENTORY' : req.params.type;
+    const historySplitData = resolvedCategory === 'warehouse_inventory'
+      ? { documentMode: 'monitor', finished: splitData && typeof splitData.finished === 'boolean' ? splitData.finished : true }
+      : effectiveSplitData;
 
     const { weekKey, stores, slots, slotOrders, snapshotLines, fileBuffer, fileFilename, contentType, excelBuffer, excelFilename } =
-      await buildConsolidatedExcelPayload(req.params.type, resolvedCategory, resolvedVendorKey, effectiveSplitData, requestedWeekKey);
+      await buildConsolidatedExcelPayload(historyType, resolvedCategory, resolvedVendorKey, historySplitData, requestedWeekKey);
 
     const monitorHistory = (resolvedCategory === 'vendor_orders' || resolvedCategory === 'leaves' || resolvedCategory === 'warehouse_inventory')
       ? await buildConsolidatedExcelPayload(
-          req.params.type,
+          historyType,
           resolvedCategory,
           resolvedVendorKey,
-          effectiveSplitData && typeof effectiveSplitData === 'object'
-            ? { ...effectiveSplitData, documentMode: 'monitor' }
+          historySplitData && typeof historySplitData === 'object'
+            ? { ...historySplitData, documentMode: 'monitor' }
             : { documentMode: 'monitor' },
           requestedWeekKey
         )
@@ -4651,11 +4702,11 @@ router.post('/consolidated/:type/save-history', authMiddleware, async (req, res)
       stores,
       slots,
       slotOrders,
-      splitData,
+      splitData: historySplitData,
     });
 
     const totalObj = {};
-    if (splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
+    if (resolvedCategory !== 'warehouse_inventory' && splitData && Array.isArray(splitData.rows) && splitData.rows.length > 0) {
       splitData.rows.forEach((r) => {
         const code = r.itemCode || `XLS::${String(r.itemName || '').trim()}`;
         const sum = slots.reduce((acc, slot) => {
@@ -4677,11 +4728,11 @@ router.post('/consolidated/:type/save-history', authMiddleware, async (req, res)
 
     const resolvedSupplierName = await resolveConsolidatedSupplierName({ category: resolvedCategory, vendorKey: resolvedVendorKey, supplierName: supplierName || '' });
 
-    const supplierOrder = await SupplierOrder.create({
+    const supplierOrderPayload = {
       supplierName: resolvedSupplierName,
       email: '',
       emails: [],
-      type: req.params.type,
+      type: historyType,
       category: resolvedCategory,
       vendorKey: resolvedVendorKey,
       week: weekKey,
@@ -4697,7 +4748,22 @@ router.post('/consolidated/:type/save-history', authMiddleware, async (req, res)
       monitorExcelContentType: monitorHistory ? (monitorHistory.contentType || EXCEL_CONTENT_TYPE) : EXCEL_CONTENT_TYPE,
       finished: finishedFlag,
       sentToSupplier: false,
-    });
+      sentAt: new Date(),
+    };
+    const supplierOrder = resolvedCategory === 'warehouse_inventory'
+      ? await SupplierOrder.findOneAndUpdate(
+          {
+            week: weekKey,
+            category: resolvedCategory,
+            vendorKey: resolvedVendorKey,
+            sentToSupplier: false,
+          },
+          {
+            $set: supplierOrderPayload,
+          },
+          { upsert: true, new: true, sort: { sentAt: -1, _id: -1 } }
+        )
+      : await SupplierOrder.create(supplierOrderPayload);
     invalidateConsolidatedHistoryCache();
 
     res.json({

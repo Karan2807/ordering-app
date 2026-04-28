@@ -7,7 +7,9 @@
     "dev": "node --watch server.js",
     "start": "node server.js",
     "cleanup:vendor-legacy": "node scripts/cleanup_vendor_legacy_settings.mjs",
-    "cleanup:vendor-legacy:apply": "node scripts/cleanup_vendor_legacy_settings.mjs --apply"
+    "cleanup:vendor-legacy:apply": "node scripts/cleanup_vendor_legacy_settings.mjs --apply",
+    "repair:order-integrity": "node scripts/repair_order_integrity.mjs",
+    "repair:order-integrity:apply": "node scripts/repair_order_integrity.mjs --apply"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -4284,7 +4284,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var _hd=useState({}),historyDownloading=_hd[0],setHistoryDownloading=_hd[1];
   var _hsp=useState({}),historySheetPreviewById=_hsp[0],setHistorySheetPreviewById=_hsp[1];
   var _hspl=useState({}),historySheetPreviewLoadingById=_hspl[0],setHistorySheetPreviewLoadingById=_hspl[1];
-  var all=Object.entries(orders).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
+  var all=Object.entries(orders).filter(function(e){return String(e[1]&&e[1].status||"").toLowerCase()!=="expired";}).sort(function(a,b){return new Date(b[1].date)-new Date(a[1].date);});
   var f=ft==="all"?all:all.filter(function(e){return e[1].type===ft;});
   var monitorTabs=["all","A","B","C","completed"];
   var vegSubmissions=f.filter(function(e){return normalizeCategory((e[1]&&e[1].category)||"vegetables")==="vegetables";});
@@ -4510,6 +4510,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
   var completedInventoryLogs=completedLogs.filter(function(l){return normalizeCategory((l&&l.category)||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY;});
   var _hcf=useState("vegetables"),historyCategory=_hcf[0],setHistoryCategory=_hcf[1];
   var visibleConsolidatedHistory=consolidatedHistory.filter(function(r){return normalizeCategory(r.category||"vegetables")===historyCategory;});
+  var isWarehouseInventoryHistory=historyCategory===WAREHOUSE_INVENTORY_CATEGORY;
   var monitorOrderLabel=function(o){
     if(!o) return "Order -";
     var category=normalizeCategory(o.category||"vegetables");
@@ -4589,14 +4590,14 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
                   </div>
                   {historyLoading?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>Loading consolidated history...</div>:
                   visibleConsolidatedHistory.length===0?<div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No consolidated records found</div>:
-                  <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Latest</th><th style={S.th}>Week</th><th style={S.th}>Type</th><th style={S.th}>Category</th><th style={S.th}>Scope</th><th style={S.th}>Stores</th><th style={S.th}>Sent</th><th style={S.th}>Actions</th></tr></thead><tbody>
+                  <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Latest</th><th style={S.th}>Week</th>{!isWarehouseInventoryHistory&&<th style={S.th}>Type</th>}<th style={S.th}>Category</th><th style={S.th}>Scope</th><th style={S.th}>Stores</th><th style={S.th}>Sent</th><th style={S.th}>Actions</th></tr></thead><tbody>
                     {visibleConsolidatedHistory.map(function(r){
                       var rowKey=historyGroupKey(r);
                       var isDownloading=!!historyDownloading[rowKey];
                       return(<tr key={rowKey}>
                         <td style={S.tm}>{fmtDT(r.latestAt)}</td>
                         <td style={S.tm}>{r.week||"-"}</td>
-                        <td style={S.td}>Order {r.type||"-"}</td>
+                        {!isWarehouseInventoryHistory&&<td style={S.td}>Order {r.type||"-"}</td>}
                         <td style={S.td}>{historyCategoryLabel(r.category)}</td>
                         <td style={S.td}>{historyScopeLabel(r.category,r.vendorKey)}</td>
                         <td style={Object.assign({},S.td,{textAlign:"center"})}>{r.storeCount||0}</td>
@@ -4657,7 +4658,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSelDone(null);}}>Close</button></div>
     </div></div>)}
     {selHistory&&(<div style={S.ov} onClick={function(){setSelHistory(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
-      <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>Consolidated Week {selHistory.week} - Order {selHistory.type}</div>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>{normalizeCategory(selHistory.category||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY?("Warehouse Inventory - Week "+selHistory.week):("Consolidated Week "+selHistory.week+" - Order "+selHistory.type)}</div>
       <div style={{fontSize:12,color:"#64748B",marginBottom:10}}>{historyCategoryLabel(selHistory.category)} | Vendor: {historyVendorLabel(selHistory.vendorKey)} | Sent: {selHistory.sent?("Yes ("+(selHistory.sentCount||0)+")"):"No"}</div>
       {selHistory.sentLogs&&selHistory.sentLogs.length>0&&<div style={Object.assign({},S.card,{marginBottom:10,padding:"10px 12px"})}>
         <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:8}}>Sent Supplier Files</div>
@@ -4948,9 +4949,11 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var visibleStatus={submitted:true,draft_shared:true,processed:true};
   var hasFinishedLogForWeek=function(type,week){
     return (logs||[]).some(function(l){
+      var sameCategory=normalizeCategory(l.category||"vegetables")===normalizeCategory(selCategory);
+      var sameType=selCategory===WAREHOUSE_INVENTORY_CATEGORY?sameCategory:String(l.type||"")===String(type||"");
       return l
-        && String(l.type||"")===String(type||"")
-        && normalizeCategory(l.category||"vegetables")===normalizeCategory(selCategory)
+        && sameType
+        && sameCategory
         && String(l.week||"")===String(week||"")
         && String(l.vendorKey||"")===String(resolvedVendorKey||"")
         && l.finished===true;
@@ -5005,6 +5008,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     if(!latestCurrentTypeInfo||!latestCurrentTypeInfo.week) return scheduledWeekKey;
     if(String(latestCurrentTypeInfo.week||"")===String(scheduledWeekKey||"")) return latestCurrentTypeInfo.week;
     if(hasFinishedLogForWeek(currentType,latestCurrentTypeInfo.week)) return scheduledWeekKey;
+    if(!isSingleVendorFlow&&latestCurrentTypeInfo.ts&&(Date.now()-latestCurrentTypeInfo.ts)>(48*60*60*1000)) return scheduledWeekKey;
     return latestCurrentTypeInfo.week;
   },[reopenedWeekForCurrentGroup,isSingleVendorFlow,preferScheduledNewGroup,scheduledWeekKey,latestCurrentTypeInfo,currentType,logs,selCategory,resolvedVendorKey]);
   var activeGroupKey=activeWeekKey+logKeySuffix;
@@ -5064,6 +5068,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       if(primaryOpenType&&t===primaryOpenType) return;
       var latestInfo=findLatestMatchingOrder(orders,visibleStoreIds,t,selCategory,resolvedVendorKey,visibleStatus,7*24*60*60*1000);
       if(!latestInfo||!latestInfo.week) return;
+      if(latestInfo.ts&&(Date.now()-latestInfo.ts)>(48*60*60*1000)) return;
       if(hasFinishedLogForWeek(t,latestInfo.week)) return;
       if(latestInfo.ts>bestTs){bestTs=latestInfo.ts;bestType=t;}
     });
@@ -5497,8 +5502,8 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
   var latestTypeLog=useMemo(function(){
     var filtered=(logs||[]).filter(function(l){
       if(!l) return false;
-      var sameType=String(l.type||"")===String(currentType||"");
       var sameCategory=normalizeCategory(l.category||"vegetables")===normalizeCategory(selCategory);
+      var sameType=selCategory===WAREHOUSE_INVENTORY_CATEGORY?sameCategory:(String(l.type||"")===String(currentType||""));
       var sameWeek=String(l.week||"")===String(activeWeekKey||"");
       var sameVendor=String(l.vendorKey||"")===String(resolvedVendorKey||"");
       return sameType&&sameCategory&&sameWeek&&sameVendor;
@@ -6046,7 +6051,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         setSelCategory={setSelCategory}
         orderType={vt}
         setOrderType={function(t){if(editingAll){toast("Save quantities before switching order type",true);return;}sVt(t);if(setConsolidatedType)setConsolidatedType(t);}}
-        categories={forcedResolvedCategory?[{id:forcedResolvedCategory,label:CATEGORY_LABELS[forcedResolvedCategory]}]:(isWarehouseUser?[{id:"vendor_orders",label:"Vendors"}]:[{id:"vegetables",label:"Vegetables"},{id:"leaves",label:"Leaves"},{id:"vendor_orders",label:"Vendor Orders"},{id:WAREHOUSE_INVENTORY_CATEGORY,label:"Warehouse Inventory"}])}
+        categories={forcedResolvedCategory?[{id:forcedResolvedCategory,label:CATEGORY_LABELS[forcedResolvedCategory]}]:(isWarehouseUser?[{id:"vendor_orders",label:"Vendors"}]:[{id:"vegetables",label:"Vegetables"},{id:"leaves",label:"Leaves"},{id:"vendor_orders",label:"Vendor Orders"}])}
         getCategoryDisabled={function(catId){if(forcedResolvedCategory) return false;if(catId==="vendor_orders") return visibleVendorOptions.length===0;if(catId===WAREHOUSE_INVENTORY_CATEGORY) return visibleWarehouseInventoryFormOptions.length===0;return !isCategoryOpenForType(catId,vt,categoryAccessTypes,manualOpenLeaves);}}
         getOrderTypeDisabled={function(t){return allowedOpenTypes.length>0?allowedOpenTypes.indexOf(t)<0:true;}}
         onCategoryChanged={function(){setStep(1);}}
