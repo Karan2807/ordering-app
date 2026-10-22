@@ -472,6 +472,11 @@ export const apiClient = {
         method: 'PATCH',
       });
     },
+    delete(id) {
+      return apiClient.request(`/orders/supplier-orders/${id}`, {
+        method: 'DELETE',
+      });
+    },
     downloadExcel(id, filename, dateValue) {
       const query=dateValue?`?dateValue=${encodeURIComponent(dateValue)}`:'';
       return apiClient.download(`/orders/supplier-orders/${id}/excel${query}`, filename);

@@ -2613,7 +2613,7 @@ function Ic({type,size}){var z=size||16;var p={home:"M3 9l9-7 9 7v11a2 2 0 0 1-2
 /* ═══ TOAST ═══ */
 function Toast({msg,isErr}){if(!msg)return null;return <div style={Object.assign({},S.to,isErr?S.toE:{})}>{msg}</div>;}
 
-function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCategoryDisabled,getOrderTypeDisabled,orderTypeSuffix,onCategoryChanged,categories,vendorOptions,selectedVendorKey,onVendorChanged}){
+function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCategoryDisabled,getOrderTypeDisabled,orderTypeSuffix,onCategoryChanged,categories,vendorOptions,selectedVendorKey,onVendorChanged,vendorTitle}){
   var mainCats=categories||[
     {id:"vegetables",label:"Vegetables"},
     {id:"leaves",label:"Leaves"},
@@ -2641,7 +2641,7 @@ function OrderDrawerNav({selCategory,setSelCategory,orderType,setOrderType,getCa
       </div>
     </div>}
     {selCategory==="vendor_orders"&&vendorOptions&&vendorOptions.length>0&&<div style={S.dCard}>
-      <div style={S.dTitle}>Open Vendors</div>
+      <div style={S.dTitle}>{vendorTitle||"Open Vendors"}</div>
       <div style={Object.assign({},S.dSub,{maxHeight:180,overflowY:"auto",paddingRight:4})}>
         {vendorOptions.map(function(v){
           var active=selectedVendorKey===v.id;
@@ -6416,291 +6416,601 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
   var _previewLoading=useState({}),previewLoading=_previewLoading[0],setPreviewLoading=_previewLoading[1];
   var _preview=useState(null),previewSheet=_preview[0],setPreviewSheet=_preview[1];
   var _hist=useState([]),history=_hist[0],setHistory=_hist[1];
+  var _deleting=useState({}),deleting=_deleting[0],setDeleting=_deleting[1];
+  var _historySearch=useState(""),historySearch=_historySearch[0],setHistorySearch=_historySearch[1];
+  var _historyCategory=useState("all"),historyCategory=_historyCategory[0],setHistoryCategory=_historyCategory[1];
+  var _detailRecord=useState(null),detailRecord=_detailRecord[0],setDetailRecord=_detailRecord[1];
   var _vm=useState("individual"),vendorSendMode=_vm[0],setVendorSendMode=_vm[1];
-  var resolvedVendorKey=normalizeVendorKey(selCategory,selectedVendorKey);
-  var activeTemplate=getTemplateForCategory(categoryTemplates,selCategory,resolvedVendorKey);
-  var templateHeaders=activeTemplate&&activeTemplate.uiHeaders?activeTemplate.uiHeaders:null;
-  var itemHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.item?templateHeaders.item:"Item";
-  var totalHeader=selCategory==="vendor_orders"&&templateHeaders&&templateHeaders.total?templateHeaders.total:"Total Qty";
-  var displayOrderType=resolvedOrderTypeForCategory(selCategory,vt);
-  var currentType=selCategory==="vendor_orders"?"VENDOR":displayOrderType;
-  var dk=dateKey(currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
+
+  var isAllVendorsSelected = selCategory === "vendor_orders" && (selectedVendorKey === "ALL" || !selectedVendorKey);
+  var resolvedVendorKey = isAllVendorsSelected ? null : normalizeVendorKey(selCategory, selectedVendorKey);
+  var activeTemplate = getTemplateForCategory(categoryTemplates, selCategory, resolvedVendorKey);
+  var templateHeaders = activeTemplate && activeTemplate.uiHeaders ? activeTemplate.uiHeaders : null;
+  var itemHeader = selCategory === "vendor_orders" && templateHeaders && templateHeaders.item ? templateHeaders.item : "Item";
+  var totalHeader = selCategory === "vendor_orders" && templateHeaders && templateHeaders.total ? templateHeaders.total : "Total Qty";
+  var displayOrderType = resolvedOrderTypeForCategory(selCategory, vt);
+  var currentType = selCategory === "vendor_orders" ? "VENDOR" : displayOrderType;
+  var dk = dateKey(currentType, selCategory, resolvedVendorKey, manualOpenOrder, manualOpenSeq, getVendorSeqFromConfigs(vendorOrderConfigs, resolvedVendorKey));
 
   useEffect(function(){
-    let cancelled=false;
-    apiClient.supplierOrders.getAll().then(h=>{if(!cancelled) setHistory(h||[]);}).catch(()=>{});
-    return ()=>{cancelled=true;};
+    let cancelled = false;
+    apiClient.supplierOrders.getAll().then(function(h){ if(!cancelled) setHistory(h || []); }).catch(function(){});
+    return function(){ cancelled = true; };
   },[]);
-  // Compute totals per item across all stores
-  const allSuppliersForCategory = suppliersForCategory(suppliers,selCategory,users);
-  var preferredVendorIds=normalizeVendorOrderList(activeVendorOrderIds);
-  var preferredVendorIdsKey=preferredVendorIds.join("|");
-  const supList = selCategory==="vendor_orders"
-    ? allSuppliersForCategory.filter(function(v){return preferredVendorIds.indexOf(String(v&&v.id||""))>=0;})
-    : allSuppliersForCategory;
+
+  const allSuppliersForCategory = suppliersForCategory(suppliers, selCategory, users);
+  const supList = allSuppliersForCategory;
+  const vendorDrawerOptions = useMemo(function(){
+    if(selCategory !== "vendor_orders") return allSuppliersForCategory;
+    return [{ id: "ALL", name: "All Vendors" }].concat(allSuppliersForCategory);
+  },[selCategory, allSuppliersForCategory]);
+
   useEffect(function(){
-    if(selCategory==="vendor_orders"){
-      return;
-    }else if(selectedVendorKey){
+    if(selCategory === "vendor_orders"){
+      if(!selectedVendorKey){
+        setSelectedVendorKey("ALL");
+      }
+    } else if(selectedVendorKey){
       setSelectedVendorKey(null);
     }
-  },[selCategory,selectedVendorKey]);
-  useEffect(function(){
-    if(selCategory!=="vendor_orders") return;
-    if(selectedVendorKey) return;
-    if(preferredVendorIds.length===1){
-      setSelectedVendorKey(preferredVendorIds[0]);
-    }
-  },[selCategory,selectedVendorKey,preferredVendorIdsKey]);
-  useEffect(function(){
-    if(selCategory!=="vendor_orders") return;
-    if(!selectedVendorKey) return;
-    if(preferredVendorIds.indexOf(String(selectedVendorKey||""))>=0) return;
-    setSelectedVendorKey(null);
-  },[selCategory,selectedVendorKey,preferredVendorIdsKey]);
-  const itemList = Array.isArray(items) ? attachTemplateExtraFields(activeTemplate,items.filter(function(it){return normalizeCategory(it.category)===normalizeCategory(selCategory)&&normalizeVendorKey(selCategory,it.vendorKey)===resolvedVendorKey;})) : [];
-  var totals=useMemo(function(){var t={};itemList.forEach(function(it){var sum=0;stores.forEach(function(st){var k=st.id+"_"+dk;sum+=(orders[k]&&orders[k].items?orders[k].items[it.code]:0)||0;});if(sum>0)t[it.code]=sum;});return t;},[itemList,stores,orders,dk]);
-  // Group by supplier
-  var supplierGroups=useMemo(function(){return supList.map(function(sup){var supItems=itemList.filter(function(it){return (sup.items||[]).indexOf(it.code)>=0&&totals[it.code]>0;});return{supplier:sup,items:supItems};}).filter(function(g){return g.items.length>0;});},[supList,itemList,totals]);
-  // Unassigned items
-  var assigned={};supList.forEach(function(s){(s.items||[]).forEach(function(c){assigned[c]=true;});});
-  var unassigned=itemList.filter(function(it){return totals[it.code]>0&&!assigned[it.code];});
+  },[selCategory, selectedVendorKey]);
 
-  var sendEmail=function(sup,supItems){
-    var recipients=supplierEmailsArray(sup);
-    if(!recipients.length){toast("Supplier email missing",true);return;}
-    var subject="Purchase Order - "+(selCategory==="vendor_orders"?"Vendor Orders":"Order "+displayOrderType)+" - "+new Date().toLocaleDateString();
-    var body="Dear "+sup.name+",\n\nPlease find our order details below:\n\n";
-    supItems.forEach(function(it){body+=it.name+" ("+it.code+") - Qty: "+totals[it.code]+"\n";});
-    body+="\nThank you.";
-    var mailto="mailto:"+encodeURIComponent(recipients.join(","))+"?subject="+encodeURIComponent(subject)+"&body="+encodeURIComponent(body);
-    var a=document.createElement("a");a.href=mailto;a.click();
-    sSent(function(p){var n=Object.assign({},p);n[sup.id+"_"+currentType+"_"+selCategory]=true;return n;});
-    toast("Opening email for "+sup.name+" ("+recipients.join(", ")+")");
+  const itemList = Array.isArray(items) ? attachTemplateExtraFields(activeTemplate, items.filter(function(it){
+    var catMatch = normalizeCategory(it.category) === normalizeCategory(selCategory);
+    if(!catMatch) return false;
+    if(selCategory !== "vendor_orders") return true;
+    if(resolvedVendorKey) return normalizeVendorKey(selCategory, it.vendorKey) === resolvedVendorKey;
+    return true;
+  })) : [];
+
+  var totals = useMemo(function(){
+    var t = {};
+    itemList.forEach(function(it){
+      var sum = 0;
+      stores.forEach(function(st){
+        var itVendorKey = normalizeVendorKey(selCategory, it.vendorKey);
+        var itDk = (selCategory === "vendor_orders")
+          ? dateKey(currentType, selCategory, itVendorKey, manualOpenOrder, manualOpenSeq, getVendorSeqFromConfigs(vendorOrderConfigs, itVendorKey))
+          : dk;
+        var k = st.id + "_" + itDk;
+        sum += (orders[k] && orders[k].items ? orders[k].items[it.code] : 0) || 0;
+      });
+      if(sum > 0) t[it.code] = sum;
+    });
+    return t;
+  },[itemList, stores, orders, dk, selCategory, currentType, manualOpenOrder, manualOpenSeq, vendorOrderConfigs]);
+
+  // Group by supplier
+  var supplierGroups = useMemo(function(){
+    return supList.map(function(sup){
+      var supItems;
+      if(selCategory === "vendor_orders"){
+        supItems = itemList.filter(function(it){
+          return normalizeVendorKey(selCategory, it.vendorKey) === sup.id && totals[it.code] > 0;
+        });
+      } else {
+        supItems = itemList.filter(function(it){
+          return (sup.items || []).indexOf(it.code) >= 0 && totals[it.code] > 0;
+        });
+      }
+      return { supplier: sup, items: supItems };
+    }).filter(function(g){ return g.items.length > 0; });
+  },[supList, itemList, totals, selCategory]);
+
+  // Unassigned items
+  var assigned = {};
+  if(selCategory === "vendor_orders"){
+    supList.forEach(function(s){
+      itemList.forEach(function(it){
+        if(normalizeVendorKey(selCategory, it.vendorKey) === s.id) assigned[it.code] = true;
+      });
+    });
+  } else {
+    supList.forEach(function(s){ (s.items || []).forEach(function(c){ assigned[c] = true; }); });
+  }
+  var unassigned = itemList.filter(function(it){ return totals[it.code] > 0 && !assigned[it.code]; });
+
+  var sendEmail = function(sup, supItems){
+    var recipients = supplierEmailsArray(sup);
+    if(!recipients.length){ toast("Supplier email missing", true); return; }
+    var subject = "Purchase Order - " + (selCategory === "vendor_orders" ? ("Vendor Orders - " + sup.name) : ("Order " + displayOrderType)) + " - " + new Date().toLocaleDateString();
+    var body = "Dear " + sup.name + ",\n\nPlease find our order details below:\n\n";
+    supItems.forEach(function(it){ body += it.name + " (" + it.code + ") - Qty: " + totals[it.code] + "\n"; });
+    body += "\nThank you.";
+    var mailto = "mailto:" + encodeURIComponent(recipients.join(",")) + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+    var a = document.createElement("a"); a.href = mailto; a.click();
+    sSent(function(p){ var n = Object.assign({}, p); n[sup.id + "_" + currentType + "_" + selCategory] = true; return n; });
+    try {
+      var itemMap = {};
+      (supItems || []).forEach(function(it){ itemMap[it.code] = totals[it.code] || 0; });
+      var vKey = selCategory === "vendor_orders" ? sup.id : (resolvedVendorKey || sup.id);
+      var recordDk = (selCategory === "vendor_orders")
+        ? dateKey(currentType, selCategory, vKey, manualOpenOrder, manualOpenSeq, getVendorSeqFromConfigs(vendorOrderConfigs, vKey))
+        : dk;
+      apiClient.supplierOrders.create({
+        supplierName: sup.name,
+        email: recipients.join(', '),
+        emails: recipients,
+        type: currentType,
+        category: selCategory,
+        vendorKey: vKey,
+        week: recordDk,
+        items: itemMap
+      }).then(function(){
+        apiClient.supplierOrders.getAll().then(function(h){ setHistory(h || []); }).catch(function(){});
+      }).catch(function(){});
+    } catch(_err) {}
+    toast("Opening email for " + sup.name + " (" + recipients.join(", ") + ")");
   };
-  var processOrder=async function(){
-    try{
-      var tasks=[];
-      stores.forEach(function(st){var k=st.id+"_"+dk;var o=orders[k];if(o&&o.id&&(o.status==="submitted"||o.status==="draft")){tasks.push(apiClient.orders.process(o.id));}});
+
+  var processOrder = async function(){
+    try {
+      var tasks = [];
+      var processedKeys = {};
+      if(selCategory === "vendor_orders"){
+        vendorStoreDocs.forEach(function(row){
+          var o = row.order;
+          if(o && o.id && (o.status === "submitted" || o.status === "draft" || o.status === "draft_shared")){
+            tasks.push(apiClient.orders.process(o.id));
+            var vKey = row.vendorKey || resolvedVendorKey;
+            var groupKey = dateKey(currentType, selCategory, vKey, manualOpenOrder, manualOpenSeq, getVendorSeqFromConfigs(vendorOrderConfigs, vKey));
+            processedKeys[row.store.id + "_" + groupKey] = true;
+          }
+        });
+      } else {
+        stores.forEach(function(st){
+          var k = st.id + "_" + dk;
+          var o = orders[k];
+          if(o && o.id && (o.status === "submitted" || o.status === "draft")){
+            tasks.push(apiClient.orders.process(o.id));
+            processedKeys[k] = true;
+          }
+        });
+      }
+      if(!tasks.length){ toast("No submitted orders to process"); return; }
       await Promise.all(tasks);
       setOrders(function(prev){
-        var n=Object.assign({},prev);
-        stores.forEach(function(st){var k=st.id+"_"+dk;if(n[k]&&(n[k].status==="submitted"||n[k].status==="draft")){n[k]=Object.assign({},n[k],{status:"processed"});}});
+        var n = Object.assign({}, prev);
+        Object.keys(processedKeys).forEach(function(k){
+          if(n[k]){ n[k] = Object.assign({}, n[k], { status: "processed" }); }
+        });
         return n;
       });
-      toast((selCategory==="vendor_orders"?"Vendor orders":"Order "+displayOrderType)+" marked processed for all stores");
-    }catch(e){toast(e.message,true);}  };
-  var allSent=supplierGroups.every(function(g){return sent[g.supplier.id+"_"+currentType+"_"+selCategory];});
-  var downloadExcelForHistory=async function(r){
-    if(!r||!r._id){toast("Missing supplier order record id",true);return;}
-    if(!r.hasExcel){toast("Document not available for this record",true);return;}
-    var key=String(r._id);
-    var fallbackName="consolidated-order-"+String(r.type||"X")+"-"+String(r.week||"").replace(/[^A-Za-z0-9_-]/g,"_")+".xlsx";
-    try{
-      setDownloading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
+      toast((selCategory === "vendor_orders" ? "Vendor orders" : ("Order " + displayOrderType)) + " marked processed for all stores");
+    } catch(e) { toast(e.message, true); }
+  };
+
+  var allSent = supplierGroups.every(function(g){ return sent[g.supplier.id + "_" + currentType + "_" + selCategory]; });
+
+  var downloadExcelForHistory = async function(r){
+    if(!r || !r._id){ toast("Missing supplier order record id", true); return; }
+    var key = String(r._id);
+    var fallbackName = "consolidated-order-" + String(r.type || "X") + "-" + String(r.week || "").replace(/[^A-Za-z0-9_-]/g, "_") + ".xlsx";
+    try {
+      setDownloading(function(prev){ var n = Object.assign({}, prev); n[key] = true; return n; });
       await apiClient.supplierOrders.downloadExcel(r._id, r.excelFilename || fallbackName);
-      toast("Downloaded document for "+(r.supplierName||"supplier"));
-    }catch(e){toast(e.message||"Failed to download document",true);}
-    finally{
-      setDownloading(function(prev){var n=Object.assign({},prev);delete n[key];return n;});
-    }
-  };
-  var printExcelForHistory=async function(r){
-    var printWindow;
-    try{
-      if(!r||!r._id){toast("Missing supplier order record id",true);return;}
-      if(!r.hasExcel){toast("Document not available for this record",true);return;}
-      printWindow=openPendingPrintWindow("Preparing document...");
-      var resp=await apiClient.supplierOrders.previewExcel(r._id);
-      if(resp&&resp.fileBase64){
-        await printBase64File(resp.fileBase64,resp.filename,resp.contentType,printWindow);
-      }else{
-        await printSheetSections((r.excelFilename||r.supplierName||"supplier-order"),[{name:resp&&resp.sheetName?resp.sheetName:"Sheet1",rows:normalizePreviewRows(resp&&resp.rows)}],printWindow);
-      }
-      toast("Print dialog opened");
-    }catch(e){
-      if(printWindow&&!printWindow.closed) printWindow.close();
-      toast(e.message||"Failed to print document",true);
-    }
-  };
-  var openSheetPreviewForHistory=async function(r){
-    if(!r||!r._id){toast("Missing supplier order record id",true);return;}
-    if(!r.hasExcel){toast("Document not available for this record",true);return;}
-    var key=String(r._id);
-    try{
-      setPreviewLoading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
-      var resp=await apiClient.supplierOrders.previewExcel(r._id);
-      setPreviewSheet({
-        record:r,
-        sheetName:resp&&resp.sheetName?resp.sheetName:"Sheet1",
-        rows:normalizePreviewRows(resp&&resp.rows),
-        fileBase64:resp&&resp.fileBase64?resp.fileBase64:null,
-        contentType:resp&&resp.contentType?resp.contentType:null,
-      });
-    }catch(e){toast(e.message||"Failed to load sheet preview",true);}
-    finally{setPreviewLoading(function(prev){var n=Object.assign({},prev);delete n[key];return n;});}
-  };
-  var selectedVendor=supList.find(function(v){return v.id===resolvedVendorKey;})||null;
-  var historySections=ORDER_CATEGORIES.map(function(category){
-    return {id:category.id,title:category.id==="vendor_orders"?"Vendor Orders":(category.label+" Orders")};
-  });
-  var vendorStoreDocs=useMemo(function(){
-    if(selCategory!=="vendor_orders"||!resolvedVendorKey) return [];
-    return (stores||[]).map(function(st){
-      var order=getCurrentOrderForStoreType(orders,st.id,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
-      var hasVisible=!!(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
-      var lineCount=order?Object.keys(Object.assign({},order.items||{},order.notes||{})).filter(function(code){return normalizeOrderItemEntry((order.items||{})[code]).qty>0||String((order.notes||{})[code]||"").trim();}).length:0;
-      return {store:st,order:order,lineCount:lineCount,ready:hasVisible&&lineCount>0};
-    }).filter(function(row){return row.ready;});
-  },[stores,orders,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
-  var vendorPendingCount=useMemo(function(){
-    if(selCategory!=="vendor_orders"||!resolvedVendorKey) return 0;
-    return (stores||[]).filter(function(st){
-      var order=getCurrentOrderForStoreType(orders,st.id,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,resolvedVendorKey));
-      return !(order&&["submitted","draft_shared","processed"].indexOf(String(order.status||""))>=0);
-    }).length;
-  },[stores,orders,currentType,selCategory,resolvedVendorKey,manualOpenOrder,manualOpenSeq,vendorOrderConfigs]);
-  var vendorHistorySent=useMemo(function(){
-    if(selCategory!=="vendor_orders"||!resolvedVendorKey) return false;
-    return (history||[]).some(function(r){
-      return normalizeCategory(r.category||"vegetables")==="vendor_orders"
-        && String(r.vendorKey||"")===String(resolvedVendorKey||"")
-        && String(r.type||"")===String(currentType||"")
-        && String(r.week||"")===String(dk.endsWith("-"+currentType+"-"+categoryKey(selCategory,resolvedVendorKey))?dk.slice(0,dk.length-("-"+currentType+"-"+categoryKey(selCategory,resolvedVendorKey)).length):dk);
-    });
-  },[history,selCategory,resolvedVendorKey,currentType,dk]);
-  var downloadVendorStoreDocument=async function(row){
-    if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
-    try{
-      var key=String(row.store.id||"");
-      setDownloading(function(prev){var n=Object.assign({},prev);n[key]=true;return n;});
-      var rowCodes=Object.keys(Object.assign({},row.order.items||{},row.order.notes||{}));
-      var rowItems=(items||[]).filter(function(it){return rowCodes.indexOf(it.code)>=0;});
-      var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
-      var itemNamesByCode={};
-      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
-      downloadBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType);
-      toast("Document downloaded for "+(row.store.name||row.store.id));
-    }catch(e){toast(e.message||"Failed to download document",true);}
-    finally{
-      setDownloading(function(prev){var n=Object.assign({},prev);delete n[String(row.store.id||"")];return n;});
-    }
-  };
-  var printVendorStoreHistoryDocument=async function(row){
-    var printWindow;
-    try{
-      if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
-      printWindow=openPendingPrintWindow("Preparing document...");
-      var rowCodes=Object.keys(Object.assign({},row.order.items||{},row.order.notes||{}));
-      var rowItems=(items||[]).filter(function(it){return rowCodes.indexOf(it.code)>=0;});
-      var itemDetailsByCode=buildOrderItemDetails(rowCodes,rowItems,items,activeTemplate);
-      var itemNamesByCode={};
-      Object.keys(itemDetailsByCode).forEach(function(code){itemNamesByCode[code]=itemDetailsByCode[code].name;});
-      var resp=await apiClient.orders.storeOrderExcelPreview(currentType,selCategory,resolvedVendorKey,row.order.items||{},row.order.notes||{},row.store.id,row.order.date||new Date().toISOString(),itemNamesByCode,itemDetailsByCode);
-      await printBase64File(resp&&((resp.fileBase64)||(resp.excelBase64)),resp&&resp.filename,resp&&resp.contentType,printWindow);
-      toast("Print dialog opened");
-    }catch(e){
-      if(printWindow&&!printWindow.closed) printWindow.close();
-      toast(e.message||"Failed to print document",true);
-    }
-  };
-  var sendVendorIndividualDocs=async function(){
-    if(!selectedVendor){toast("Select a vendor first",true);return;}
-    var recipients=supplierEmailsArray(selectedVendor);
-    if(!recipients.length){toast("Vendor email missing",true);return;}
-    try{
-      sSending(function(prev){var n=Object.assign({},prev);n.vendorIndividual=true;return n;});
-      await apiClient.orders.emailVendorIndividual(selectedVendor.id,recipients,selectedVendor.name);
-      sSent(function(prev){var n=Object.assign({},prev);n["vendorIndividual_"+selectedVendor.id]=true;return n;});
-      var h=await apiClient.supplierOrders.getAll();
-      setHistory(h||[]);
-      toast("Individual store documents sent to "+selectedVendor.name);
-    }catch(e){toast(e.message||"Failed to send vendor documents",true);}
-    finally{
-      sSending(function(prev){var n=Object.assign({},prev);delete n.vendorIndividual;return n;});
+      toast("Downloaded document for " + (r.supplierName || "supplier"));
+    } catch(e) { toast(e.message || "Failed to download document", true); }
+    finally {
+      setDownloading(function(prev){ var n = Object.assign({}, prev); delete n[key]; return n; });
     }
   };
 
+  var deleteHistoryRecord = async function(r){
+    if(!r || !r._id){ toast("Missing supplier order record id", true); return; }
+    var name = getRecordSupplierName(r);
+    if(!window.confirm("Are you sure you want to delete the order record for " + name + " (" + (r.week || "") + ")?")){
+      return;
+    }
+    var key = String(r._id);
+    try {
+      setDeleting(function(prev){ var n = Object.assign({}, prev); n[key] = true; return n; });
+      await apiClient.supplierOrders.delete(r._id);
+      setHistory(function(prev){ return prev.filter(function(item){ return String(item._id) !== key; }); });
+      if(detailRecord && String(detailRecord._id) === key){ setDetailRecord(null); }
+      toast("Supplier order record deleted");
+    } catch(e) {
+      toast(e.message || "Failed to delete supplier order", true);
+    } finally {
+      setDeleting(function(prev){ var n = Object.assign({}, prev); delete n[key]; return n; });
+    }
+  };
+
+  var printExcelForHistory = async function(r){
+    var printWindow;
+    try {
+      if(!r || !r._id){ toast("Missing supplier order record id", true); return; }
+      if(!r.hasExcel){ toast("Document not available for this record", true); return; }
+      printWindow = openPendingPrintWindow("Preparing document...");
+      var resp = await apiClient.supplierOrders.previewExcel(r._id);
+      if(resp && resp.fileBase64){
+        await printBase64File(resp.fileBase64, resp.filename, resp.contentType, printWindow);
+      } else {
+        await printSheetSections((r.excelFilename || r.supplierName || "supplier-order"), [{ name: resp && resp.sheetName ? resp.sheetName : "Sheet1", rows: normalizePreviewRows(resp && resp.rows) }], printWindow);
+      }
+      toast("Print dialog opened");
+    } catch(e) {
+      if(printWindow && !printWindow.closed) printWindow.close();
+      toast(e.message || "Failed to print document", true);
+    }
+  };
+
+  var openSheetPreviewForHistory = async function(r){
+    if(!r || !r._id){ toast("Missing supplier order record id", true); return; }
+    if(!r.hasExcel){ toast("Document not available for this record", true); return; }
+    var key = String(r._id);
+    try {
+      setPreviewLoading(function(prev){ var n = Object.assign({}, prev); n[key] = true; return n; });
+      var resp = await apiClient.supplierOrders.previewExcel(r._id);
+      setPreviewSheet({
+        record: r,
+        sheetName: resp && resp.sheetName ? resp.sheetName : "Sheet1",
+        rows: normalizePreviewRows(resp && resp.rows),
+        fileBase64: resp && resp.fileBase64 ? resp.fileBase64 : null,
+        contentType: resp && resp.contentType ? resp.contentType : null,
+      });
+    } catch(e) { toast(e.message || "Failed to load sheet preview", true); }
+    finally { setPreviewLoading(function(prev){ var n = Object.assign({}, prev); delete n[key]; return n; }); }
+  };
+
+  var selectedVendor = isAllVendorsSelected ? null : (supList.find(function(v){ return String(v.id) === String(resolvedVendorKey); }) || null);
+
+  var getRecordSupplierName = function(r){
+    if(!r) return "Supplier";
+    if(r.supplierName && r.supplierName !== 'Supplier') return r.supplierName;
+    if(r.vendorKey){
+      var found = (suppliers || []).find(function(s){ return String(s.id) === String(r.vendorKey); });
+      if(found && found.name) return found.name;
+      return vendorDisplayName(suppliers, r.vendorKey);
+    }
+    return r.supplierName || 'Supplier';
+  };
+
+  var vendorStoreDocs = useMemo(function(){
+    if(selCategory !== "vendor_orders") return [];
+    var targetVendors = resolvedVendorKey
+      ? allSuppliersForCategory.filter(function(v){ return String(v.id) === String(resolvedVendorKey); })
+      : allSuppliersForCategory;
+    var rows = [];
+    targetVendors.forEach(function(vendor){
+      var vKey = vendor.id;
+      (stores || []).forEach(function(st){
+        var order = getCurrentOrderForStoreType(orders, st.id, currentType, selCategory, vKey, manualOpenOrder, manualOpenSeq, getVendorSeqFromConfigs(vendorOrderConfigs, vKey));
+        var hasVisible = !!(order && ["submitted", "draft_shared", "processed"].indexOf(String(order.status || "")) >= 0);
+        var lineCount = order ? Object.keys(Object.assign({}, order.items || {}, order.notes || {})).filter(function(code){ return normalizeOrderItemEntry((order.items || {})[code]).qty > 0 || String((order.notes || {})[code] || "").trim(); }).length : 0;
+        if(hasVisible && lineCount > 0){
+          rows.push({
+            vendor: vendor,
+            vendorKey: vKey,
+            store: st,
+            order: order,
+            lineCount: lineCount,
+            ready: true,
+          });
+        }
+      });
+    });
+    return rows;
+  },[stores, orders, currentType, selCategory, resolvedVendorKey, allSuppliersForCategory, manualOpenOrder, manualOpenSeq, vendorOrderConfigs]);
+
+  var vendorPendingCount = useMemo(function(){
+    if(selCategory !== "vendor_orders") return 0;
+    var targetVendors = resolvedVendorKey
+      ? allSuppliersForCategory.filter(function(v){ return String(v.id) === String(resolvedVendorKey); })
+      : allSuppliersForCategory;
+    var count = 0;
+    targetVendors.forEach(function(vendor){
+      var vKey = vendor.id;
+      (stores || []).forEach(function(st){
+        var order = getCurrentOrderForStoreType(orders, st.id, currentType, selCategory, vKey, manualOpenOrder, manualOpenSeq, getVendorSeqFromConfigs(vendorOrderConfigs, vKey));
+        if(!(order && ["submitted", "draft_shared", "processed"].indexOf(String(order.status || "")) >= 0)){
+          count++;
+        }
+      });
+    });
+    return count;
+  },[stores, orders, currentType, selCategory, resolvedVendorKey, allSuppliersForCategory, manualOpenOrder, manualOpenSeq, vendorOrderConfigs]);
+
+  var uniqueVendorsInDocs = useMemo(function(){
+    var set = new Set();
+    vendorStoreDocs.forEach(function(r){ if(r.vendorKey) set.add(r.vendorKey); });
+    return set.size;
+  },[vendorStoreDocs]);
+
+  var vendorHistorySent = useMemo(function(){
+    if(selCategory !== "vendor_orders") return false;
+    return (history || []).some(function(r){
+      var matchCat = normalizeCategory(r.category || "vegetables") === "vendor_orders";
+      var matchVendor = !resolvedVendorKey || String(r.vendorKey || "") === String(resolvedVendorKey || "");
+      return matchCat && matchVendor;
+    });
+  },[history, selCategory, resolvedVendorKey]);
+
+  var downloadVendorStoreDocument = async function(row){
+    if(!row || !row.order || !row.store){ toast("Store document not available", true); return; }
+    var targetVendorKey = row.vendorKey || resolvedVendorKey;
+    try {
+      var key = String(row.store.id || "") + "_" + String(targetVendorKey || "");
+      setDownloading(function(prev){ var n = Object.assign({}, prev); n[key] = true; return n; });
+      var rowCodes = Object.keys(Object.assign({}, row.order.items || {}, row.order.notes || {}));
+      var rowItems = (items || []).filter(function(it){ return rowCodes.indexOf(it.code) >= 0; });
+      var rowTemplate = getTemplateForCategory(categoryTemplates, selCategory, targetVendorKey);
+      var itemDetailsByCode = buildOrderItemDetails(rowCodes, rowItems, items, rowTemplate);
+      var itemNamesByCode = {};
+      Object.keys(itemDetailsByCode).forEach(function(code){ itemNamesByCode[code] = itemDetailsByCode[code].name; });
+      var resp = await apiClient.orders.storeOrderExcelPreview(currentType, selCategory, targetVendorKey, row.order.items || {}, row.order.notes || {}, row.store.id, row.order.date || new Date().toISOString(), itemNamesByCode, itemDetailsByCode);
+      downloadBase64File(resp && ((resp.fileBase64) || (resp.excelBase64)), resp && resp.filename, resp && resp.contentType);
+      toast("Document downloaded for " + (row.vendor && row.vendor.name ? (row.vendor.name + " - ") : "") + (row.store.name || row.store.id));
+    } catch(e) { toast(e.message || "Failed to download document", true); }
+    finally {
+      setDownloading(function(prev){ var n = Object.assign({}, prev); delete n[String(row.store.id || "") + "_" + String(targetVendorKey || "")]; return n; });
+    }
+  };
+
+  var printVendorStoreHistoryDocument = async function(row){
+    var printWindow;
+    var targetVendorKey = row.vendorKey || resolvedVendorKey;
+    try {
+      if(!row || !row.order || !row.store){ toast("Store document not available", true); return; }
+      printWindow = openPendingPrintWindow("Preparing document...");
+      var rowCodes = Object.keys(Object.assign({}, row.order.items || {}, row.order.notes || {}));
+      var rowItems = (items || []).filter(function(it){ return rowCodes.indexOf(it.code) >= 0; });
+      var rowTemplate = getTemplateForCategory(categoryTemplates, selCategory, targetVendorKey);
+      var itemDetailsByCode = buildOrderItemDetails(rowCodes, rowItems, items, rowTemplate);
+      var itemNamesByCode = {};
+      Object.keys(itemDetailsByCode).forEach(function(code){ itemNamesByCode[code] = itemDetailsByCode[code].name; });
+      var resp = await apiClient.orders.storeOrderExcelPreview(currentType, selCategory, targetVendorKey, row.order.items || {}, row.order.notes || {}, row.store.id, row.order.date || new Date().toISOString(), itemNamesByCode, itemDetailsByCode);
+      await printBase64File(resp && ((resp.fileBase64) || (resp.excelBase64)), resp && resp.filename, resp && resp.contentType, printWindow);
+      toast("Print dialog opened");
+    } catch(e) {
+      if(printWindow && !printWindow.closed) printWindow.close();
+      toast(e.message || "Failed to print document", true);
+    }
+  };
+
+  var filteredHistory = useMemo(function(){
+    var q = historySearch.trim().toLowerCase();
+    return (history || []).filter(function(r){
+      var cat = normalizeCategory(r.category || "vegetables");
+      if(historyCategory !== "all" && cat !== historyCategory) return false;
+      if(!q) return true;
+      var supName = getRecordSupplierName(r).toLowerCase();
+      var email = String(r.email || "").toLowerCase();
+      var week = String(r.week || "").toLowerCase();
+      var type = String(r.type || "").toLowerCase();
+      return supName.indexOf(q) >= 0 || email.indexOf(q) >= 0 || week.indexOf(q) >= 0 || type.indexOf(q) >= 0;
+    });
+  },[history, historySearch, historyCategory, suppliers]);
+
+  var historySections = ORDER_CATEGORIES.map(function(category){
+    return { id: category.id, title: category.id === "vendor_orders" ? "Vendor Orders" : (category.label + " Orders") };
+  });
+
+  // Calculate item breakdown for detail modal
+  var detailItemsList = useMemo(function(){
+    if(!detailRecord) return [];
+    var rawItems = detailRecord.items && typeof detailRecord.items === 'object' ? detailRecord.items : {};
+    var list = [];
+    Object.keys(rawItems).forEach(function(code){
+      var val = rawItems[code];
+      var qty = typeof val === 'object' && val !== null ? (Number(val.qty || val.quantity) || 0) : (Number(val) || 0);
+      var matchedItem = (items || []).find(function(it){ return it.code === code; });
+      list.push({
+        code: code,
+        name: (matchedItem && matchedItem.name) || code.replace(/^XLS::/, ''),
+        qty: qty,
+      });
+    });
+    if(list.length === 0 && detailRecord.storeBreakdown && typeof detailRecord.storeBreakdown === 'object'){
+      var agg = {};
+      Object.values(detailRecord.storeBreakdown).forEach(function(st){
+        if(st && st.items && typeof st.items === 'object'){
+          Object.entries(st.items).forEach(function(entry){
+            var code = entry[0];
+            var q = Number(entry[1]) || 0;
+            agg[code] = (agg[code] || 0) + q;
+          });
+        }
+      });
+      Object.keys(agg).forEach(function(code){
+        var matchedItem = (items || []).find(function(it){ return it.code === code; });
+        list.push({
+          code: code,
+          name: (matchedItem && matchedItem.name) || code.replace(/^XLS::/, ''),
+          qty: agg[code],
+        });
+      });
+    }
+    return list;
+  },[detailRecord, items]);
+
   return(<div>
-    {history.length>0&&(<div style={Object.assign({},S.card,{marginBottom:12})}>
-      <div style={S.cH}><div><div style={S.t}>Sent Supplier Orders</div><div style={S.d}>{history.length} records</div></div></div>
-      {historySections.map(function(section){
-        var rows=history.filter(function(r){return normalizeCategory(r.category||"vegetables")===section.id;});
-        return (<div key={section.id} style={{marginTop:10}}>
+    {history.length>0&&(<div style={Object.assign({},S.card,{marginBottom:16})}>
+      <div style={S.cH}>
+        <div>
+          <div style={S.t}>Sent Supplier Orders</div>
+          <div style={S.d}>{history.length} total recorded send(s) to suppliers/vendors</div>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <input
+            style={Object.assign({},S.inp,{padding:"6px 12px",fontSize:12,width:200,borderRadius:8})}
+            placeholder="Search supplier, email, week..."
+            value={historySearch}
+            onChange={function(e){ setHistorySearch(e.target.value); }}
+          />
+        </div>
+      </div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",margin:"8px 0 14px"}}>
+        {[
+          {id:"all",label:"All ("+history.length+")"},
+          {id:"vegetables",label:"Vegetables ("+history.filter(function(r){return normalizeCategory(r.category)==="vegetables";}).length+")"},
+          {id:"leaves",label:"Leaves ("+history.filter(function(r){return normalizeCategory(r.category)==="leaves";}).length+")"},
+          {id:"vendor_orders",label:"Vendors ("+history.filter(function(r){return normalizeCategory(r.category)==="vendor_orders";}).length+")"},
+          {id:WAREHOUSE_INVENTORY_CATEGORY,label:"Inventory ("+history.filter(function(r){return normalizeCategory(r.category)===WAREHOUSE_INVENTORY_CATEGORY;}).length+")"},
+        ].map(function(tab){
+          var active = historyCategory === tab.id;
+          return <button
+            key={tab.id}
+            style={Object.assign({},S.b,active?S.bP:S.bS,{padding:"4px 10px",fontSize:11.5,borderRadius:6})}
+            onClick={function(){ setHistoryCategory(tab.id); }}
+          >
+            {tab.label}
+          </button>;
+        })}
+      </div>
+      {historySections.filter(function(sec){ return historyCategory==="all" || historyCategory===sec.id; }).map(function(section){
+        var rows=filteredHistory.filter(function(r){return normalizeCategory(r.category||"vegetables")===section.id;});
+        if(historyCategory==="all" && rows.length===0) return null;
+        return (<div key={section.id} style={{marginTop:12}}>
           <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:6}}>{section.title} ({rows.length})</div>
-          {rows.length===0?<div style={{textAlign:"center",padding:14,color:"#6B7186",border:"1px solid rgba(148,163,184,.24)",borderRadius:10}}>No sent records</div>:
-          <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Type</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th><th style={S.th}>Excel</th><th style={S.th}>Actions</th></tr></thead><tbody>
+          {rows.length===0?<div style={{textAlign:"center",padding:14,color:"#6B7186",border:"1px solid rgba(148,163,184,.24)",borderRadius:10}}>No records found</div>:
+          <div style={S.tw}><table style={S.tbl}><thead><tr>
+            <th style={S.th}>Date</th>
+            <th style={S.th}>Type</th>
+            <th style={S.th}>Supplier / Vendor</th>
+            <th style={S.th}>Email</th>
+            <th style={S.th}>Week</th>
+            <th style={S.th}>Items / Qty</th>
+            <th style={S.th}>Excel</th>
+            <th style={S.th}>Actions</th>
+          </tr></thead><tbody>
             {rows.map(function(r){
               var key=String((r&&r._id)||r.sentAt||"");
               var isDownloading=!!downloading[key];
               var isPreviewLoading=!!previewLoading[key];
-              return(<tr key={key}><td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td><td style={S.td}>{r.type}</td><td style={S.td}>{r.supplierName}</td><td style={S.tm}>{r.email}</td><td style={S.tm}>{r.week}</td><td style={S.td}>{r.hasExcel?<span style={Object.assign({},S.bg,S.bgG)}>Available</span>:<span style={Object.assign({},S.bg,S.bgY)}>Not stored</span>}</td><td style={S.td}>{r.hasExcel?<div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){openSheetPreviewForHistory(r);}} disabled={isPreviewLoading}>{isPreviewLoading?"Loading...":"View File"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadExcelForHistory(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download File"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printExcelForHistory(r);}}>Print</button></div>:null}</td></tr>);
+              var isDeleting=!!deleting[key];
+              var supName = getRecordSupplierName(r);
+              var hasItems = (r.itemCount>0) || (r.items && Object.keys(r.items).length>0) || (r.storeBreakdown && Object.keys(r.storeBreakdown).length>0);
+              return(<tr key={key}>
+                <td style={S.tm}>{new Date(r.sentAt).toLocaleString()}</td>
+                <td style={S.td}><span style={Object.assign({},S.bg,{background:"#F1F5F9",color:"#334155",fontWeight:600})}>{r.type}</span></td>
+                <td style={Object.assign({},S.td,{fontWeight:600,color:"#0F172A"})}>
+                  {supName}
+                  {r.category==="vendor_orders"&&<span style={Object.assign({},S.bg,{marginLeft:6,fontSize:9,padding:"1px 5px",background:"#E0E7FF",color:"#3730A3"})}>Vendor</span>}
+                </td>
+                <td style={S.tm}>{r.email || "-"}</td>
+                <td style={S.tm}>{r.week}</td>
+                <td style={S.tm}>
+                  {r.itemCount ? (
+                    <span style={{fontWeight:600,color:"#0F172A"}}>{r.itemCount} items ({r.totalQty} qty)</span>
+                  ) : (
+                    r.totalQty ? (r.totalQty + " qty") : <span style={{color:"#94A3B8"}}>-</span>
+                  )}
+                </td>
+                <td style={S.td}>{r.hasExcel?<span style={Object.assign({},S.bg,S.bgG)}>Available</span>:<span style={Object.assign({},S.bg,S.bgY)}>Not stored</span>}</td>
+                <td style={S.td}><div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                  {hasItems&&<button style={Object.assign({},S.b,S.bP,{padding:"3px 8px",fontSize:10})} onClick={function(){setDetailRecord(r);}}>View Items</button>}
+                  {r.hasExcel&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){openSheetPreviewForHistory(r);}} disabled={isPreviewLoading}>{isPreviewLoading?"Loading...":"View File"}</button>}
+                  <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadExcelForHistory(r);}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download"}</button>
+                  {r.hasExcel&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printExcelForHistory(r);}}>Print</button>}
+                  <button style={Object.assign({},S.b,S.bD,{padding:"3px 8px",fontSize:10})} onClick={function(){deleteHistoryRecord(r);}} disabled={isDeleting}>{isDeleting?"Deleting...":"Delete"}</button>
+                </div></td>
+              </tr>);
             })}
           </tbody></table></div>}
         </div>);
       })}
     </div>)}
+
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6,marginBottom:14}}>
       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-start"}}>
         <OrderDrawerNav
           selCategory={selCategory}
-          setSelCategory={setSelCategory}
+          setSelCategory={function(catId){
+            setSelCategory(catId);
+            if(catId==="vendor_orders") setSelectedVendorKey("ALL");
+            else setSelectedVendorKey(null);
+          }}
           orderType={vt}
           setOrderType={sVt}
-          getCategoryDisabled={function(catId){return catId==="vendor_orders"?preferredVendorIds.length===0:!isCategoryOpenForType(catId,vt,aot||vt,manualOpenLeaves);}}
+          getCategoryDisabled={function(){return false;}}
           getOrderTypeDisabled={function(){return false;}}
-          vendorOptions={supList}
-          selectedVendorKey={selectedVendorKey}
+          vendorOptions={vendorDrawerOptions}
+          selectedVendorKey={selectedVendorKey||(selCategory==="vendor_orders"?"ALL":null)}
           onVendorChanged={function(vId){setSelectedVendorKey(vId);}}
+          vendorTitle="Vendors"
         />
       </div>
-      {allSent&&supplierGroups.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
+      {((selCategory==="vendor_orders" && vendorStoreDocs.length>0) || (allSent && supplierGroups.length>0)) && (
+        <button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>
+      )}
     </div>
+
     {selCategory==="vendor_orders"&&(
       <div>
-        <div style={S.nI}>Vendor supplier sending now runs from Consolidated {" > "} Vendors. Use this page only to review store documents and past send history.</div>
+        <div style={S.nI}>
+          Showing store documents and ordered items for {isAllVendorsSelected ? "all vendors" : (selectedVendor ? selectedVendor.name : "the selected vendor")}. You can download store documents, view items, or mark orders processed.
+        </div>
         <div style={Object.assign({},S.card,{marginBottom:12})}>
           <div style={S.cH}>
             <div>
-              <div style={S.t}>{selectedVendor?(selectedVendor.name+" - Individual Store Documents"):"Vendor Documents"}</div>
-              <div style={S.d}>{vendorStoreDocs.length} ready store document(s){vendorPendingCount>0?(" | "+vendorPendingCount+" store(s) still pending submission"):""}</div>
+              <div style={S.t}>{isAllVendorsSelected ? "All Vendors - Store Documents" : ((selectedVendor ? selectedVendor.name : "Vendor") + " - Individual Store Documents")}</div>
+              <div style={S.d}>{vendorStoreDocs.length} ready store document(s){isAllVendorsSelected ? (" across " + uniqueVendorsInDocs + " vendor(s)") : ""}{vendorPendingCount>0?(" | "+vendorPendingCount+" store(s) still pending submission"):""}</div>
             </div>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              {(vendorHistorySent||sent["vendorIndividual_"+(selectedVendor&&selectedVendor.id||"")])&&<span style={Object.assign({},S.bg,S.bgG)}>Sent</span>}
-              {(vendorHistorySent||sent["vendorIndividual_"+(selectedVendor&&selectedVendor.id||"")])&&vendorStoreDocs.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
+              {vendorHistorySent&&<span style={Object.assign({},S.bg,S.bgG)}>Sent</span>}
+              {vendorStoreDocs.length>0&&<button style={Object.assign({},S.b,S.bG)} onClick={processOrder}>Mark All Processed</button>}
             </div>
           </div>
-          {vendorStoreDocs.length===0?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>{selectedVendor?"No submitted store documents ready for this vendor yet.":"Select a vendor to see store documents."}</div>:
-          <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={S.th}>Lines</th><th style={S.th}>Document</th></tr></thead><tbody>
+          {vendorStoreDocs.length===0?<div style={{textAlign:"center",padding:24,color:"#6B7186"}}>No submitted store documents ready for {isAllVendorsSelected ? "any vendor" : (selectedVendor?selectedVendor.name:"this vendor")} yet.</div>:
+          <div style={S.tw}><table style={S.tbl}><thead><tr>
+            {isAllVendorsSelected&&<th style={S.th}>Vendor</th>}
+            <th style={S.th}>Store</th>
+            <th style={S.th}>Status</th>
+            <th style={Object.assign({},S.th,{textAlign:"center"})}>Lines</th>
+            <th style={S.th}>Document</th>
+          </tr></thead><tbody>
             {vendorStoreDocs.map(function(row){
-              var dKey=String(row.store.id||"");
-              return <tr key={dKey}><td style={Object.assign({},S.td,{fontWeight:500})}>{row.store.name||row.store.id}</td><td style={S.td}><span style={Object.assign({},S.bg,String(row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order.status}</span></td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace"})}>{row.lineCount}</td><td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloading[dKey]}>{downloading[dKey]?"Downloading...":"Download Document"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printVendorStoreHistoryDocument(row);}}>Print</button></div></td></tr>;
+              var dKey=String(row.store.id||"")+"_"+String(row.vendorKey||"");
+              return <tr key={dKey}>
+                {isAllVendorsSelected&&<td style={Object.assign({},S.td,{fontWeight:600,color:"#0F172A"})}>{row.vendor&&row.vendor.name?row.vendor.name:row.vendorKey}</td>}
+                <td style={Object.assign({},S.td,{fontWeight:500})}>{row.store.name||row.store.id}</td>
+                <td style={S.td}><span style={Object.assign({},S.bg,String(row.order.status||"")==="processed"?S.bgP:S.bgG)}>{row.order.status}</span></td>
+                <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace"})}>{row.lineCount}</td>
+                <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorStoreDocument(row);}} disabled={!!downloading[dKey]}>{downloading[dKey]?"Downloading...":"Download Document"}</button>
+                  <button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){printVendorStoreHistoryDocument(row);}}>Print</button>
+                </div></td>
+              </tr>;
             })}
           </tbody></table></div>}
         </div>
       </div>
     )}
+
     {selCategory!=="vendor_orders"&&<div style={S.nI}>{selCategory==="vendor_orders"?(CATEGORY_LABELS[selCategory]+" by supplier. Send emails, then mark as processed."):(""+CATEGORY_LABELS[selCategory]+" Order "+displayOrderType+" by supplier. Send emails, then mark as processed.")}</div>}
     {selCategory!=="vendor_orders"&&supplierGroups.length===0&&<div style={S.card}><div style={{textAlign:"center",padding:30,color:"#6B7186"}}>No order data for {selCategory==="vendor_orders"?CATEGORY_LABELS[selCategory]:(CATEGORY_LABELS[selCategory]+" Order "+displayOrderType)}. Submit orders first.</div></div>}
-    {selCategory!=="vendor_orders"&&supplierGroups.map(function(g){
-      var isSent=sent[g.supplier.id+"_"+currentType+"_"+selCategory];
-      return(<div key={g.supplier.id} style={Object.assign({},S.card,{border:isSent?"1px solid rgba(52,211,153,0.3)":"1px solid rgba(148,163,184,.24)"})}>
-        <div style={S.cH}>
-          <div><div style={S.t}>{g.supplier.name}</div><div style={S.d}>{supplierEmailsText(g.supplier)} | {g.supplier.phone}</div></div>
-          <div style={{display:"flex",gap:5,alignItems:"center"}}>
-            {isSent?<span style={Object.assign({},S.bg,S.bgG)}>Email Sent</span>
-            :<button style={Object.assign({},S.b,S.bP)} onClick={function(){sendEmail(g.supplier,g.items);}}><Ic type="mail" size={13}/>Send Email</button>}
-          </div>
-        </div>
-        <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>{itemHeader}</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{totalHeader}</th>
-          {stores.map(function(st){return <th key={st.id} style={Object.assign({},S.th,{textAlign:"center",fontSize:9})}>{st.name.split(" ")[0]}</th>;})}</tr></thead>
-          <tbody>{g.items.map(function(it){return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{renderItemNameWithExtras(it.name,it.extraFields)}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit}</td>
-            <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:"#166534"})}>{totals[it.code]}</td>
-            {stores.map(function(st){var k=st.id+"_"+dk;var q=orders[k]&&orders[k].items?orders[k].items[it.code]||0:0;return <td key={st.id} style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontSize:11,color:q>0?"#0F172A":"#64748B"})}>{q}</td>;})}
-          </tr>);})}</tbody></table></div>
-      </div>);
-    })}
+    {supplierGroups.length>0&&(
+      <div>
+        {selCategory==="vendor_orders"&&<div style={{fontSize:14,fontWeight:700,color:"#0F172A",margin:"14px 0 8px"}}>Ordered Items by Vendor</div>}
+        {supplierGroups.map(function(g){
+          var isSent=sent[g.supplier.id+"_"+currentType+"_"+selCategory];
+          return(<div key={g.supplier.id} style={Object.assign({},S.card,{marginBottom:12,border:isSent?"1px solid rgba(52,211,153,0.3)":"1px solid rgba(148,163,184,.24)"})}>
+            <div style={S.cH}>
+              <div><div style={S.t}>{g.supplier.name}</div><div style={S.d}>{supplierEmailsText(g.supplier)} | {g.supplier.phone||"No phone"}</div></div>
+              <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                {isSent?<span style={Object.assign({},S.bg,S.bgG)}>Email Sent</span>
+                :<button style={Object.assign({},S.b,S.bP)} onClick={function(){sendEmail(g.supplier,g.items);}}><Ic type="mail" size={13}/>Send Email</button>}
+              </div>
+            </div>
+            <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>{itemHeader}</th><th style={S.th}>Category</th><th style={S.th}>Unit</th><th style={Object.assign({},S.th,{textAlign:"center"})}>{totalHeader}</th>
+              {stores.map(function(st){return <th key={st.id} style={Object.assign({},S.th,{textAlign:"center",fontSize:9})}>{st.name.split(" ")[0]}</th>;})}</tr></thead>
+              <tbody>{g.items.map(function(it){return(<tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{renderItemNameWithExtras(it.name,it.extraFields)}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.category}</td><td style={Object.assign({},S.td,{color:"#64748B"})}>{it.unit}</td>
+                <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:"#166534"})}>{totals[it.code]}</td>
+                {stores.map(function(st){
+                  var itVendorKey = normalizeVendorKey(selCategory, it.vendorKey);
+                  var itDk = (selCategory==="vendor_orders")
+                    ? dateKey(currentType,selCategory,itVendorKey,manualOpenOrder,manualOpenSeq,getVendorSeqFromConfigs(vendorOrderConfigs,itVendorKey))
+                    : dk;
+                  var k=st.id+"_"+itDk;
+                  var q=orders[k]&&orders[k].items?orders[k].items[it.code]||0:0;
+                  return <td key={st.id} style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontSize:11,color:q>0?"#0F172A":"#64748B"})}>{q}</td>;
+                })}
+              </tr>);})}</tbody></table></div>
+          </div>);
+        })}
+      </div>
+    )}
     {selCategory!=="vendor_orders"&&unassigned.length>0&&(<div style={Object.assign({},S.card,{borderColor:"rgba(248,113,113,0.3)"})}><div style={S.cH}><div><div style={Object.assign({},S.t,{color:"#F87171"})}>Unassigned Items</div><div style={S.d}>These items are not mapped to any supplier.</div></div></div>
       <div style={S.tw}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Total Qty</th></tr></thead><tbody>
         {unassigned.map(function(it){return <tr key={it.code}><td style={S.tm}>{it.code}</td><td style={S.td}>{renderItemNameWithExtras(it.name,it.extraFields)}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700})}>{totals[it.code]}</td></tr>;})}</tbody></table></div></div>)}
@@ -6710,6 +7020,51 @@ function SupplierOrders({orders,setOrders,items,aot,manualOpenOrder,manualOpenSe
       {previewSheet.rows&&previewSheet.rows.length>0?<ExcelSheetPreviewTable rows={previewSheet.rows} maxHeight={420}/>:<div style={Object.assign({},S.nI,{marginBottom:0})}>This stored file is kept in its original format and does not have a sheet preview. Use Download or Print to open it.</div>}
       <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setPreviewSheet(null);}}>Close</button></div>
     </div></div>)}
+    {detailRecord&&(
+      <div style={S.ov} onClick={function(){setDetailRecord(null);}}>
+        <div style={Object.assign({},S.mo,S.mW,{maxWidth:740,maxHeight:"90vh",overflowY:"auto"})} onClick={function(e){e.stopPropagation();}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+            <div>
+              <div style={{fontSize:17,fontWeight:700,color:"#0F172A"}}>Shared Order Details - {getRecordSupplierName(detailRecord)}</div>
+              <div style={{fontSize:12,color:"#64748B",marginTop:4}}>
+                Category: <strong>{CATEGORY_LABELS[detailRecord.category]||detailRecord.category}</strong> | Type: <strong>{detailRecord.type}</strong> | Week: <strong>{detailRecord.week}</strong>
+                {detailRecord.sentAt?(" | Sent: "+new Date(detailRecord.sentAt).toLocaleString()):""}
+              </div>
+              {detailRecord.email&&<div style={{fontSize:12,color:"#475569",marginTop:2}}>Recipient(s): <strong>{detailRecord.email}</strong></div>}
+            </div>
+            <button style={Object.assign({},S.b,S.bS,{padding:"4px 10px",fontSize:11})} onClick={function(){setDetailRecord(null);}}>Close</button>
+          </div>
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:6}}>Shared Items ({detailItemsList.length})</div>
+            {detailItemsList.length===0?<div style={{padding:16,textAlign:"center",color:"#64748B",border:"1px solid rgba(148,163,184,.2)",borderRadius:8}}>No individual items logged for this record. Use Download to view the stored file.</div>:
+            <div style={Object.assign({},S.tw,{maxHeight:260,overflowY:"auto"})}><table style={S.tbl}><thead><tr><th style={S.th}>Code</th><th style={S.th}>Item Name</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Quantity</th></tr></thead><tbody>
+              {detailItemsList.map(function(it){
+                return <tr key={it.code}><td style={S.tm}>{it.code}</td><td style={Object.assign({},S.td,{fontWeight:500})}>{it.name}</td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:700,color:"#166534"})}>{it.qty}</td></tr>;
+              })}
+            </tbody></table></div>}
+          </div>
+          {detailRecord.storeBreakdown&&Object.keys(detailRecord.storeBreakdown).length>0&&(
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:6}}>Store Allocation Breakdown</div>
+              <div style={Object.assign({},S.tw,{maxHeight:200,overflowY:"auto"})}><table style={S.tbl}><thead><tr><th style={S.th}>Store</th><th style={S.th}>Status</th><th style={Object.assign({},S.th,{textAlign:"center"})}>Items Count</th></tr></thead><tbody>
+                {Object.entries(detailRecord.storeBreakdown).map(function(entry){
+                  var stId=entry[0];
+                  var stData=entry[1]||{};
+                  var stItemsCount=stData.items?Object.keys(stData.items).length:0;
+                  return <tr key={stId}><td style={Object.assign({},S.td,{fontWeight:500})}>{stData.storeName||stId}</td><td style={S.td}><span style={Object.assign({},S.bg,stData.status==="processed"?S.bgP:S.bgG)}>{stData.status||"submitted"}</span></td><td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace"})}>{stItemsCount}</td></tr>;
+                })}
+              </tbody></table></div>
+            </div>
+          )}
+          <div style={Object.assign({},S.mA,{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:16})}>
+            <div>
+              {detailRecord.hasExcel&&<button style={Object.assign({},S.b,S.bP)} onClick={function(){downloadExcelForHistory(detailRecord);}}>Download Excel Document</button>}
+            </div>
+            <button style={Object.assign({},S.b,S.bS)} onClick={function(){setDetailRecord(null);}}>Close</button>
+          </div>
+        </div>
+      </div>
+    )}
   </div>);
 }
 
@@ -7480,6 +7835,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
   var _sik=useState(""),selectedInventorySettingKey=_sik[0],setSelectedInventorySettingKey=_sik[1];
   var _iws=useState(null),inventoryWindowStartValue=_iws[0],setInventoryWindowStartValue=_iws[1];
   var _iwe=useState(null),inventoryWindowEndValue=_iwe[0],setInventoryWindowEndValue=_iwe[1];
+  var _downloadingVendor=useState({}),downloadingVendor=_downloadingVendor[0],setDownloadingVendor=_downloadingVendor[1];
   var knownSupplierIds=normalizeVendorOrderList((suppliers||[]).map(function(s){return s&&s.id;}));
   var inventoryFormOptions=buildWarehouseInventoryFormOptions(items,categoryTemplates);
   var inventoryOptionLookup={};
@@ -7737,6 +8093,21 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
         toast("Inventory closed for "+((inventoryOptionLookup[targetInventorySettingKey]||{}).name||warehouseInventoryFormDisplayName(normalizeInventorySettingsKey(targetInventorySettingKey))));
       }catch(e){toast(e.message,true);}
     };
+  var downloadVendorOrders=async function(vendorKey,vendorName){
+    if(!vendorKey) return;
+    try{
+      setDownloadingVendor(function(prev){var n=Object.assign({},prev);n[vendorKey]=true;return n;});
+      var resp=await apiClient.orders.consolidatedExcelPreview('VENDOR','vendor_orders',vendorKey,{documentMode:'monitor'});
+      var base64Data=resp&&((resp.fileBase64)||(resp.excelBase64));
+      if(!base64Data) throw new Error("No order document generated for this vendor");
+      downloadBase64File(base64Data,resp.filename||((vendorName||vendorKey)+"-orders.xlsx"),resp.contentType);
+      toast("Downloaded orders for "+(vendorName||vendorKey));
+    }catch(e){
+      toast(e.message||"Failed to download vendor orders",true);
+    }finally{
+      setDownloadingVendor(function(prev){var n=Object.assign({},prev);delete n[vendorKey];return n;});
+    }
+  };
   return(<div>
     <div style={S.card}><div style={S.cH}><div><div style={S.t}>{isWarehouseUser?"Vendor Orders Activation":"Vegetable Order Schedule"}</div><div style={S.d}>{isWarehouseUser?"Open or schedule vendor orders for stores and notify store emails automatically.":"Edit day for each order type"}</div></div></div>
       {!isWarehouseUser&&<Fragment>
@@ -7826,7 +8197,7 @@ function Settings({stores,schedule,setSchedule,manualOpenOrder,setManualOpenOrde
             <thead><tr><th style={S.th}>Supplier</th><th style={S.th}>Window</th><th style={S.th}>Status</th><th style={S.th}>Action</th></tr></thead>
             <tbody>
               {configuredVendorRows.map(function(row){
-                return <tr key={row.vendorKey}><td style={Object.assign({},S.td,{fontWeight:600})}>{row.vendorName}</td><td style={S.td}>{row.windowText}</td><td style={S.td}><span style={Object.assign({},S.bg,row.openToday?S.bgG:S.bgY)}>{row.openToday?"Open today":"Closed today"}</span></td><td style={S.td}><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSelectedVendorSettingKey(row.vendorKey);}}>Edit</button><button style={Object.assign({},S.b,S.bD,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeVendorSetting(row.vendorKey);}}>Cancel</button></div></td></tr>;
+                return <tr key={row.vendorKey}><td style={Object.assign({},S.td,{fontWeight:600})}>{row.vendorName}</td><td style={S.td}>{row.windowText}</td><td style={S.td}><span style={Object.assign({},S.bg,row.openToday?S.bgG:S.bgY)}>{row.openToday?"Open today":"Closed today"}</span></td><td style={S.td}><div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){downloadVendorOrders(row.vendorKey,row.vendorName);}} disabled={!!downloadingVendor[row.vendorKey]}>{downloadingVendor[row.vendorKey]?"Downloading...":"Download"}</button><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})} onClick={function(){setSelectedVendorSettingKey(row.vendorKey);}}>Edit</button><button style={Object.assign({},S.b,S.bD,{padding:"3px 8px",fontSize:10.5})} onClick={function(){closeVendorSetting(row.vendorKey);}}>Cancel</button></div></td></tr>;
               })}
               {configuredVendorRows.length===0&&<tr><td colSpan={4} style={Object.assign({},S.td,{textAlign:"center",padding:20,color:"#64748B"})}>No supplier-specific vendor settings saved yet.</td></tr>}
             </tbody>
