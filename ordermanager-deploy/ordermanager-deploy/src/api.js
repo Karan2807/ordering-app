@@ -457,6 +457,11 @@ export const apiClient = {
       if (options.days) params.set('days', options.days);
       if (options.page) params.set('page', options.page);
       if (options.limit) params.set('limit', options.limit);
+      if (options.startDate) params.set('startDate', options.startDate);
+      if (options.endDate) params.set('endDate', options.endDate);
+      if (options.supplier) params.set('supplier', options.supplier);
+      if (options.vendorKey) params.set('vendorKey', options.vendorKey);
+      if (options.category) params.set('category', options.category);
       const query = params.toString() ? `?${params.toString()}` : '';
       const resp = await apiClient.request(`/orders/supplier-orders${query}`);
       return options.returnPage ? resp : (Array.isArray(resp) ? resp : (resp && resp.rows) || []);

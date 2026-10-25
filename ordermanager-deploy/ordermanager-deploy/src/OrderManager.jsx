@@ -2608,7 +2608,7 @@ var S={
 };
 
 /* ═══ ICONS ═══ */
-function Ic({type,size}){var z=size||16;var p={home:"M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",clip:"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2 M8 2h8v4H8z",grid:"M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",up:"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M17 8l-5-5-5 5 M12 3v12",users:"M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 7a4 4 0 1 0 0-0.01 M23 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75",bell:"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0",gear:"M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0",out:"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9",check:"M20 6L9 17l-5-5",plus:"M12 5v14M5 12h14",trash:"M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",search:"M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0 M21 21l-4.35-4.35",edit:"M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z",pin:"M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z M12 10m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0",lock:"M3 11h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V11z M7 11V7a5 5 0 0 1 10 0v4",save:"M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z M17 21v-8H7v8 M7 3v5h8",send:"M22 2L11 13 M22 2l-7 20-4-9-9-4 20-7z",eye:"M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0",x:"M18 6L6 18M6 6l12 12",menu:"M3 12h18M3 6h18M3 18h18",truck:"M1 3h15v13H1z M16 8h4l3 3v5h-7V8z M5.5 18.5a2.5 2.5 0 1 0 0-0.01 M18.5 18.5a2.5 2.5 0 1 0 0-0.01",chart:"M18 20V10 M12 20V4 M6 20v-6",mail:"M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M22 6l-10 7L2 6",phone:"M22 16.92v3a2 2 0 0 1-2.18 2A19.86 19.86 0 0 1 3.09 5.18 2 2 0 0 1 5.11 3h3a2 2 0 0 1 2 1.72c.13.81.36 1.6.68 2.34a2 2 0 0 1-.45 2.11L8.91 10.6a16 16 0 0 0 6.29 6.29l1.43-1.43a2 2 0 0 1 2.11-.45c.74.32 1.53.55 2.34.68a2 2 0 0 1 1.72 2v.23z"};return(<svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{(p[type]||"").split(" M").map(function(s,i){return <path key={i} d={i===0?s:"M"+s}/>;})}</svg>);}
+function Ic({type,size}){var z=size||16;var p={home:"M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",clip:"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2 M8 2h8v4H8z",grid:"M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",up:"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M17 8l-5-5-5 5 M12 3v12",users:"M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 7a4 4 0 1 0 0-0.01 M23 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75",bell:"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0",gear:"M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0",out:"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9",check:"M20 6L9 17l-5-5",plus:"M12 5v14M5 12h14",trash:"M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",search:"M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0 M21 21l-4.35-4.35",edit:"M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z",pin:"M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z M12 10m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0",lock:"M3 11h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V11z M7 11V7a5 5 0 0 1 10 0v4",save:"M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z M17 21v-8H7v8 M7 3v5h8",send:"M22 2L11 13 M22 2l-7 20-4-9-9-4 20-7z",eye:"M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0",x:"M18 6L6 18M6 6l12 12",menu:"M3 12h18M3 6h18M3 18h18",truck:"M1 3h15v13H1z M16 8h4l3 3v5h-7V8z M5.5 18.5a2.5 2.5 0 1 0 0-0.01 M18.5 18.5a2.5 2.5 0 1 0 0-0.01",chart:"M18 20V10 M12 20V4 M6 20v-6",mail:"M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M22 6l-10 7L2 6",phone:"M22 16.92v3a2 2 0 0 1-2.18 2A19.86 19.86 0 0 1 3.09 5.18 2 2 0 0 1 5.11 3h3a2 2 0 0 1 2 1.72c.13.81.36 1.6.68 2.34a2 2 0 0 1-.45 2.11L8.91 10.6a16 16 0 0 0 6.29 6.29l1.43-1.43a2 2 0 0 1 2.11-.45c.74.32 1.53.55 2.34.68a2 2 0 0 1 1.72 2v.23z",history:"M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z",calendar:"M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z M16 2v4 M8 2v4 M3 10h18",download:"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3",print:"M6 9V2h12v7 M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2 M6 14h12v8H6z"};return(<svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{(p[type]||"").split(" M").map(function(s,i){return <path key={i} d={i===0?s:"M"+s}/>;})}</svg>);}
 
 /* ═══ TOAST ═══ */
 function Toast({msg,isErr}){if(!msg)return null;return <div style={Object.assign({},S.to,isErr?S.toE:{})}>{msg}</div>;}
@@ -3018,6 +3018,7 @@ export default function App(){
     {id:"items",label:"Item Master",ico:"up"},{id:"users",label:"Users",ico:"users"},
     {id:"suppliers",label:"Suppliers",ico:"truck"},{id:"notifications",label:"Notifications",ico:"bell"},
     {id:"stores",label:"Stores",ico:"pin"},{id:"reports",label:"Reports",ico:"chart"},
+    {id:"order-history",label:"Order History",ico:"history"},
     {id:"settings",label:"Settings",ico:"gear"},
   ]:isWarehouseUser?[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"orders",label:"Order Monitor",ico:"clip"},
@@ -3025,6 +3026,7 @@ export default function App(){
     {id:"warehouse-inventory",label:"Warehouse Inventory",ico:"grid"},
     {id:"items",label:"Item Master",ico:"up"},{id:"suppliers",label:"Suppliers",ico:"truck"},
     {id:"notifications",label:"Notifications",ico:"bell"},{id:"reports",label:"Reports",ico:"chart"},
+    {id:"order-history",label:"Order History",ico:"history"},
     {id:"settings",label:"Settings",ico:"gear"},
   ]:[
     {id:"dashboard",label:"Dashboard",ico:"home"},{id:"order-entry",label:"Place Order",ico:"clip"},
@@ -3036,14 +3038,14 @@ export default function App(){
   var contentStyle=isMobile?Object.assign({},S.content,{padding:12}):S.content;
   var rP=function(){
     if(page==="dashboard"&&isA)return <AdminDash {...PP}/>;if(page==="dashboard")return <MgrDash {...PP}/>;
-    if(page==="order-entry")return <OrderEntry {...PP}/>;if(page==="history")return <OrderHistory {...PP}/>;
+    if(page==="order-entry")return <OrderEntry {...PP}/>;if(page==="history"&&isA)return <OutboundOrderHistory {...PP}/>;if(page==="history")return <OrderHistory {...PP}/>;
     if(page==="orders")return <OrderMonitor {...PP}/>;if(page==="consolidated")return <Consolidated {...PP}/>;
     if(page==="warehouse-inventory")return <WarehouseInventoryHub {...PP}/>;
     if(page==="supplier-orders")return <SupplierOrders {...PP}/>;
     if(page==="items")return <ItemMaster {...PP}/>;if(page==="users")return <UserMgmt {...PP}/>;
     if(page==="suppliers")return <SupplierMgmt {...PP}/>;
     if(page==="notifications")return <NotifMgmt {...PP}/>;if(page==="stores")return <StoreMgmt {...PP}/>;
-    if(page==="reports")return <Reports {...PP}/>;if(page==="settings")return <Settings {...PP}/>;
+    if(page==="reports")return <Reports {...PP}/>;if(page==="order-history")return <OutboundOrderHistory {...PP}/>;if(page==="settings")return <Settings {...PP}/>;
     return null;
   };
   return(<div key={userKey} style={S.page}><Toast msg={tM} isErr={tE}/>
@@ -4562,7 +4564,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       <div style={Object.assign({},S.tw,{marginTop:8})}><table style={S.tbl}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Order</th><th style={S.th}>Supplier</th><th style={S.th}>Email</th><th style={S.th}>Week</th><th style={S.th}>Details</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>
         {rows.map(function(l){
           var canReopen=true;
-          var rowKey=historyGroupKey(l);
+          var rowKey=l._id ? sentLogActionKey(l) : historyGroupKey(l);
           var isDownloading=!!historyDownloading[rowKey];
           return(<tr key={l._id||l.sentAt}>
             <td style={S.tm}>{fmtDT(l.sentAt)}</td>
@@ -4572,7 +4574,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
             <td style={S.tm}>{l.week}</td>
             <td style={S.td}><button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){setSelDone(l);loadSheetPreviewForLog(l);}}>View Details</button></td>
             <td style={S.td}><span style={Object.assign({},S.bg,l.finished===false?S.bgW:S.bgG)}>{l.finished===false?"reopened":"completed"}</span></td>
-            <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{l.week&&l.type&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){downloadConsolidatedHistoryExcel({week:l.week,type:l.type,category:l.category||"vegetables",vendorKey:l.vendorKey||null});}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Document"}</button>}{l.week&&l.type&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){printConsolidatedHistoryExcel({week:l.week,type:l.type,category:l.category||"vegetables",vendorKey:l.vendorKey||null});}}>Print</button>}{canReopen?<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10})} onClick={function(){reopenCompleted(l);}}>{l.finished===false?"Open / Resend":"Reopen / Resend"}</button>:null}</div></td>
+            <td style={S.td}><div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{(l._id || (l.week&&l.type))&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){if(l._id){downloadSentLogExcel(l);}else{downloadConsolidatedHistoryExcel({week:l.week,type:l.type,category:l.category||"vegetables",vendorKey:l.vendorKey||null});}}} disabled={isDownloading}>{isDownloading?"Downloading...":"Download Document"}</button>}{(l._id || (l.week&&l.type))&&<button style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10})} onClick={function(){if(l._id){printSentLogExcel(l);}else{printConsolidatedHistoryExcel({week:l.week,type:l.type,category:l.category||"vegetables",vendorKey:l.vendorKey||null});}}}>Print</button>}{canReopen?<button style={Object.assign({},S.b,S.bW,{padding:"3px 8px",fontSize:10})} onClick={function(){reopenCompleted(l);}}>{l.finished===false?"Open / Resend":"Reopen / Resend"}</button>:null}</div></td>
           </tr>);
         })}
       </tbody></table></div>}
@@ -4669,7 +4671,7 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
       {(function(){
         var selDoneCategory=normalizeCategory((selDone.category)||"vegetables");
         var selDoneIsVendorLog=selDoneCategory==="vendor_orders"||selDoneCategory===WAREHOUSE_INVENTORY_CATEGORY;
-        var selDonePreviewId=selDoneIsVendorLog?historyGroupKey(selDone):String(selDone._id||"");
+        var selDonePreviewId=selDone._id ? String(selDone._id) : (selDoneIsVendorLog ? historyGroupKey(selDone) : "");
         var isLoading=!!sheetPreviewLoadingById[selDonePreviewId];
         var preview=sheetPreviewById[selDonePreviewId];
         if(isLoading) return <div style={Object.assign({},S.nI,{marginBottom:8})}>Loading stored document view...</div>;
@@ -4693,7 +4695,19 @@ function OrderMonitor({orders,setOrders,refreshOrders,items,stores,aot,toast,set
         if(selDone.snapshotLines&&selDone.snapshotLines.length>0) return <div style={Object.assign({},S.tw,{maxHeight:420})}><pre style={{margin:0,padding:12,whiteSpace:"pre-wrap",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",fontSize:11.5,color:"#0F172A"}}>{selDone.snapshotLines.join("\n")}</pre></div>;
         return <div style={Object.assign({},S.nI,{marginBottom:0})}>No stored sent details for this record (older history entry).</div>;
       })()}
-      <div style={S.mA}><button style={Object.assign({},S.b,S.bS)} onClick={function(){setSelDone(null);}}>Close</button></div>
+      <div style={Object.assign({},S.mA,{display:"flex",gap:8,justifyContent:"flex-end"})}>
+        {selDone._id && (
+          <button style={Object.assign({},S.b,S.bS)} onClick={function(){ downloadSentLogExcel(selDone); }}>
+            Download Document
+          </button>
+        )}
+        {selDone._id && (
+          <button style={Object.assign({},S.b,S.bS)} onClick={function(){ printSentLogExcel(selDone); }}>
+            Print
+          </button>
+        )}
+        <button style={Object.assign({},S.b,S.bS)} onClick={function(){setSelDone(null);}}>Close</button>
+      </div>
     </div></div>)}
     {selHistory&&(<div style={S.ov} onClick={function(){setSelHistory(null);}}><div style={Object.assign({},S.mo,S.mW)} onClick={function(e){e.stopPropagation();}}>
       <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>{normalizeCategory(selHistory.category||"vegetables")===WAREHOUSE_INVENTORY_CATEGORY?("Warehouse Inventory - Week "+selHistory.week):("Consolidated Week "+selHistory.week+" - Order "+selHistory.type)}</div>
@@ -7821,6 +7835,887 @@ function Reports({orders,items,stores,user}){
           <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",color:"#0F766E"})}>{s.processed||0}</td>
           <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",color:"#FBBF24"})}>{s.draft||0}</td></tr>);})}</tbody></table></div>}</div>)}
   </div>);
+}
+
+/* ═══ ORDER HISTORY (Suppliers, Vendors, Warehouse with Date Range) ═══ */
+function OutboundOrderHistory({ suppliers, items, categoryTemplates, toast, user, stores, vendorOrderConfigs, inventoryOrderConfigs, setPage, setConsolidatedRequest }) {
+  var _orders = useState([]), ordersList = _orders[0], setOrdersList = _orders[1];
+  var _loading = useState(false), loading = _loading[0], setLoading = _loading[1];
+  var _selectedVendor = useState(""), selectedVendor = _selectedVendor[0], setSelectedVendor = _selectedVendor[1];
+  var _selectedOrderDropdown = useState(""), selectedOrderDropdown = _selectedOrderDropdown[0], setSelectedOrderDropdown = _selectedOrderDropdown[1];
+  var _startDate = useState(""), startDate = _startDate[0], setStartDate = _startDate[1];
+  var _endDate = useState(""), endDate = _endDate[0], setEndDate = _endDate[1];
+  var _searchQuery = useState(""), searchQuery = _searchQuery[0], setSearchQuery = _searchQuery[1];
+  var _categoryFilter = useState("all"), categoryFilter = _categoryFilter[0], setCategoryFilter = _categoryFilter[1];
+  var _detailOrder = useState(null), detailOrder = _detailOrder[0], setDetailOrder = _detailOrder[1];
+  var _downloading = useState({}), downloading = _downloading[0], setDownloading = _downloading[1];
+  var _printing = useState({}), printing = _printing[0], setPrinting = _printing[1];
+
+  var getItemName = useCallback(function(code, fallback) {
+    if (!code) return fallback || "-";
+    var found = (items || []).find(function(it){ return it && it.code === code; });
+    if (found && found.name) return found.name;
+    return fallback || displayNameForOrderKey(code, items);
+  }, [items]);
+
+  var getItemUnit = useCallback(function(code) {
+    if (!code) return "";
+    var found = (items || []).find(function(it){ return it && it.code === code; });
+    return (found && found.unit) || "";
+  }, [items]);
+
+  var fetchOrders = useCallback(async function(opts) {
+    setLoading(true);
+    try {
+      var query = { limit: 1000 };
+      var sDate = opts && opts.startDate !== undefined ? opts.startDate : startDate;
+      var eDate = opts && opts.endDate !== undefined ? opts.endDate : endDate;
+      var supp = opts && opts.supplier !== undefined ? opts.supplier : selectedVendor;
+
+      if (sDate) query.startDate = sDate;
+      if (eDate) query.endDate = eDate;
+      if (supp && supp !== "all") query.supplier = supp;
+
+      var resp = await apiClient.supplierOrders.getAll(Object.assign({}, query, { returnPage: true }));
+      var rows = (resp && resp.rows) || (Array.isArray(resp) ? resp : []);
+      setOrdersList(rows);
+    } catch(err) {
+      toast(err.message || "Failed to load order history", true);
+    } finally {
+      setLoading(false);
+    }
+  }, [startDate, endDate, selectedVendor, toast]);
+
+  useEffect(function(){
+    var cancelled = false;
+    apiClient.supplierOrders.getAll({ limit: 1000, returnPage: true }).then(function(resp){
+      if (cancelled) return;
+      var rows = (resp && resp.rows) || (Array.isArray(resp) ? resp : []);
+      setOrdersList(rows);
+    }).catch(function(e){
+      console.warn("Initial load of supplier orders failed:", e);
+    });
+    return function(){ cancelled = true; };
+  }, []);
+
+  var registeredSuppliers = useMemo(function(){
+    return (suppliers || []).filter(function(s){
+      var id = String(s && s.id || "").toLowerCase();
+      var name = String(s && s.name || "").toLowerCase();
+      return id !== "warehouse" && name !== "warehouse";
+    });
+  }, [suppliers]);
+
+  var configuredVendors = useMemo(function(){
+    var seen = {};
+    var list = [];
+    (normalizeVendorOrderConfigs(vendorOrderConfigs) || []).forEach(function(c){
+      if (c && c.vendorKey && !seen[c.vendorKey]) {
+        seen[c.vendorKey] = true;
+        list.push({ id: c.vendorKey, name: vendorDisplayName(suppliers, c.vendorKey) });
+      }
+    });
+    (suppliers || []).forEach(function(s){
+      if (s && s.id && !seen[s.id] && s.id !== "warehouse" && s.id !== WAREHOUSE_SUPPLIER_ID) {
+        var isVendor = (s.categories || []).indexOf("vendor_orders") >= 0;
+        if (isVendor) {
+          seen[s.id] = true;
+          list.push({ id: s.id, name: s.name || s.id });
+        }
+      }
+    });
+    return list;
+  }, [vendorOrderConfigs, suppliers]);
+
+  var inventoryForms = useMemo(function(){
+    return buildWarehouseInventoryFormOptions(items, categoryTemplates);
+  }, [items, categoryTemplates]);
+
+  var getOrderDestination = useCallback(function(order) {
+    if (!order) return { name: "Unknown", type: "Unknown", badgeStyle: S.bgB };
+    var cat = normalizeCategory(order.category || "vegetables");
+    var suppName = String(order.supplierName || "").trim();
+    var vKey = String(order.vendorKey || "").trim();
+
+    if (cat === WAREHOUSE_INVENTORY_CATEGORY || vKey === WAREHOUSE_SUPPLIER_ID || /^warehouse/i.test(suppName)) {
+      var invName = vKey ? inventoryFormNameByKey(vKey, items, categoryTemplates) : "";
+      return {
+        name: invName ? ("Warehouse (" + invName + ")") : (suppName || "Warehouse"),
+        type: "Warehouse",
+        badgeStyle: S.bgG,
+        isWarehouse: true,
+      };
+    }
+    if (cat === "vendor_orders") {
+      var venName = vKey ? vendorDisplayName(suppliers, vKey) : suppName;
+      return {
+        name: venName || suppName || "Vendor Order",
+        type: "Vendor",
+        badgeStyle: S.bgP,
+        isVendor: true,
+      };
+    }
+    return {
+      name: suppName || "Supplier",
+      type: "Supplier",
+      badgeStyle: S.bgB,
+      isSupplier: true,
+    };
+  }, [items, categoryTemplates, suppliers]);
+
+  var getOrderSummary = useCallback(function(order) {
+    var rawItems = order && order.items && typeof order.items === "object" ? order.items : {};
+    var entries = Object.entries(rawItems);
+    var lines = [];
+    var totalQty = 0;
+
+    if (entries.length > 0) {
+      entries.forEach(function([code, val]){
+        var qty = 0;
+        var unitType = "cas";
+        var customUnit = "";
+        if (typeof val === "object" && val !== null) {
+          qty = Math.max(0, parseInt(val.qty != null ? val.qty : val.quantity, 10) || 0);
+          unitType = val.unitType || "cas";
+          customUnit = val.customUnit || "";
+        } else {
+          qty = Math.max(0, parseInt(val, 10) || 0);
+        }
+        if (qty > 0) {
+          totalQty += qty;
+          lines.push({
+            code: code,
+            name: getItemName(code, code),
+            unit: getItemUnit(code),
+            qty: qty,
+            unitType: unitType,
+            customUnit: customUnit,
+          });
+        }
+      });
+    } else if (order && order.storeBreakdown && typeof order.storeBreakdown === "object") {
+      var totalsByCode = {};
+      Object.values(order.storeBreakdown).forEach(function(st){
+        if (st && st.items && typeof st.items === "object") {
+          Object.entries(st.items).forEach(function([code, q]){
+            var num = Number(q) || 0;
+            if (num > 0) {
+              totalsByCode[code] = (totalsByCode[code] || 0) + num;
+              totalQty += num;
+            }
+          });
+        }
+      });
+      Object.entries(totalsByCode).forEach(function([code, qty]){
+        lines.push({
+          code: code,
+          name: getItemName(code, code),
+          unit: getItemUnit(code),
+          qty: qty,
+          unitType: "cas",
+          customUnit: "",
+        });
+      });
+    }
+    return {
+      lineCount: lines.length || order.itemCount || 0,
+      totalQty: totalQty || order.totalQty || 0,
+      lines: lines,
+    };
+  }, [getItemName, getItemUnit]);
+
+  var filteredOrders = useMemo(function(){
+    return (ordersList || []).filter(function(order){
+      if (!order) return false;
+      var cat = normalizeCategory(order.category || "vegetables");
+
+      // 1. Vendor / Supplier / Warehouse filter
+      if (selectedVendor) {
+        if (selectedVendor === "warehouse") {
+          var isWh = cat === WAREHOUSE_INVENTORY_CATEGORY ||
+                     order.vendorKey === WAREHOUSE_SUPPLIER_ID ||
+                     /^warehouse/i.test(order.supplierName);
+          if (!isWh) return false;
+        } else if (selectedVendor.indexOf("inv::") === 0) {
+          var invKey = selectedVendor.slice(5);
+          if (normalizeVendorKey(cat, order.vendorKey) !== invKey) return false;
+        } else {
+          var matchesVendor = normalizeVendorKey(cat, order.vendorKey) === selectedVendor;
+          var matchesId = String(order.vendorKey || "") === selectedVendor;
+          var matchesName = String(order.supplierName || "").toLowerCase() === selectedVendor.toLowerCase();
+          var suppFound = (suppliers || []).find(function(s){ return String(s.id) === String(selectedVendor); });
+          if (suppFound && suppFound.name && String(order.supplierName || "").toLowerCase() === suppFound.name.toLowerCase()) {
+            matchesName = true;
+          }
+          if (!matchesVendor && !matchesId && !matchesName) return false;
+        }
+      }
+
+      // 2. Date Range filters (Calendar 1 & Calendar 2)
+      var orderDate = new Date(order.sentAt || order.createdAt || 0);
+      if (startDate) {
+        var startDt = new Date(startDate + "T00:00:00");
+        if (!Number.isNaN(startDt.getTime()) && orderDate < startDt) return false;
+      }
+      if (endDate) {
+        var endDt = new Date(endDate + "T23:59:59.999");
+        if (!Number.isNaN(endDt.getTime()) && orderDate > endDt) return false;
+      }
+
+      // 3. Category Filter
+      if (categoryFilter !== "all" && cat !== categoryFilter) {
+        return false;
+      }
+
+      // 4. Search query
+      if (searchQuery && searchQuery.trim()) {
+        var q = searchQuery.toLowerCase().trim();
+        var dest = getOrderDestination(order);
+        var destName = dest.name.toLowerCase();
+        var suppName = String(order.supplierName || "").toLowerCase();
+        var week = String(order.week || "").toLowerCase();
+        var email = String(order.email || "").toLowerCase();
+        var type = String(order.type || "").toLowerCase();
+        var matchInItems = false;
+        var summary = getOrderSummary(order);
+        for (var i = 0; i < summary.lines.length; i++) {
+          var l = summary.lines[i];
+          if (l.name.toLowerCase().indexOf(q) >= 0 || l.code.toLowerCase().indexOf(q) >= 0) {
+            matchInItems = true;
+            break;
+          }
+        }
+        if (!destName.includes(q) && !suppName.includes(q) && !week.includes(q) && !email.includes(q) && !type.includes(q) && !matchInItems) {
+          return false;
+        }
+      }
+
+      return true;
+    }).sort(function(a, b){
+      return new Date(b.sentAt || 0) - new Date(a.sentAt || 0);
+    });
+  }, [ordersList, selectedVendor, startDate, endDate, categoryFilter, searchQuery, getOrderDestination, getOrderSummary, suppliers]);
+
+  var totalQuantityGiven = useMemo(function(){
+    return filteredOrders.reduce(function(acc, o){
+      var summary = getOrderSummary(o);
+      return acc + summary.totalQty;
+    }, 0);
+  }, [filteredOrders, getOrderSummary]);
+
+  var distinctSuppliersCount = useMemo(function(){
+    var set = new Set();
+    filteredOrders.forEach(function(o){
+      var dest = getOrderDestination(o);
+      set.add(dest.name);
+    });
+    return set.size;
+  }, [filteredOrders, getOrderDestination]);
+
+  var downloadOrderDoc = async function(r){
+    if (!r || !r._id){ toast("Missing supplier order record id", true); return; }
+    var key = String(r._id);
+    var fallbackName = "order-" + String(r.supplierName || "supplier").replace(/[^A-Za-z0-9_-]/g, "_") + "-" + String(r.week || "").replace(/[^A-Za-z0-9_-]/g, "_") + ".xlsx";
+    try {
+      setDownloading(function(prev){ var n = Object.assign({}, prev); n[key] = true; return n; });
+      await apiClient.supplierOrders.downloadExcel(r._id, r.excelFilename || fallbackName);
+      toast("Downloaded document for " + (r.supplierName || "supplier"));
+    } catch(e) {
+      toast(e.message || "Failed to download document", true);
+    } finally {
+      setDownloading(function(prev){ var n = Object.assign({}, prev); delete n[key]; return n; });
+    }
+  };
+
+  var printOrderDoc = async function(r){
+    var printWindow;
+    var key = String(r._id);
+    try {
+      if (!r || !r._id){ toast("Missing supplier order record id", true); return; }
+      setPrinting(function(prev){ var n = Object.assign({}, prev); n[key] = true; return n; });
+      printWindow = openPendingPrintWindow("Preparing document...");
+      var resp = await apiClient.supplierOrders.previewExcel(r._id);
+      if (resp && resp.fileBase64){
+        await printBase64File(resp.fileBase64, resp.filename, resp.contentType, printWindow);
+      } else {
+        await printSheetSections((r.excelFilename || r.supplierName || "supplier-order"), [{ name: resp && resp.sheetName ? resp.sheetName : "Sheet1", rows: normalizePreviewRows(resp && resp.rows) }], printWindow);
+      }
+      toast("Print dialog opened");
+    } catch(e) {
+      if (printWindow && !printWindow.closed) printWindow.close();
+      toast(e.message || "Failed to print document", true);
+    } finally {
+      setPrinting(function(prev){ var n = Object.assign({}, prev); delete n[key]; return n; });
+    }
+  };
+
+  var exportToCSV = function(){
+    if (!filteredOrders.length) {
+      toast("No orders to export", true);
+      return;
+    }
+    var headers = ["Date & Time", "Given To", "Destination Type", "Category", "Order Type", "Cycle / Week", "Line Items", "Total Quantity", "Recipients", "Status"];
+    var csvRows = filteredOrders.map(function(o){
+      var dest = getOrderDestination(o);
+      var summary = getOrderSummary(o);
+      return [
+        fmtDT(o.sentAt),
+        dest.name,
+        dest.type,
+        CATEGORY_LABELS[normalizeCategory(o.category || "vegetables")] || o.category || "-",
+        o.type || "-",
+        o.week || "-",
+        summary.lineCount,
+        summary.totalQty,
+        o.email || (Array.isArray(o.emails) ? o.emails.join("; ") : ""),
+        o.sentToSupplier === false ? "Unsent" : "Completed",
+      ].map(function(field){
+        return '"' + String(field || "").replace(/"/g, '""') + '"';
+      }).join(",");
+    });
+    var csvContent = [headers.join(",")].concat(csvRows).join("\r\n");
+    var blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "order-history-" + (startDate || "all") + "-to-" + (endDate || "all") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    toast("Exported " + filteredOrders.length + " orders to CSV");
+  };
+
+  var getOrderCategoryLabel = function(order) {
+    if (!order) return "-";
+    var cat = normalizeCategory(order.category || "vegetables");
+    var type = String(order.type || "").toUpperCase();
+    if (cat === "vegetables") return "Vegetables (Order " + (type || "A") + ")";
+    if (cat === "leaves") return "Leaves (Order B)";
+    if (cat === "vendor_orders") return "Vendor Orders" + (type && type !== "VENDOR" ? (" (" + type + ")") : "");
+    if (cat === WAREHOUSE_INVENTORY_CATEGORY) return "Warehouse Inventory";
+    return (CATEGORY_LABELS[cat] || cat) + (type ? (" (" + type + ")") : "");
+  };
+
+  return (
+    <div>
+      {/* Page Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:12}}>
+        <div>
+          <div style={{fontSize:20,fontWeight:800,color:"#0F172A",letterSpacing:"-0.02em"}}>Order History</div>
+          <div style={{fontSize:13,color:"#64748B",marginTop:2}}>
+            Complete history of all orders given out to suppliers, vendors, and the warehouse.
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <button style={Object.assign({},S.b,S.bS,{display:"inline-flex",alignItems:"center",gap:6})} onClick={function(){ fetchOrders(); }} disabled={loading}>
+            <Ic type="history" size={13}/>
+            <span>{loading ? "Refreshing..." : "Refresh"}</span>
+          </button>
+          <button style={Object.assign({},S.b,S.bG,{display:"inline-flex",alignItems:"center",gap:6})} onClick={exportToCSV} disabled={filteredOrders.length === 0}>
+            <Ic type="download" size={13}/>
+            <span>Export CSV ({filteredOrders.length})</span>
+          </button>
+        </div>
+      </div>
+
+      {/* KPI Stats */}
+      <div style={S.sg}>
+        <div style={S.sc}>
+          <div style={S.sL}>Total Orders Given</div>
+          <div style={S.sV}>{filteredOrders.length}</div>
+          <div style={S.sS}>Matching current filters</div>
+        </div>
+        <div style={S.sc}>
+          <div style={S.sL}>Total Quantity Given</div>
+          <div style={Object.assign({},S.sV,{color:"#16A34A"})}>{totalQuantityGiven}</div>
+          <div style={S.sS}>Cases / units across all lines</div>
+        </div>
+        <div style={S.sc}>
+          <div style={S.sL}>Unique Recipients</div>
+          <div style={Object.assign({},S.sV,{color:"#0284C7"})}>{distinctSuppliersCount}</div>
+          <div style={S.sS}>Suppliers, vendors, warehouse</div>
+        </div>
+        <div style={S.sc}>
+          <div style={S.sL}>Active Date Range</div>
+          <div style={{fontSize:14,fontWeight:700,marginTop:6,color:"#0F172A",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+            {startDate && endDate ? (startDate + " to " + endDate) : startDate ? ("From " + startDate) : endDate ? ("Up to " + endDate) : "All Time"}
+          </div>
+          <div style={S.sS}>{selectedVendor ? ("Filtered: " + (selectedVendor === "warehouse" ? "Warehouse" : selectedVendor)) : "All suppliers & vendors"}</div>
+        </div>
+      </div>
+
+      {/* Filters Card */}
+      <div style={Object.assign({},S.card,{padding:"14px 16px",marginBottom:12})}>
+        <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}>
+          {/* Supplier / Vendor / Warehouse Dropdown */}
+          <div style={{flex:"1 1 250px",minWidth:220}}>
+            <label style={S.lb}>Supplier / Vendor / Warehouse</label>
+            <select
+              style={Object.assign({},S.inp,{fontWeight:500,padding:"7px 10px",fontSize:13})}
+              value={selectedVendor}
+              onChange={function(e){
+                var val = e.target.value;
+                setSelectedVendor(val);
+                fetchOrders({ supplier: val });
+              }}
+            >
+              <option value="">All Suppliers & Vendors (inc. Warehouse)</option>
+              <option value="warehouse">🏢 Warehouse (Inventory Orders)</option>
+              {registeredSuppliers.length > 0 && (
+                <optgroup label="Direct Suppliers">
+                  {registeredSuppliers.map(function(s){
+                    return <option key={"sup_"+s.id} value={s.id}>{s.name || s.id}</option>;
+                  })}
+                </optgroup>
+              )}
+              {configuredVendors.length > 0 && (
+                <optgroup label="Configured Vendors">
+                  {configuredVendors.map(function(v){
+                    return <option key={"ven_"+v.id} value={v.id}>{v.name}</option>;
+                  })}
+                </optgroup>
+              )}
+              {inventoryForms.length > 0 && (
+                <optgroup label="Warehouse Inventory Forms">
+                  {inventoryForms.map(function(f){
+                    return <option key={"inv_"+f.id} value={"inv::"+f.id}>{f.name}</option>;
+                  })}
+                </optgroup>
+              )}
+            </select>
+          </div>
+
+          {/* Calendar 1: Start Date */}
+          <div style={{flex:"1 1 150px",minWidth:140}}>
+            <label style={S.lb}>Start Date (From)</label>
+            <input
+              type="date"
+              style={Object.assign({},S.inp,{padding:"6px 9px",fontSize:12.5})}
+              value={startDate}
+              onChange={function(e){
+                var val = e.target.value;
+                setStartDate(val);
+                fetchOrders({ startDate: val });
+              }}
+            />
+          </div>
+
+          {/* Calendar 2: End Date */}
+          <div style={{flex:"1 1 150px",minWidth:140}}>
+            <label style={S.lb}>End Date (To)</label>
+            <input
+              type="date"
+              style={Object.assign({},S.inp,{padding:"6px 9px",fontSize:12.5})}
+              value={endDate}
+              onChange={function(e){
+                var val = e.target.value;
+                setEndDate(val);
+                fetchOrders({ endDate: val });
+              }}
+            />
+          </div>
+
+          {/* Search Query */}
+          <div style={{flex:"1 1 200px",minWidth:180}}>
+            <label style={S.lb}>Search Orders</label>
+            <div style={{position:"relative"}}>
+              <input
+                type="text"
+                style={Object.assign({},S.inp,{paddingLeft:28,paddingRight:24,fontSize:12.5})}
+                placeholder="Item, supplier, week..."
+                value={searchQuery}
+                onChange={function(e){ setSearchQuery(e.target.value); }}
+              />
+              <div style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",pointerEvents:"none",color:"#94A3B8"}}>
+                <Ic type="search" size={13}/>
+              </div>
+              {searchQuery && (
+                <button
+                  style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#94A3B8",fontSize:14,padding:2}}
+                  onClick={function(){ setSearchQuery(""); }}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Quick Date Presets Row */}
+        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginTop:10,paddingTop:10,borderTop:"1px solid rgba(148,163,184,.18)"}}>
+          <span style={{fontSize:11,fontWeight:600,color:"#64748B",marginRight:4}}>Quick Presets:</span>
+          {[
+            {label:"Today", range: function(){ var d=new Date().toISOString().slice(0,10); return [d, d]; }},
+            {label:"Yesterday", range: function(){ var d=new Date(Date.now()-86400000).toISOString().slice(0,10); return [d, d]; }},
+            {label:"Last 7 Days", range: function(){ var e=new Date().toISOString().slice(0,10); var s=new Date(Date.now()-7*86400000).toISOString().slice(0,10); return [s, e]; }},
+            {label:"Last 30 Days", range: function(){ var e=new Date().toISOString().slice(0,10); var s=new Date(Date.now()-30*86400000).toISOString().slice(0,10); return [s, e]; }},
+            {label:"This Month", range: function(){ var n=new Date(); var s=new Date(n.getFullYear(), n.getMonth(), 1).toISOString().slice(0,10); var e=n.toISOString().slice(0,10); return [s, e]; }},
+            {label:"Last Month", range: function(){ var n=new Date(); var s=new Date(n.getFullYear(), n.getMonth()-1, 1).toISOString().slice(0,10); var e=new Date(n.getFullYear(), n.getMonth(), 0).toISOString().slice(0,10); return [s, e]; }},
+            {label:"All Time", range: function(){ return ["", ""]; }}
+          ].map(function(preset){
+            var range = preset.range();
+            var isActive = (startDate === range[0] && endDate === range[1]) || (preset.label === "All Time" && !startDate && !endDate);
+            return (
+              <button
+                key={preset.label}
+                style={Object.assign({},S.b,isActive?S.bP:S.bS,{padding:"3px 9px",fontSize:11,borderRadius:6})}
+                onClick={function(){
+                  setStartDate(range[0]);
+                  setEndDate(range[1]);
+                  fetchOrders({ startDate: range[0], endDate: range[1] });
+                }}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+          {(startDate || endDate || selectedVendor || searchQuery || categoryFilter !== "all") && (
+            <button
+              style={Object.assign({},S.b,S.bD,{padding:"3px 10px",fontSize:11,marginLeft:"auto"})}
+              onClick={function(){
+                setStartDate("");
+                setEndDate("");
+                setSelectedVendor("");
+                setSearchQuery("");
+                setCategoryFilter("all");
+                fetchOrders({ startDate: "", endDate: "", supplier: "" });
+              }}
+            >
+              Reset Filters
+            </button>
+          )}
+        </div>
+
+        {/* Category Pills */}
+        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginTop:10}}>
+          <span style={{fontSize:11,fontWeight:600,color:"#64748B",marginRight:4}}>Category:</span>
+          {[
+            {id:"all", label:"All Categories"},
+            {id:"vegetables", label:"Vegetables"},
+            {id:"leaves", label:"Leaves"},
+            {id:"vendor_orders", label:"Vendor Orders"},
+            {id:WAREHOUSE_INVENTORY_CATEGORY, label:"Warehouse Inventory"}
+          ].map(function(cat){
+            var isA = categoryFilter === cat.id;
+            return (
+              <button
+                key={cat.id}
+                style={Object.assign({},S.b,isA?S.bG:S.bS,{padding:"3px 10px",fontSize:11,borderRadius:12,fontWeight:isA?700:500})}
+                onClick={function(){ setCategoryFilter(cat.id); }}
+              >
+                {cat.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* All Given Orders Dropdown Card */}
+      {filteredOrders.length > 0 && (
+        <div style={Object.assign({},S.card,{padding:"12px 16px",marginBottom:12,background:"rgba(240,253,244,.6)",border:"1px solid rgba(187,247,208,.8)"})}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:6}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#166534",display:"flex",alignItems:"center",gap:6}}>
+              <Ic type="clip" size={14}/>
+              <span>ALL GIVEN ORDERS ({filteredOrders.length})</span>
+            </div>
+            <div style={{fontSize:11,color:"#64748B"}}>
+              Select any order from this dropdown to view its full details
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <select
+              style={Object.assign({},S.inp,{flex:1,padding:"8px 10px",fontSize:13,background:"#fff",fontWeight:500})}
+              value={selectedOrderDropdown}
+              onChange={function(e){
+                var val = e.target.value;
+                setSelectedOrderDropdown(val);
+                if (val) {
+                  var found = filteredOrders.find(function(o){ return String(o._id || o.sentAt) === val; });
+                  if (found) setDetailOrder(found);
+                }
+              }}
+            >
+              <option value="">-- Choose from all {filteredOrders.length} given orders (select to view details) --</option>
+              {filteredOrders.map(function(order){
+                var dest = getOrderDestination(order);
+                var summary = getOrderSummary(order);
+                var key = String(order._id || order.sentAt);
+                return (
+                  <option key={"dd_" + key} value={key}>
+                    {fmtDT(order.sentAt)} • {dest.name} ({dest.type}) • {getOrderCategoryLabel(order)} • {summary.totalQty} total qty [{order.sentToSupplier === false ? "unsent" : "completed"}]
+                  </option>
+                );
+              })}
+            </select>
+            <button
+              style={Object.assign({},S.b,S.bG,{display:"inline-flex",alignItems:"center",gap:6,whiteSpace:"nowrap",padding:"8px 14px",fontSize:12.5})}
+              onClick={function(){
+                var targetId = selectedOrderDropdown || (filteredOrders[0] && String(filteredOrders[0]._id || filteredOrders[0].sentAt));
+                if (targetId) {
+                  var found = filteredOrders.find(function(o){ return String(o._id || o.sentAt) === targetId; });
+                  if (found) setDetailOrder(found);
+                }
+              }}
+              disabled={filteredOrders.length === 0}
+            >
+              <Ic type="eye" size={13}/>
+              <span>View Details</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Orders Table */}
+      <div style={S.card}>
+        <div style={S.cH}>
+          <div>
+            <div style={S.t}>Orders Given Out ({filteredOrders.length})</div>
+            <div style={S.d}>
+              {loading ? "Loading order records..." : (
+                filteredOrders.length === 0
+                  ? "No matching orders found. Try adjusting the date range or vendor filter."
+                  : ("Showing " + filteredOrders.length + " orders" + (selectedVendor ? (" for " + (selectedVendor === "warehouse" ? "Warehouse" : selectedVendor)) : "") + (startDate || endDate ? (" between " + (startDate || "start") + " and " + (endDate || "today")) : ""))
+              )}
+            </div>
+          </div>
+        </div>
+
+        {filteredOrders.length === 0 ? (
+          <div style={{textAlign:"center",padding:"36px 16px",color:"#64748B"}}>
+            <div style={{fontSize:32,marginBottom:8}}>📦</div>
+            <div style={{fontSize:14,fontWeight:600,color:"#334155"}}>No orders found matching this filter</div>
+            <div style={{fontSize:12,color:"#94A3B8",marginTop:4}}>Try clearing the date range or selecting "All Suppliers & Vendors"</div>
+          </div>
+        ) : (
+          <div style={Object.assign({},S.tw,{marginTop:8})}>
+            <table style={S.tbl}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Date & Time</th>
+                  <th style={S.th}>Given To</th>
+                  <th style={S.th}>Category & Type</th>
+                  <th style={S.th}>Cycle / Week</th>
+                  <th style={Object.assign({},S.th,{textAlign:"center"})}>Items</th>
+                  <th style={Object.assign({},S.th,{textAlign:"right"})}>Total Qty</th>
+                  <th style={S.th}>Sent To (Email)</th>
+                  <th style={S.th}>Status</th>
+                  <th style={Object.assign({},S.th,{textAlign:"center"})}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredOrders.map(function(order){
+                  var dest = getOrderDestination(order);
+                  var summary = getOrderSummary(order);
+                  var isDownloading = !!downloading[String(order._id)];
+                  var isPrinting = !!printing[String(order._id)];
+                  return (
+                    <tr key={String(order._id || order.sentAt)}>
+                      <td style={Object.assign({},S.tm,{whiteSpace:"nowrap"})}>
+                        <div style={{fontWeight:600,color:"#0F172A"}}>{fmtDT(order.sentAt)}</div>
+                      </td>
+                      <td style={S.td}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <span style={Object.assign({},S.bg,dest.badgeStyle,{fontSize:10,padding:"1px 6px"})}>{dest.type}</span>
+                          <span style={{fontWeight:600,color:"#0F172A"}}>{dest.name}</span>
+                        </div>
+                      </td>
+                      <td style={S.td}>
+                        <span style={{fontSize:12.5}}>{getOrderCategoryLabel(order)}</span>
+                      </td>
+                      <td style={S.tm}>{order.week || "-"}</td>
+                      <td style={Object.assign({},S.td,{textAlign:"center",fontFamily:"monospace",fontWeight:600})}>
+                        {summary.lineCount}
+                      </td>
+                      <td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace",fontWeight:700,color:"#16A34A"})}>
+                        {summary.totalQty}
+                      </td>
+                      <td style={Object.assign({},S.tm,{maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"})}>
+                        {order.email || (Array.isArray(order.emails) ? order.emails.join(", ") : "-")}
+                      </td>
+                      <td style={S.td}>
+                        <span style={Object.assign({},S.bg,order.sentToSupplier === false ? S.bgW : S.bgG)}>
+                          {order.sentToSupplier === false ? "unsent" : "completed"}
+                        </span>
+                      </td>
+                      <td style={Object.assign({},S.td,{textAlign:"center"})}>
+                        <div style={{display:"flex",gap:4,justifyContent:"center",alignItems:"center",flexWrap:"wrap"}}>
+                          <button
+                            style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})}
+                            onClick={function(){ setDetailOrder(order); }}
+                          >
+                            View Details
+                          </button>
+                          <button
+                            style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})}
+                            onClick={function(){ downloadOrderDoc(order); }}
+                            disabled={isDownloading || !order.hasExcel}
+                          >
+                            {isDownloading ? "Downloading..." : "Download"}
+                          </button>
+                          <button
+                            style={Object.assign({},S.b,S.bS,{padding:"3px 8px",fontSize:10.5})}
+                            onClick={function(){ printOrderDoc(order); }}
+                            disabled={isPrinting || !order.hasExcel}
+                          >
+                            Print
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Order Details Modal */}
+      {detailOrder && (function(){
+        var dest = getOrderDestination(detailOrder);
+        var summary = getOrderSummary(detailOrder);
+        var breakdownStores = detailOrder.storeBreakdown && typeof detailOrder.storeBreakdown === "object" ? Object.entries(detailOrder.storeBreakdown) : [];
+        return (
+          <div style={S.ov} onClick={function(){ setDetailOrder(null); }}>
+            <div style={Object.assign({},S.mo,S.mW,{maxWidth:860})} onClick={function(e){ e.stopPropagation(); }}>
+              {/* Modal Header */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",borderBottom:"1px solid rgba(148,163,184,.24)",paddingBottom:12,marginBottom:12}}>
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={Object.assign({},S.bg,dest.badgeStyle)}>{dest.type}</span>
+                    <span style={{fontSize:17,fontWeight:700,color:"#0F172A"}}>{dest.name}</span>
+                    <span style={Object.assign({},S.bg,detailOrder.sentToSupplier === false ? S.bgW : S.bgG,{fontSize:11,padding:"2px 8px"})}>
+                      {detailOrder.sentToSupplier === false ? "unsent" : "completed"}
+                    </span>
+                  </div>
+                  <div style={{fontSize:12,color:"#64748B",marginTop:4}}>
+                    {getOrderCategoryLabel(detailOrder)} | Week: {detailOrder.week || "-"} | Sent: {fmtDT(detailOrder.sentAt)}
+                  </div>
+                  <div style={{fontSize:11.5,color:"#475569",marginTop:2}}>
+                    Recipient: <strong>{detailOrder.email || (Array.isArray(detailOrder.emails) ? detailOrder.emails.join(", ") : "-")}</strong>
+                  </div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:11,color:"#64748B",textTransform:"uppercase",fontWeight:600}}>Total Quantity</div>
+                  <div style={{fontSize:22,fontWeight:800,color:"#16A34A",fontFamily:"monospace"}}>{summary.totalQty}</div>
+                  <div style={{fontSize:11,color:"#64748B"}}>{summary.lineCount} item lines</div>
+                </div>
+              </div>
+
+              {/* Items Table */}
+              <div style={{marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:6}}>Order Line Items</div>
+                {summary.lines.length === 0 ? (
+                  <div style={{textAlign:"center",padding:16,color:"#64748B",fontSize:12}}>No direct item list stored for this older record.</div>
+                ) : (
+                  <div style={Object.assign({},S.tw,{maxHeight:300})}>
+                    <table style={S.tbl}>
+                      <thead>
+                        <tr>
+                          <th style={S.th}>Item Code</th>
+                          <th style={S.th}>Item Name</th>
+                          <th style={S.th}>Unit</th>
+                          <th style={Object.assign({},S.th,{textAlign:"right"})}>Quantity</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {summary.lines.map(function(line, idx){
+                          return (
+                            <tr key={"item_"+line.code+"_"+idx}>
+                              <td style={S.tm}>{line.code}</td>
+                              <td style={Object.assign({},S.td,{fontWeight:600})}>{line.name}</td>
+                              <td style={S.td}>{line.unit || "-"}</td>
+                              <td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace",fontWeight:700,color:"#16A34A"})}>
+                                {line.qty} {line.customUnit || (line.unitType === "pcs" ? "Pieces" : (line.unitType === "pallet" ? "Pallets" : "Cases"))}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Store Breakdown Table (if available) */}
+              {breakdownStores.length > 0 && (
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:6}}>Store-by-Store Breakdown</div>
+                  <div style={Object.assign({},S.tw,{maxHeight:240})}>
+                    <table style={S.tbl}>
+                      <thead>
+                        <tr>
+                          <th style={S.th}>Store</th>
+                          <th style={S.th}>Item Code</th>
+                          <th style={S.th}>Item Name</th>
+                          <th style={Object.assign({},S.th,{textAlign:"right"})}>Store Qty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {breakdownStores.flatMap(function([storeId, storeData]){
+                          var stName = (storeData && storeData.storeName) || storeId;
+                          var rawItems = storeData && storeData.items && typeof storeData.items === "object" ? storeData.items : {};
+                          return Object.entries(rawItems).filter(function([, q]){ return Number(q) > 0; }).map(function([code, qty]){
+                            return (
+                              <tr key={"st_"+storeId+"_"+code}>
+                                <td style={Object.assign({},S.td,{fontWeight:600})}>{stName}</td>
+                                <td style={S.tm}>{code}</td>
+                                <td style={S.td}>{getItemName(code, code)}</td>
+                                <td style={Object.assign({},S.td,{textAlign:"right",fontFamily:"monospace"})}>{qty}</td>
+                              </tr>
+                            );
+                          });
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Snapshot Lines (if available and no direct items) */}
+              {summary.lines.length === 0 && detailOrder.snapshotLines && detailOrder.snapshotLines.length > 0 && (
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#0F172A",marginBottom:6}}>Snapshot Summary</div>
+                  <div style={Object.assign({},S.tw,{maxHeight:220})}>
+                    <pre style={{margin:0,padding:12,whiteSpace:"pre-wrap",fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",fontSize:11.5,color:"#0F172A"}}>
+                      {detailOrder.snapshotLines.join("\n")}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal Actions */}
+              <div style={Object.assign({},S.mA,{borderTop:"1px solid rgba(148,163,184,.22)",paddingTop:10,gap:8})}>
+                {detailOrder.hasExcel && (
+                  <Fragment>
+                    <button
+                      style={Object.assign({},S.b,S.bS)}
+                      onClick={function(){ downloadOrderDoc(detailOrder); }}
+                    >
+                      <Ic type="download" size={13}/> Download Stored Document
+                    </button>
+                    <button
+                      style={Object.assign({},S.b,S.bS)}
+                      onClick={function(){ printOrderDoc(detailOrder); }}
+                    >
+                      <Ic type="print" size={13}/> Print Document
+                    </button>
+                  </Fragment>
+                )}
+                <button
+                  style={Object.assign({},S.b,S.bP)}
+                  onClick={function(){ setDetailOrder(null); }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
 }
 
 /* ═══ SETTINGS (editable schedule + order messages) ═══ */

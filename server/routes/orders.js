@@ -3074,6 +3074,7 @@ async function upsertSupplierOrderHistory(payload) {
       category: normalizedCategory,
       vendorKey: normalizedVendorKey,
       week: normalizedWeek,
+      finished: payload.finished !== undefined ? payload.finished : (payload.sentToSupplier !== false ? true : existing.finished),
     });
     await existing.save();
     return existing;
@@ -4788,6 +4789,18 @@ router.post('/consolidated/:type/email', authMiddleware, async (req, res) => {
         finished: finishedFlag,
         sentToSupplier: true,
       });
+      if (finishedFlag) {
+        await SupplierOrder.updateMany(
+          {
+            week: weekKey,
+            ...orderTypeFilterForCategory(historyType, resolvedCategory),
+            category: resolvedCategory,
+            ...(resolvedVendorKey ? { vendorKey: resolvedVendorKey } : {}),
+            sentToSupplier: { $ne: false },
+          },
+          { $set: { finished: true } }
+        );
+      }
       invalidateConsolidatedHistoryCache();
     } catch (historyErr) {
       console.error('Supplier email history save error:', historyErr);
@@ -5322,7 +5335,17 @@ async function getSupplierOrderFileBuffer(doc, requestedDateValue = null) {
   let fileBuffer = null;
   let contentType = EXCEL_CONTENT_TYPE;
 
-  if (normalizedCategory === 'leaves' || normalizedCategory === 'warehouse_inventory') {
+  const storedExcelBase64 = doc.excelBase64 || doc.monitorExcelBase64;
+  if (storedExcelBase64) {
+    contentType = String(doc.excelContentType || doc.monitorExcelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE;
+    const renderDate = requestedDateValue || new Date();
+    fileBuffer = isExcelContentType(contentType)
+      ? await withWorkbookDateLabel(
+          Buffer.from(storedExcelBase64, 'base64'),
+          renderDate
+        )
+      : Buffer.from(storedExcelBase64, 'base64');
+  } else if (normalizedCategory === 'leaves' || normalizedCategory === 'warehouse_inventory') {
     const detailedHistory = await buildConsolidatedHistoryExcelPayload({
       week: doc.week,
       type: doc.type,
@@ -5335,18 +5358,6 @@ async function getSupplierOrderFileBuffer(doc, requestedDateValue = null) {
     contentType = detailedHistory && detailedHistory.contentType ? detailedHistory.contentType : EXCEL_CONTENT_TYPE;
     if (fileBuffer && requestedDateValue && isExcelContentType(contentType)) {
       fileBuffer = await withWorkbookDateLabel(fileBuffer, requestedDateValue);
-    }
-  } else {
-    const storedExcelBase64 = doc.excelBase64 || doc.monitorExcelBase64;
-    if (storedExcelBase64) {
-      contentType = String(doc.excelContentType || doc.monitorExcelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE;
-      const renderDate = requestedDateValue || new Date();
-      fileBuffer = isExcelContentType(contentType)
-        ? await withWorkbookDateLabel(
-            Buffer.from(storedExcelBase64, 'base64'),
-            renderDate
-          )
-        : Buffer.from(storedExcelBase64, 'base64');
     }
   }
 
@@ -5440,14 +5451,63 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
     if (!canManageWarehouseOrders(req.user)) {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
+    // Any order that has been sent to a supplier is completed
+    await SupplierOrder.updateMany(
+      { sentToSupplier: { $ne: false }, finished: false },
+      { $set: { finished: true } }
+    );
     const daysRaw = parseInt(req.query.days, 10);
     const limitRaw = parseInt(req.query.limit, 10);
     const pageRaw = parseInt(req.query.page, 10);
-    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 250;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 2000) : 500;
     const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
     const filter = {};
-    if (Number.isFinite(daysRaw) && daysRaw > 0) {
+    const startDateRaw = req.query.startDate ? String(req.query.startDate).trim() : null;
+    const endDateRaw = req.query.endDate ? String(req.query.endDate).trim() : null;
+    if (startDateRaw || endDateRaw) {
+      filter.sentAt = {};
+      if (startDateRaw) {
+        const s = new Date(startDateRaw);
+        if (!Number.isNaN(s.getTime())) {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(startDateRaw)) {
+            s.setHours(0, 0, 0, 0);
+          }
+          filter.sentAt.$gte = s;
+        }
+      }
+      if (endDateRaw) {
+        const e = new Date(endDateRaw);
+        if (!Number.isNaN(e.getTime())) {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(endDateRaw)) {
+            e.setHours(23, 59, 59, 999);
+          }
+          filter.sentAt.$lte = e;
+        }
+      }
+    } else if (Number.isFinite(daysRaw) && daysRaw > 0) {
       filter.sentAt = { $gte: new Date(Date.now() - Math.min(daysRaw, 3650) * 24 * 60 * 60 * 1000) };
+    }
+    if (req.query.vendorKey) {
+      filter.vendorKey = String(req.query.vendorKey).trim();
+    }
+    if (req.query.category) {
+      filter.category = normalizeCategory(req.query.category);
+    }
+    if (req.query.supplier) {
+      const supp = String(req.query.supplier).trim();
+      if (supp.toLowerCase() === 'warehouse') {
+        filter.$or = [
+          { supplierName: { $regex: '^warehouse', $options: 'i' } },
+          { vendorKey: 'warehouse' },
+          { category: 'warehouse_inventory' },
+        ];
+      } else {
+        const escaped = supp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        filter.$or = [
+          { supplierName: { $regex: escaped, $options: 'i' } },
+          { vendorKey: supp },
+        ];
+      }
     }
     const [list, total] = await Promise.all([
       SupplierOrder.aggregate([
@@ -5524,6 +5584,8 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
         vendorKey: row.vendorKey || null,
         hasExcel: Boolean(row.hasExcel),
         sentToSupplier: row.sentToSupplier !== false,
+        finished: row.sentToSupplier === false ? false : true,
+        status: row.sentToSupplier === false ? 'unsent' : 'completed',
         fileContentType: String(row.excelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE,
         monitorFileContentType: String(row.monitorExcelContentType || EXCEL_CONTENT_TYPE).trim() || EXCEL_CONTENT_TYPE,
         itemCount,
