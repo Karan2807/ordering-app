@@ -8,6 +8,8 @@ function cleanPhone(phone) {
   return `+${digits}`;
 }
 
+let warnedMissingConfig = false;
+
 export async function sendSms({ to, body }) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
@@ -18,7 +20,10 @@ export async function sendSms({ to, body }) {
     return { ok: false, skipped: true, error: 'Invalid phone number' };
   }
   if (!accountSid || !authToken || !from) {
-    console.warn('SMS not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM.');
+    if (!warnedMissingConfig) {
+      console.warn('SMS not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM.');
+      warnedMissingConfig = true;
+    }
     return { ok: false, skipped: true, error: 'SMS provider not configured' };
   }
 

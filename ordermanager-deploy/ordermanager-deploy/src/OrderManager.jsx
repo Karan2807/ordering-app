@@ -5625,12 +5625,13 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
       && String(reopenedLog.week||"")===String(activeWeekKey||"")
       && String(reopenedLog.vendorKey||"")===String(resolvedVendorKey||"");
   },[reopenTarget,reopenedLog,currentType,selCategory,activeWeekKey,resolvedVendorKey]);
-  var isCompletedLocked=(forceCompletedLock||!!(latestTypeLog&&latestTypeLog.finished===true)||unsentLockExpired)&&!reopenedForCurrentGroup;
+  var hasUnsentSplits=step>1&&splitSupplierIds.length>0&&splitSupplierIds.some(function(id){return !sentSplitBySupplier[id];});
+  var isCompletedLocked=(forceCompletedLock||!!(latestTypeLog&&latestTypeLog.finished===true)||unsentLockExpired)&&!reopenedForCurrentGroup&&!hasUnsentSplits;
   var consolidatedNavGroup="consolidated-edit-"+activeGroupKey;
   var consolidatedNavMaxRow=Math.max(0,baseRows.length-1);
   var consolidatedNavMaxCol=Math.max(0,(editableStoreSlots.length*2)-1);
   useEffect(function(){ setForceCompletedLock(false); },[currentType,selCategory,activeWeekKey]);
-  useEffect(function(){ if(isCompletedLocked&&step!==1){ setStep(1); } },[isCompletedLocked,step]);
+  useEffect(function(){ if(isCompletedLocked&&step!==1&&!hasUnsentSplits){ setStep(1); } },[isCompletedLocked,step,hasUnsentSplits]);
   var parsePct=function(v){
     var s=String(v||"").replace(/[^0-9]/g,"");
     var n=parseInt(s,10);
@@ -5714,6 +5715,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
     setSavedRows(snap);
     setSplitSupplierIds(ids);
     setItemOverrides(nextOverrides);
+    setSentSplitBySupplier({});
     setStep(2);
   };
   var chooseSingleSupplier=function(sid){
@@ -5856,10 +5858,87 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
           if(setConsolidatedType) setConsolidatedType("B");
           toast("Leaves order is pending. Switched to Leaves Order B.");
         }
+        if(setReopenedFromId) setReopenedFromId(null);
+        setReopenTarget(null);
       }
-      if(setReopenedFromId) setReopenedFromId(null);
-      setReopenTarget(null);
     }catch(e){toast(e.message,true);}finally{sEMailing(false);}
+  };
+
+  var sendAllSplitEmails=async function(){
+    if(isCompletedLocked){toast("This consolidated order is completed and locked. Reopen from Order Monitor to edit.",true);return;}
+    if(!splitSupplierIds.length){toast("No suppliers selected",true);return;}
+    var missingEmails=splitSupplierIds.filter(function(sid){
+      var sup=supplierById[sid];
+      return !sup || supplierEmailsArray(sup).length===0;
+    });
+    if(missingEmails.length>0){
+      var names=missingEmails.map(function(sid){ return (supplierById[sid]&&supplierById[sid].name)||sid; }).join(", ");
+      toast("Supplier email missing for: "+names,true);
+      return;
+    }
+    saveSplitPreset(itemOverrides);
+    sEMailing(true);
+    try{
+      var currentSent=Object.assign({},sentSplitBySupplier);
+      var unsentIds=splitSupplierIds.filter(function(sid){return !currentSent[sid];});
+      if(unsentIds.length===0){
+        toast("All selected suppliers have already received emails");
+        return;
+      }
+      var failed=[];
+      var lastResp=null;
+      for(var i=0;i<unsentIds.length;i++){
+        var sid=unsentIds[i];
+        var supplier=supplierById[sid];
+        var recipientEmails=supplierEmailsArray(supplier);
+        var rows=splitRowsBySupplier[sid]||[];
+        var isFinal=(i===unsentIds.length-1);
+        var splitPayload=buildSplitPayload(rows,isFinal);
+        if(isSingleVendorFlow){
+          var documentMode=getVendorConsolidatedDocumentMode();
+          if(documentMode) splitPayload.documentMode=documentMode;
+        }
+        try{
+          var resp=await apiClient.orders.emailConsolidated(
+            currentType,
+            selCategory,
+            resolvedVendorKey,
+            recipientEmails,
+            supplier.name,
+            reopenedForCurrentGroup?reopenedFromId:null,
+            splitPayload,
+            activeWeekKey
+          );
+          currentSent[sid]=true;
+          setSentSplitBySupplier(Object.assign({},currentSent));
+          lastResp=resp;
+        }catch(err){
+          failed.push({sid:sid,name:supplier.name,error:err.message||"Failed"});
+        }
+      }
+      var latestLogs=await apiClient.supplierOrders.getAll();
+      setLogs(latestLogs||[]);
+      if(isSingleVendorFlow&&lastResp){
+        syncVendorStateFromResponse(lastResp);
+      }
+      if(failed.length===0){
+        toast("Orders successfully submitted to all "+splitSupplierIds.length+" vendors!");
+        setForceCompletedLock(true);
+        setStep(1);
+        if(selCategory==="vegetables"&&vt==="B"&&!leavesSentThisWeek){
+          setForceCompletedLock(false);
+          setSelCategory("leaves");
+          sVt("B");
+          if(setConsolidatedType) setConsolidatedType("B");
+          toast("Leaves order is pending. Switched to Leaves Order B.");
+        }
+        if(setReopenedFromId) setReopenedFromId(null);
+        setReopenTarget(null);
+      } else {
+        toast("Sent "+(unsentIds.length-failed.length)+" order(s). Failed for: "+failed.map(function(f){return f.name;}).join(", "),true);
+      }
+    }catch(e){toast(e.message||"Failed to send orders",true);}
+    finally{sEMailing(false);}
   };
   var downloadVendorStoreDocument=async function(row){
     if(!row||!row.order||!row.store){toast("Store document not available",true);return;}
