@@ -5892,7 +5892,7 @@ function Consolidated({orders,setOrders,items,aot,manualOpenOrder,manualOpenSeq,
         var supplier=supplierById[sid];
         var recipientEmails=supplierEmailsArray(supplier);
         var rows=splitRowsBySupplier[sid]||[];
-        var isFinal=(i===unsentIds.length-1);
+        var isFinal=splitSupplierIds.every(function(id){return currentSent[id]||id===sid;});
         var splitPayload=buildSplitPayload(rows,isFinal);
         if(isSingleVendorFlow){
           var documentMode=getVendorConsolidatedDocumentMode();

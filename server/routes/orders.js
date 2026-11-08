@@ -5451,11 +5451,10 @@ router.get('/supplier-orders', authMiddleware, async (req, res) => {
     if (!canManageWarehouseOrders(req.user)) {
       return res.status(403).json({ error: 'Admin or warehouse only' });
     }
-    // Any order that has been sent to a supplier is completed
-    await SupplierOrder.updateMany(
-      { sentToSupplier: { $ne: false }, finished: false },
-      { $set: { finished: true } }
-    );
+    // Do NOT force-mark sent orders as finished here: split sends store
+    // finished=false until every supplier has received the order, and reopened
+    // orders also use finished=false. The response mapping below already
+    // defaults legacy records (no finished field) to finished=true.
     const daysRaw = parseInt(req.query.days, 10);
     const limitRaw = parseInt(req.query.limit, 10);
     const pageRaw = parseInt(req.query.page, 10);
